@@ -2,51 +2,84 @@ import { config } from '../config.js';
 import { gm } from '../utils/gm.js';
 
 const KEY = 'pv2:settings';
-const SESSION_ONLY_KEYS = ['hangingMode'];
+const SITE_KEY = 'pv2:siteSettings';
+// 全局设置：跨站点共享
+const GLOBAL_KEYS = ['theme'];
+// 站点设置：按 hostname 分别记录，刷新不失效
+const SITE_KEYS = ['scrollbarVisible', 'panelSize', 'windowMode', 'linkIntercept', 'phonePosition'];
 
-function defaultSettings() {
+function defaultGlobal() {
+  return { theme: 'auto' };
+}
+function defaultSite() {
   return {
-    theme: 'auto',
     scrollbarVisible: config.popup.scrollbarVisible,
     panelSize: config.popup.defaultSize,
-    hangingMode: false,
+    windowMode: 'coupled',
+    linkIntercept: true,
     phonePosition: null
   };
+}
+function currentSiteKey() {
+  try {
+    return window.location.hostname || 'unknown';
+  } catch {
+    return 'unknown';
+  }
 }
 
 export class SettingsManager {
   constructor() {
-    this.settings = defaultSettings();
+    this.global = defaultGlobal();
+    this.site = defaultSite();
+    this.siteKey = 'unknown';
     this._loaded = false;
   }
   load() {
-    if (this._loaded) return this.settings;
+    if (this._loaded) return this.get();
     this._loaded = true;
-    const raw = gm.getValue(KEY, null);
-    if (raw && typeof raw === 'object') {
-      this.settings = { ...defaultSettings(), ...raw };
-      if (!config.popup.sizes[this.settings.panelSize]) {
-        this.settings.panelSize = defaultSettings().panelSize;
-      }
+    this.siteKey = currentSiteKey();
+    const g = gm.getValue(KEY, null);
+    if (g && typeof g === 'object') this.global = { ...defaultGlobal(), ...g };
+    const all = gm.getValue(SITE_KEY, null);
+    if (all && typeof all === 'object' && all[this.siteKey]) {
+      this.site = { ...defaultSite(), ...all[this.siteKey] };
     }
-    return this.settings;
+    if (!config.popup.sizes[this.site.panelSize]) {
+      this.site.panelSize = defaultSite().panelSize;
+    }
+    this._applyInvariants();
+    return this.get();
   }
+  /** 当前生效设置 = 全局 + 当前站点设置。 */
   get() {
-    return this.settings;
+    return { ...this.global, ...this.site };
   }
   set(partial) {
-    this.settings = { ...this.settings, ...partial };
-    const persistable = {};
-    for (const [key, value] of Object.entries(this.settings)) {
-      if (!SESSION_ONLY_KEYS.includes(key)) persistable[key] = value;
+    for (const [key, value] of Object.entries(partial)) {
+      if (GLOBAL_KEYS.includes(key)) this.global[key] = value;
+      else this.site[key] = value;
     }
-    gm.setValue(KEY, persistable);
-    return this.settings;
+    this._applyInvariants();
+    this._persist();
+    return this.get();
   }
   reset() {
-    this.settings = defaultSettings();
-    gm.setValue(KEY, this.settings);
-    return this.settings;
+    this.global = defaultGlobal();
+    this.site = defaultSite();
+    this._applyInvariants();
+    this._persist();
+    return this.get();
+  }
+  _applyInvariants() {
+    // 关闭页面链接拦截时，窗体必须是独立悬浮
+    if (this.site.linkIntercept === false) this.site.windowMode = 'float';
+  }
+  _persist() {
+    gm.setValue(KEY, this.global);
+    const all = gm.getValue(SITE_KEY, null) || {};
+    all[this.siteKey] = this.site;
+    gm.setValue(SITE_KEY, all);
   }
 }
 

@@ -88,6 +88,17 @@ export class PopupPanel {
       if (e.target.closest('button')) return;
       this.toggleFullScreen();
     });
+    this.contentArea.addEventListener('click', (e) => {
+      if (settingsManager.get().linkIntercept !== false) return;
+      const link = e.target.closest?.('a[href]');
+      if (!link) return;
+      const href = link.getAttribute('href');
+      if (!href || /^(javascript:|#)/i.test(href.trim())) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const url = link.href;
+      this.handlers.onOpenInWindow?.(url, (link.textContent || '').trim());
+    });
     this._setupDrag(header);
     this._setupKeyboard();
     return this.panel;
@@ -101,12 +112,24 @@ export class PopupPanel {
     this.footerUrlEl.title = url || '';
     this.footer.classList.toggle('empty', !url);
     this.panel.classList.remove('visible');
+    // 保留拖动后的窗体位置；若正处于全屏，恢复全屏前位置
+    const pos = this.isFullScreen
+      ? {
+          top: this.preFullScreen.top || '',
+          left: this.preFullScreen.left || '',
+          transform: this.preFullScreen.transform || ''
+        }
+      : {
+          top: this.panel.style.top,
+          left: this.panel.style.left,
+          transform: this.panel.style.transform
+        };
     Object.assign(this.panel.style, {
       width: '',
       height: '',
-      top: '',
-      left: '',
-      transform: '',
+      top: pos.top,
+      left: pos.left,
+      transform: pos.transform,
       maxWidth: '',
       maxHeight: '',
       borderRadius: '',
@@ -117,7 +140,7 @@ export class PopupPanel {
     this.applySettings(settingsManager.get());
     requestAnimationFrame(() => {
       this.panel.classList.add('visible');
-      if (!settingsManager.get().hangingMode) this.overlay.classList.add('visible');
+      if (settingsManager.get().windowMode !== 'float') this.overlay.classList.add('visible');
     });
   }
   close() {
@@ -135,6 +158,11 @@ export class PopupPanel {
   }
   setTitle(text) {
     if (this.titleTextEl) this.titleTextEl.textContent = text || '查看内容';
+  }
+  updateFooterUrl(url) {
+    this.footerUrlEl.textContent = url || '';
+    this.footerUrlEl.title = url || '';
+    this.footer?.classList.toggle('empty', !url);
   }
   /**
    * 应用设置到面板：滚动条显隐 + 窗体大小预设 + 手机模式位置记忆。

@@ -12,6 +12,12 @@ export class PopupManager {
     this.popup.handlers = {
       onRefresh: (url) => this.load(url),
       onOpenExternal: (url) => url && window.open(url, '_blank', 'noopener'),
+      onOpenInWindow: (url, linkText) => {
+        if (!url) return;
+        if (linkText) this.popup.setTitle(linkText);
+        this.popup.updateFooterUrl(url);
+        this.load(url);
+      },
       onClose: () => {
         this._abort?.();
         this._abort = null;

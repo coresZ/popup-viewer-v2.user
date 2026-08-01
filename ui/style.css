@@ -735,20 +735,3 @@ a.xst::after {
     max-height: calc(100vh - 16px);
   }
 }
-
-/* ===== 固定悬挂模式：关闭入口视觉提示 ===== */
-html.pv-detached .popup-trigger::after,
-html.pv-detached th.common::after,
-html.pv-detached a.xst::after {
-  display: none;
-  opacity: 0;
-}
-html.pv-detached a.xst {
-  padding-right: 0;
-}
-html.pv-detached .suh a:hover,
-html.pv-detached table tr td a:hover,
-html.pv-detached th.common a.xst:hover {
-  color: inherit;
-  text-shadow: none;
-}

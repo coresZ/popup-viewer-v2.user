@@ -15,7 +15,6 @@ import { GithubAdapter } from './adapters/GithubAdapter.js';
 import { CiliAdapter } from './adapters/CiliAdapter.js';
 
 const prefetch = new PrefetchManager(loaderManager);
-let hangingDetached = false;
 
 function registerAdapters() {
   siteManager.register(new DiscuzAdapter());
@@ -25,15 +24,11 @@ function registerAdapters() {
   siteManager.register(new CiliAdapter());
 }
 
-function isHangingDetached() {
-  return hangingDetached || settingsManager.get().hangingMode === true;
-}
-
 function setupEvents() {
   document.addEventListener(
     'click',
     (e) => {
-      if (isHangingDetached()) return;
+      if (settingsManager.get().linkIntercept === false) return;
       siteManager.handleClick(e);
     },
     true
@@ -41,7 +36,7 @@ function setupEvents() {
   document.addEventListener(
     'mouseover',
     (e) => {
-      if (isHangingDetached()) return;
+      if (settingsManager.get().linkIntercept === false) return;
       const hostname = window.location.hostname;
       let candidate = null;
       try {
@@ -58,12 +53,10 @@ function setupEvents() {
     popupManager.open({ url, title });
   });
   eventBus.on('settings-changed', (settings) => {
-    if (settings.hangingMode) {
+    if (settings.windowMode === 'float') {
       popupManager.hideOverlay();
-      enterHangingDetached();
     } else {
       popupManager.showOverlay();
-      exitHangingDetached();
     }
   });
 }
@@ -88,32 +81,9 @@ function startObserver() {
   observer.observe(document.body, { childList: true, subtree: true });
 }
 
-function stopObserver() {
-  observer?.disconnect();
-  observer = null;
-}
-
-function enterHangingDetached() {
-  if (hangingDetached) return;
-  hangingDetached = true;
-  popupManager.hideOverlay();
-  stopObserver();
-  document.documentElement.classList.add('pv-detached');
-  document.querySelectorAll('.popup-trigger').forEach((el) => el.classList.remove('popup-trigger'));
-  logger.log('固定悬挂模式：入口已关闭，脱离页面监听');
-}
-
-function exitHangingDetached() {
-  if (!hangingDetached) return;
-  hangingDetached = false;
-  document.documentElement.classList.remove('pv-detached');
-  startObserver();
-  siteManager.runEnhancements();
-  logger.log('固定悬挂模式：已恢复页面监听');
-}
-
 function init() {
   settingsManager.load();
+  popupManager.popup.applyTheme(settingsManager.get().theme);
   registerAdapters();
   setupEvents();
   setupObserver();

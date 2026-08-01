@@ -635,6 +635,84 @@
   };
   var sanitizer = new Sanitizer();
 
+  // core/SettingsManager.js
+  var KEY = "pv2:settings";
+  var SITE_KEY = "pv2:siteSettings";
+  var GLOBAL_KEYS = ["theme"];
+  function defaultGlobal() {
+    return { theme: "auto" };
+  }
+  function defaultSite() {
+    return {
+      scrollbarVisible: config.popup.scrollbarVisible,
+      panelSize: config.popup.defaultSize,
+      windowMode: "coupled",
+      linkIntercept: true,
+      phonePosition: null
+    };
+  }
+  function currentSiteKey() {
+    try {
+      return window.location.hostname || "unknown";
+    } catch {
+      return "unknown";
+    }
+  }
+  var SettingsManager = class {
+    constructor() {
+      this.global = defaultGlobal();
+      this.site = defaultSite();
+      this.siteKey = "unknown";
+      this._loaded = false;
+    }
+    load() {
+      if (this._loaded) return this.get();
+      this._loaded = true;
+      this.siteKey = currentSiteKey();
+      const g = gm.getValue(KEY, null);
+      if (g && typeof g === "object") this.global = { ...defaultGlobal(), ...g };
+      const all = gm.getValue(SITE_KEY, null);
+      if (all && typeof all === "object" && all[this.siteKey]) {
+        this.site = { ...defaultSite(), ...all[this.siteKey] };
+      }
+      if (!config.popup.sizes[this.site.panelSize]) {
+        this.site.panelSize = defaultSite().panelSize;
+      }
+      this._applyInvariants();
+      return this.get();
+    }
+    /** 当前生效设置 = 全局 + 当前站点设置。 */
+    get() {
+      return { ...this.global, ...this.site };
+    }
+    set(partial) {
+      for (const [key, value] of Object.entries(partial)) {
+        if (GLOBAL_KEYS.includes(key)) this.global[key] = value;
+        else this.site[key] = value;
+      }
+      this._applyInvariants();
+      this._persist();
+      return this.get();
+    }
+    reset() {
+      this.global = defaultGlobal();
+      this.site = defaultSite();
+      this._applyInvariants();
+      this._persist();
+      return this.get();
+    }
+    _applyInvariants() {
+      if (this.site.linkIntercept === false) this.site.windowMode = "float";
+    }
+    _persist() {
+      gm.setValue(KEY, this.global);
+      const all = gm.getValue(SITE_KEY, null) || {};
+      all[this.siteKey] = this.site;
+      gm.setValue(SITE_KEY, all);
+    }
+  };
+  var settingsManager = new SettingsManager();
+
   // loaders/IframeRenderer.js
   function renderIntoIframe({ html, url, container, sandboxAttrs, head = "" }) {
     container.querySelector("#popup-panel-loading")?.remove();
@@ -673,8 +751,9 @@
     }
   }
   function fixLinks(iframeDoc) {
+    const openNewTab = settingsManager.get().linkIntercept !== false;
     iframeDoc.querySelectorAll("a[href]").forEach((link) => {
-      link.target = "_blank";
+      if (openNewTab) link.target = "_blank";
       const href = link.getAttribute("href");
       if (!href || href.trim().startsWith("javascript:")) return;
       try {
@@ -791,8 +870,10 @@
         });
       });
       doc.querySelectorAll("a[href]").forEach((link) => {
-        link.target = "_blank";
-        link.rel = "noopener noreferrer";
+        if (settingsManager.get().linkIntercept !== false) {
+          link.target = "_blank";
+          link.rel = "noopener noreferrer";
+        }
       });
       doc.querySelectorAll("img").forEach((img) => {
         img.loading = img.loading || "lazy";
@@ -983,55 +1064,6 @@
   };
   var loaderManager = new LoaderManager();
 
-  // core/SettingsManager.js
-  var KEY = "pv2:settings";
-  var SESSION_ONLY_KEYS = ["hangingMode"];
-  function defaultSettings() {
-    return {
-      theme: "auto",
-      scrollbarVisible: config.popup.scrollbarVisible,
-      panelSize: config.popup.defaultSize,
-      hangingMode: false,
-      phonePosition: null
-    };
-  }
-  var SettingsManager = class {
-    constructor() {
-      this.settings = defaultSettings();
-      this._loaded = false;
-    }
-    load() {
-      if (this._loaded) return this.settings;
-      this._loaded = true;
-      const raw = gm.getValue(KEY, null);
-      if (raw && typeof raw === "object") {
-        this.settings = { ...defaultSettings(), ...raw };
-        if (!config.popup.sizes[this.settings.panelSize]) {
-          this.settings.panelSize = defaultSettings().panelSize;
-        }
-      }
-      return this.settings;
-    }
-    get() {
-      return this.settings;
-    }
-    set(partial) {
-      this.settings = { ...this.settings, ...partial };
-      const persistable = {};
-      for (const [key, value] of Object.entries(this.settings)) {
-        if (!SESSION_ONLY_KEYS.includes(key)) persistable[key] = value;
-      }
-      gm.setValue(KEY, persistable);
-      return this.settings;
-    }
-    reset() {
-      this.settings = defaultSettings();
-      gm.setValue(KEY, this.settings);
-      return this.settings;
-    }
-  };
-  var settingsManager = new SettingsManager();
-
   // ui/Toolbar.js
   function createToolbar(handlers) {
     const actions = el("div", { id: "popup-panel-actions" });
@@ -1091,19 +1123,27 @@
       settingsManager.set({ scrollbarVisible: scrollSwitch.checked });
       persist();
     });
-    const hangingSwitch = el("input", { type: "checkbox", id: "pv-settings-hanging" });
-    hangingSwitch.checked = settingsManager.get().hangingMode === true;
-    hangingSwitch.addEventListener("change", () => {
-      settingsManager.set({ hangingMode: hangingSwitch.checked });
+    const linkInterceptSwitch = el("input", { type: "checkbox", id: "pv-settings-link-intercept" });
+    linkInterceptSwitch.checked = settingsManager.get().linkIntercept !== false;
+    linkInterceptSwitch.addEventListener("change", () => {
+      settingsManager.set({ linkIntercept: linkInterceptSwitch.checked });
+      if (!linkInterceptSwitch.checked) windowModeSeg.sync();
       persist();
     });
+    const windowModeSeg = makeSeg(
+      ["coupled", "float"],
+      { coupled: "跟随页面", float: "独立悬浮" },
+      () => settingsManager.get().windowMode || "coupled",
+      "windowMode"
+    );
     const resetBtn = el("button", { type: "button", class: "pv-settings-reset", text: "恢复默认" });
     resetBtn.addEventListener("click", () => {
       settingsManager.reset();
       scrollSwitch.checked = settingsManager.get().scrollbarVisible !== false;
-      hangingSwitch.checked = settingsManager.get().hangingMode === true;
+      linkInterceptSwitch.checked = settingsManager.get().linkIntercept !== false;
       sizeSeg.sync();
       themeSeg.sync();
+      windowModeSeg.sync();
       persist();
     });
     return el(
@@ -1114,6 +1154,20 @@
         { class: "pv-settings-row" },
         el("span", { class: "pv-settings-label", text: "窗体滚动条" }),
         el("label", { class: "pv-switch" }, scrollSwitch, el("span", { class: "pv-switch-track" }))
+      ),
+      el(
+        "div",
+        { class: "pv-settings-col" },
+        el(
+          "div",
+          { class: "pv-settings-col-head" },
+          el("span", { class: "pv-settings-label", text: "页面链接拦截" }),
+          el("label", { class: "pv-switch" }, linkInterceptSwitch, el("span", { class: "pv-switch-track" }))
+        ),
+        el("div", {
+          class: "pv-settings-hint",
+          text: "开启：页面链接点击在弹窗内打开；关闭：页面链接原页面打开，窗体内容里的链接在窗体内部打开（禁止新标签页），窗体自动切换为独立悬浮"
+        })
       ),
       el(
         "div",
@@ -1130,15 +1184,11 @@
       el(
         "div",
         { class: "pv-settings-col" },
-        el(
-          "div",
-          { class: "pv-settings-col-head" },
-          el("span", { class: "pv-settings-label", text: "固定悬挂模式" }),
-          el("label", { class: "pv-switch" }, hangingSwitch, el("span", { class: "pv-switch-track" }))
-        ),
+        el("span", { class: "pv-settings-label", text: "窗体驻留方式" }),
+        windowModeSeg.group,
         el("div", {
           class: "pv-settings-hint",
-          text: "首次打开内容后关闭入口，不再响应页面点击，窗口与页面相互独立；关闭该模式或刷新页面后恢复"
+          text: "跟随页面：弹窗带遮罩；独立悬浮：无遮罩、页面可交互，点击链接仍在弹窗内打开内容"
         })
       ),
       el("div", { class: "pv-settings-footer" }, resetBtn)
@@ -1883,23 +1933,6 @@ a.xst::after {
     max-height: calc(100vh - 16px);
   }
 }
-
-/* ===== 固定悬挂模式：关闭入口视觉提示 ===== */
-html.pv-detached .popup-trigger::after,
-html.pv-detached th.common::after,
-html.pv-detached a.xst::after {
-  display: none;
-  opacity: 0;
-}
-html.pv-detached a.xst {
-  padding-right: 0;
-}
-html.pv-detached .suh a:hover,
-html.pv-detached table tr td a:hover,
-html.pv-detached th.common a.xst:hover {
-  color: inherit;
-  text-shadow: none;
-}
 `;
 
   // ui/PopupPanel.js
@@ -1981,6 +2014,17 @@ html.pv-detached th.common a.xst:hover {
         if (e.target.closest("button")) return;
         this.toggleFullScreen();
       });
+      this.contentArea.addEventListener("click", (e) => {
+        if (settingsManager.get().linkIntercept !== false) return;
+        const link = e.target.closest?.("a[href]");
+        if (!link) return;
+        const href = link.getAttribute("href");
+        if (!href || /^(javascript:|#)/i.test(href.trim())) return;
+        e.preventDefault();
+        e.stopPropagation();
+        const url = link.href;
+        this.handlers.onOpenInWindow?.(url, (link.textContent || "").trim());
+      });
       this._setupDrag(header);
       this._setupKeyboard();
       return this.panel;
@@ -1994,12 +2038,21 @@ html.pv-detached th.common a.xst:hover {
       this.footerUrlEl.title = url || "";
       this.footer.classList.toggle("empty", !url);
       this.panel.classList.remove("visible");
+      const pos = this.isFullScreen ? {
+        top: this.preFullScreen.top || "",
+        left: this.preFullScreen.left || "",
+        transform: this.preFullScreen.transform || ""
+      } : {
+        top: this.panel.style.top,
+        left: this.panel.style.left,
+        transform: this.panel.style.transform
+      };
       Object.assign(this.panel.style, {
         width: "",
         height: "",
-        top: "",
-        left: "",
-        transform: "",
+        top: pos.top,
+        left: pos.left,
+        transform: pos.transform,
         maxWidth: "",
         maxHeight: "",
         borderRadius: "",
@@ -2010,7 +2063,7 @@ html.pv-detached th.common a.xst:hover {
       this.applySettings(settingsManager.get());
       requestAnimationFrame(() => {
         this.panel.classList.add("visible");
-        if (!settingsManager.get().hangingMode) this.overlay.classList.add("visible");
+        if (settingsManager.get().windowMode !== "float") this.overlay.classList.add("visible");
       });
     }
     close() {
@@ -2028,6 +2081,11 @@ html.pv-detached th.common a.xst:hover {
     }
     setTitle(text) {
       if (this.titleTextEl) this.titleTextEl.textContent = text || "查看内容";
+    }
+    updateFooterUrl(url) {
+      this.footerUrlEl.textContent = url || "";
+      this.footerUrlEl.title = url || "";
+      this.footer?.classList.toggle("empty", !url);
     }
     /**
      * 应用设置到面板：滚动条显隐 + 窗体大小预设 + 手机模式位置记忆。
@@ -2263,6 +2321,12 @@ html.pv-detached th.common a.xst:hover {
       this.popup.handlers = {
         onRefresh: (url) => this.load(url),
         onOpenExternal: (url) => url && window.open(url, "_blank", "noopener"),
+        onOpenInWindow: (url, linkText) => {
+          if (!url) return;
+          if (linkText) this.popup.setTitle(linkText);
+          this.popup.updateFooterUrl(url);
+          this.load(url);
+        },
         onClose: () => {
           this._abort?.();
           this._abort = null;
@@ -2701,7 +2765,6 @@ html.pv-detached th.common a.xst:hover {
 
   // main.js
   var prefetch = new PrefetchManager(loaderManager);
-  var hangingDetached = false;
   function registerAdapters() {
     siteManager.register(new DiscuzAdapter());
     siteManager.register(new TgbAdapter());
@@ -2709,14 +2772,11 @@ html.pv-detached th.common a.xst:hover {
     siteManager.register(new GithubAdapter());
     siteManager.register(new CiliAdapter());
   }
-  function isHangingDetached() {
-    return hangingDetached || settingsManager.get().hangingMode === true;
-  }
   function setupEvents() {
     document.addEventListener(
       "click",
       (e) => {
-        if (isHangingDetached()) return;
+        if (settingsManager.get().linkIntercept === false) return;
         siteManager.handleClick(e);
       },
       true
@@ -2724,7 +2784,7 @@ html.pv-detached th.common a.xst:hover {
     document.addEventListener(
       "mouseover",
       (e) => {
-        if (isHangingDetached()) return;
+        if (settingsManager.get().linkIntercept === false) return;
         const hostname = window.location.hostname;
         let candidate = null;
         try {
@@ -2741,12 +2801,10 @@ html.pv-detached th.common a.xst:hover {
       popupManager.open({ url, title });
     });
     eventBus.on("settings-changed", (settings) => {
-      if (settings.hangingMode) {
+      if (settings.windowMode === "float") {
         popupManager.hideOverlay();
-        enterHangingDetached();
       } else {
         popupManager.showOverlay();
-        exitHangingDetached();
       }
     });
   }
@@ -2767,29 +2825,9 @@ html.pv-detached th.common a.xst:hover {
     observer = new MutationObserver(debouncedRunEnhancements);
     observer.observe(document.body, { childList: true, subtree: true });
   }
-  function stopObserver() {
-    observer?.disconnect();
-    observer = null;
-  }
-  function enterHangingDetached() {
-    if (hangingDetached) return;
-    hangingDetached = true;
-    popupManager.hideOverlay();
-    stopObserver();
-    document.documentElement.classList.add("pv-detached");
-    document.querySelectorAll(".popup-trigger").forEach((el2) => el2.classList.remove("popup-trigger"));
-    logger.log("固定悬挂模式：入口已关闭，脱离页面监听");
-  }
-  function exitHangingDetached() {
-    if (!hangingDetached) return;
-    hangingDetached = false;
-    document.documentElement.classList.remove("pv-detached");
-    startObserver();
-    siteManager.runEnhancements();
-    logger.log("固定悬挂模式：已恢复页面监听");
-  }
   function init() {
     settingsManager.load();
+    popupManager.popup.applyTheme(settingsManager.get().theme);
     registerAdapters();
     setupEvents();
     setupObserver();

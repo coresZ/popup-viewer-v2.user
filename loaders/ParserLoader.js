@@ -3,6 +3,7 @@ import { logger } from '../utils/logger.js';
 import { gm } from '../utils/gm.js';
 import { sanitizer } from '../security/Sanitizer.js';
 import { clear } from '../utils/dom.js';
+import { settingsManager } from '../core/SettingsManager.js';
 
 export class ParserLoader {
   load({ url, hostname, keepScripts, container, onError, onLoad }) {
@@ -56,8 +57,10 @@ export class ParserLoader {
       });
     });
     doc.querySelectorAll('a[href]').forEach((link) => {
-      link.target = '_blank';
-      link.rel = 'noopener noreferrer';
+      if (settingsManager.get().linkIntercept !== false) {
+        link.target = '_blank';
+        link.rel = 'noopener noreferrer';
+      }
     });
     doc.querySelectorAll('img').forEach((img) => {
       img.loading = img.loading || 'lazy';

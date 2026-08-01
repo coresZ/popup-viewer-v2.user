@@ -1,5 +1,6 @@
 import { logger } from '../utils/logger.js';
 import { el } from '../utils/dom.js';
+import { settingsManager } from '../core/SettingsManager.js';
 
 export function renderIntoIframe({ html, url, container, sandboxAttrs, head = '' }) {
   container.querySelector('#popup-panel-loading')?.remove();
@@ -49,8 +50,9 @@ function buildBaseHref(url) {
 }
 
 function fixLinks(iframeDoc) {
+  const openNewTab = settingsManager.get().linkIntercept !== false;
   iframeDoc.querySelectorAll('a[href]').forEach((link) => {
-    link.target = '_blank';
+    if (openNewTab) link.target = '_blank';
     const href = link.getAttribute('href');
     if (!href || href.trim().startsWith('javascript:')) return;
     try {
