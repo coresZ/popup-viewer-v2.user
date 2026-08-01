@@ -152,11 +152,20 @@ export function createSettingsPanel({ onChange, onManageRules }) {
   });
   const linkInterceptSwitchWrap = el('label', { class: 'pv-switch' }, linkInterceptSwitch, el('span', { class: 'pv-switch-track' }));
 
+  const allowInFrameSwitch = el('input', { type: 'checkbox', id: 'pv-settings-iframe' });
+  allowInFrameSwitch.checked = settingsManager.get().allowInFrame === true;
+  allowInFrameSwitch.addEventListener('change', () => {
+    settingsManager.set({ allowInFrame: allowInFrameSwitch.checked });
+    persist();
+  });
+  const allowInFrameWrap = el('label', { class: 'pv-switch' }, allowInFrameSwitch, el('span', { class: 'pv-switch-track' }));
+
   const resetBtn = el('button', { type: 'button', class: 'pv-settings-reset', text: '恢复默认' });
   resetBtn.addEventListener('click', () => {
     settingsManager.reset();
     scrollSwitch.checked = settingsManager.get().scrollbarVisible !== false;
     linkInterceptSwitch.checked = settingsManager.get().linkIntercept !== false;
+    allowInFrameSwitch.checked = settingsManager.get().allowInFrame === true;
     sizeSeg.sync();
     themeSeg.sync();
     windowModeSeg.sync();
@@ -215,6 +224,8 @@ export function createSettingsPanel({ onChange, onManageRules }) {
     rowBlock('链接规则', '拦截本站指定链接并在弹窗打开', manageRulesBtn, '规则按当前站点生效；点「取选」直接在页面上点一下链接即可生成，无需写选择器'),
     group('外观'),
     colBlock('外观主题', '跟随系统或手动指定', themeSeg.group),
+    group('高级'),
+    rowBlock('在 iframe 中运行', '默认关闭（等同 @noframes）', allowInFrameWrap, '风险：开启后脚本会在页面内所有 iframe 中运行（含广告、嵌入内容等），可能增加页面开销、出现多个悬浮按钮，或与嵌入页面产生样式冲突；仅在确有需要时开启'),
     el('div', { class: 'pv-settings-footer' }, resetBtn)
   );
 }

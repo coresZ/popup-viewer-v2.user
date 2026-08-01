@@ -10,10 +10,10 @@ const banner = readFileSync(join(root, 'banner.txt'), 'utf-8').trimEnd();
 
 /** @type {import('esbuild').BuildOptions} */
 const options = {
-  entryPoints: [join(root, 'main.js')],
+  entryPoints: [join(root, 'src', 'main.js')],
   bundle: true,
   format: 'iife',
-  outfile: join(root, 'a.js'),
+  outfile: join(root, 'dist', 'popup-viewer-v2.user.js'),
   banner: { js: banner + '\n\n' },
   loader: { '.css': 'text' },
   minify: false,
@@ -27,5 +27,5 @@ if (watch) {
   process.stdin.on('data', () => ctx.dispose());
 } else {
   await build(options);
-  console.log('build done -> a.js');
+  console.log('build done -> dist/popup-viewer-v2.user.js');
 }

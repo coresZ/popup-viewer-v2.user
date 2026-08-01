@@ -88,8 +88,20 @@ function startObserver() {
   observer.observe(document.body, { childList: true, subtree: true });
 }
 
+function isInIframe() {
+  try {
+    return window.top !== window.self;
+  } catch {
+    return true;
+  }
+}
+
 function init() {
   settingsManager.load();
+  // 未开启「在 iframe 中运行」时，iframe 内跳过初始化（运行时等价 @noframes）
+  if (isInIframe() && !settingsManager.get().allowInFrame) {
+    return;
+  }
   popupManager.popup.applyTheme(settingsManager.get().theme);
   // 立即构建 UI（含右下角设置按钮/规则面板），未匹配内置适配器的网站也能访问设置与规则
   popupManager.popup.ensure();

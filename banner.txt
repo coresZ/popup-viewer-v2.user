@@ -1,11 +1,10 @@
 // ==UserScript==
-// @name          页内弹窗打开新帖 (Popup Viewer V2)
+// @name          页内弹窗打开新帖
 // @namespace     https://greasyfork.org/zh-CN/users/1186846-cores
 // @version       2.0.0
 // @description   点击论坛帖子链接，在弹窗中加载内容 (插件化架构 V2)
 // @author        cores
 // @match         *://*/*
-// @noframes
 // @grant         GM_xmlhttpRequest
 // @grant         GM_addStyle
 // @grant         GM_getValue

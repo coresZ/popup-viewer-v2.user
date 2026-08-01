@@ -1,11 +1,10 @@
 // ==UserScript==
-// @name          页内弹窗打开新帖 (Popup Viewer V2)
+// @name          页内弹窗打开新帖
 // @namespace     https://greasyfork.org/zh-CN/users/1186846-cores
 // @version       2.0.0
 // @description   点击论坛帖子链接，在弹窗中加载内容 (插件化架构 V2)
 // @author        cores
 // @match         *://*/*
-// @noframes
 // @grant         GM_xmlhttpRequest
 // @grant         GM_addStyle
 // @grant         GM_getValue
@@ -16,7 +15,7 @@
 
 
 (() => {
-  // config.js
+  // src/config.js
   var config = {
     popup: {
       width: "50%",
@@ -100,7 +99,7 @@
     maxHistoryEntries: 100
   };
 
-  // utils/logger.js
+  // src/utils/logger.js
   var PREFIX = "[PopupViewer]";
   function configDebug() {
     try {
@@ -127,7 +126,7 @@
     }
   };
 
-  // utils/debounce.js
+  // src/utils/debounce.js
   function debounce(fn, wait = 300, { leading = false } = {}) {
     let timer = null;
     let lastInvoke = 0;
@@ -147,7 +146,7 @@
     return wrapper;
   }
 
-  // core/EventBus.js
+  // src/core/EventBus.js
   var EventBus = class {
     constructor() {
       this._handlers = /* @__PURE__ */ new Map();
@@ -185,7 +184,7 @@
   };
   var eventBus = new EventBus();
 
-  // security/UrlResolver.js
+  // src/security/UrlResolver.js
   var UrlResolver = class {
     constructor(base = window.location.href) {
       this.base = base;
@@ -234,7 +233,7 @@
   };
   var urlResolver = new UrlResolver();
 
-  // utils/gm.js
+  // src/utils/gm.js
   var has = (fn) => typeof fn === "function";
   function injectStyle(css) {
     const style = document.createElement("style");
@@ -303,7 +302,7 @@
     }
   };
 
-  // core/RulesManager.js
+  // src/core/RulesManager.js
   var KEY = "pv2:rules";
   var RulesManager = class {
     constructor() {
@@ -407,7 +406,7 @@
   };
   var rulesManager = new RulesManager();
 
-  // core/SiteManager.js
+  // src/core/SiteManager.js
   var SiteManager = class {
     constructor() {
       this.adapters = [];
@@ -495,7 +494,7 @@
   };
   var siteManager = new SiteManager();
 
-  // security/Sandbox.js
+  // src/security/Sandbox.js
   var Sandbox = class {
     constructor(policy = {}) {
       this.policy = policy;
@@ -542,7 +541,7 @@
     return new Sandbox(policy);
   }
 
-  // utils/dom.js
+  // src/utils/dom.js
   var ICON_PATHS = {
     article: {
       path: '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line>'
@@ -623,7 +622,7 @@
     return node;
   }
 
-  // loaders/IframeLoader.js
+  // src/loaders/IframeLoader.js
   var IframeLoader = class {
     constructor(sandbox) {
       this.sandbox = sandbox;
@@ -667,7 +666,7 @@
     }
   };
 
-  // security/Sanitizer.js
+  // src/security/Sanitizer.js
   var Sanitizer = class {
     constructor() {
       this.removedTags = /* @__PURE__ */ new Set([
@@ -794,12 +793,12 @@
   };
   var sanitizer = new Sanitizer();
 
-  // core/SettingsManager.js
+  // src/core/SettingsManager.js
   var KEY2 = "pv2:settings";
   var SITE_KEY = "pv2:siteSettings";
-  var GLOBAL_KEYS = ["theme"];
+  var GLOBAL_KEYS = ["theme", "allowInFrame"];
   function defaultGlobal() {
-    return { theme: "auto" };
+    return { theme: "auto", allowInFrame: false };
   }
   function defaultSite() {
     return {
@@ -876,7 +875,7 @@
   };
   var settingsManager = new SettingsManager();
 
-  // loaders/IframeRenderer.js
+  // src/loaders/IframeRenderer.js
   function renderIntoIframe({ html, url, container, sandboxAttrs, head = "" }) {
     container.querySelector("#popup-panel-loading")?.remove();
     container.classList.add("iframe-direct-load");
@@ -931,7 +930,7 @@
     iframeDoc.head.insertBefore(style, iframeDoc.head.firstChild);
   }
 
-  // loaders/RequestLoader.js
+  // src/loaders/RequestLoader.js
   var RequestLoader = class {
     constructor() {
       this.sandboxAttrs = "allow-forms allow-modals allow-pointer-lock allow-popups allow-popups-to-escape-sandbox allow-presentation allow-same-origin allow-scripts";
@@ -979,7 +978,7 @@
     }
   };
 
-  // loaders/ParserLoader.js
+  // src/loaders/ParserLoader.js
   var ParserLoader = class {
     load({ url, hostname, keepScripts, container, onError, onLoad, mobileUA = null }) {
       logger.debug(`[ParserLoader] fetch & parse ${url}`);
@@ -1046,7 +1045,7 @@
     }
   };
 
-  // loaders/CacheLoader.js
+  // src/loaders/CacheLoader.js
   var CacheLoader = class {
     constructor(sandboxAttrs) {
       this.sandboxAttrs = sandboxAttrs || "allow-forms allow-modals allow-pointer-lock allow-popups allow-popups-to-escape-sandbox allow-presentation allow-same-origin allow-scripts";
@@ -1162,7 +1161,7 @@
     }
   };
 
-  // core/LoaderManager.js
+  // src/core/LoaderManager.js
   var LoaderManager = class {
     constructor() {
       this.sandbox = createDefaultSandbox(config.sitePolicy);
@@ -1252,7 +1251,7 @@
   };
   var loaderManager = new LoaderManager();
 
-  // ui/Toolbar.js
+  // src/ui/Toolbar.js
   function createToolbar(handlers) {
     const actions = el("div", { id: "popup-panel-actions" });
     const makeBtn = (id, icon, title, onClick) => {
@@ -1269,7 +1268,7 @@
     return { actions, refresh, maximize, open, settings, close };
   }
 
-  // ui/SettingsPanel.js
+  // src/ui/SettingsPanel.js
   function createSettingsPanel({ onChange, onManageRules }) {
     const SIZE_ORDER = ["small", "medium", "large", "phone"];
     const SIZE_LABELS = { small: "小", medium: "中", large: "大", phone: "手机" };
@@ -1408,11 +1407,19 @@
       persist();
     });
     const linkInterceptSwitchWrap = el("label", { class: "pv-switch" }, linkInterceptSwitch, el("span", { class: "pv-switch-track" }));
+    const allowInFrameSwitch = el("input", { type: "checkbox", id: "pv-settings-iframe" });
+    allowInFrameSwitch.checked = settingsManager.get().allowInFrame === true;
+    allowInFrameSwitch.addEventListener("change", () => {
+      settingsManager.set({ allowInFrame: allowInFrameSwitch.checked });
+      persist();
+    });
+    const allowInFrameWrap = el("label", { class: "pv-switch" }, allowInFrameSwitch, el("span", { class: "pv-switch-track" }));
     const resetBtn = el("button", { type: "button", class: "pv-settings-reset", text: "恢复默认" });
     resetBtn.addEventListener("click", () => {
       settingsManager.reset();
       scrollSwitch.checked = settingsManager.get().scrollbarVisible !== false;
       linkInterceptSwitch.checked = settingsManager.get().linkIntercept !== false;
+      allowInFrameSwitch.checked = settingsManager.get().allowInFrame === true;
       sizeSeg.sync();
       themeSeg.sync();
       windowModeSeg.sync();
@@ -1463,11 +1470,13 @@
       rowBlock("链接规则", "拦截本站指定链接并在弹窗打开", manageRulesBtn, "规则按当前站点生效；点「取选」直接在页面上点一下链接即可生成，无需写选择器"),
       group("外观"),
       colBlock("外观主题", "跟随系统或手动指定", themeSeg.group),
+      group("高级"),
+      rowBlock("在 iframe 中运行", "默认关闭（等同 @noframes）", allowInFrameWrap, "风险：开启后脚本会在页面内所有 iframe 中运行（含广告、嵌入内容等），可能增加页面开销、出现多个悬浮按钮，或与嵌入页面产生样式冲突；仅在确有需要时开启"),
       el("div", { class: "pv-settings-footer" }, resetBtn)
     );
   }
 
-  // utils/selector.js
+  // src/utils/selector.js
   function cssEscapeIdent(s) {
     const t = String(s || "");
     try {
@@ -1586,7 +1595,7 @@
     return list.slice(0, 8);
   }
 
-  // ui/ElementPicker.js
+  // src/ui/ElementPicker.js
   function pickElement() {
     return new Promise((resolve) => {
       let done = false;
@@ -1799,7 +1808,7 @@
     });
   }
 
-  // ui/RulesPanel.js
+  // src/ui/RulesPanel.js
   function createRulesPanel() {
     const hostname = () => window.location.hostname;
     let picking = false;
@@ -1922,7 +1931,7 @@
     return { root, backdrop, open, close };
   }
 
-  // ui/style.css
+  // src/ui/style.css
   var style_default = `/* ===== 站点样式隔离：抵御宿主网站全局 CSS 对脚本 UI 的干扰 ===== */
 /* 用 @layer 将重置放入低优先级层，我们自己的样式(非 layer)始终覆盖它。
    只作用于脚本 UI 的"外壳"(头部/工具栏/底部/设置/悬浮按钮)，
@@ -3159,7 +3168,7 @@ a.xst::after {
 }
 `;
 
-  // ui/PopupPanel.js
+  // src/ui/PopupPanel.js
   var PopupPanel = class {
     constructor() {
       gm.addStyle(style_default);
@@ -3518,7 +3527,7 @@ a.xst::after {
     }
   };
 
-  // ui/Loading.js
+  // src/ui/Loading.js
   function showLoading(container, { title = "正在加载内容..." } = {}) {
     container.classList.remove("iframe-direct-load");
     const view = el(
@@ -3532,7 +3541,7 @@ a.xst::after {
     return view;
   }
 
-  // ui/ErrorView.js
+  // src/ui/ErrorView.js
   function showError(container, message, url) {
     container.classList.remove("iframe-direct-load");
     const openBtn = el("button", { text: "在新标签页打开" });
@@ -3555,7 +3564,7 @@ a.xst::after {
     container.replaceChildren(view);
   }
 
-  // core/PopupManager.js
+  // src/core/PopupManager.js
   var PopupManager = class {
     constructor() {
       this.popup = new PopupPanel();
@@ -3626,7 +3635,7 @@ a.xst::after {
   };
   var popupManager = new PopupManager();
 
-  // core/StorageManager.js
+  // src/core/StorageManager.js
   var StorageManager = class {
     constructor() {
       this.historyKey = config.storage.historyKey;
@@ -3684,7 +3693,7 @@ a.xst::after {
   };
   var storageManager = new StorageManager();
 
-  // core/PrefetchManager.js
+  // src/core/PrefetchManager.js
   var PrefetchManager = class {
     constructor(loaderManager2) {
       this.loader = loaderManager2;
@@ -3734,7 +3743,7 @@ a.xst::after {
     }
   };
 
-  // adapters/BaseAdapter.js
+  // src/adapters/BaseAdapter.js
   var BaseAdapter = class {
     constructor() {
       this.name = "Base";
@@ -3766,7 +3775,7 @@ a.xst::after {
     }
   };
 
-  // adapters/DiscuzAdapter.js
+  // src/adapters/DiscuzAdapter.js
   var DiscuzAdapter = class extends BaseAdapter {
     constructor(hostnamePatterns = ["chiphell", "wnflb", "52pojie"]) {
       super();
@@ -3811,7 +3820,7 @@ a.xst::after {
     }
   };
 
-  // adapters/TgbAdapter.js
+  // src/adapters/TgbAdapter.js
   var TgbAdapter = class extends BaseAdapter {
     constructor() {
       super();
@@ -3953,7 +3962,7 @@ a.xst::after {
     }
   };
 
-  // adapters/LinuxAdapter.js
+  // src/adapters/LinuxAdapter.js
   var LinuxAdapter = class extends BaseAdapter {
     constructor() {
       super();
@@ -3973,7 +3982,7 @@ a.xst::after {
     }
   };
 
-  // adapters/CiliAdapter.js
+  // src/adapters/CiliAdapter.js
   var CiliAdapter = class extends BaseAdapter {
     constructor() {
       super();
@@ -4005,7 +4014,7 @@ a.xst::after {
     }
   };
 
-  // main.js
+  // src/main.js
   var prefetch = new PrefetchManager(loaderManager);
   function registerAdapters() {
     siteManager.register(new DiscuzAdapter());
@@ -4073,8 +4082,18 @@ a.xst::after {
     observer = new MutationObserver(debouncedRunEnhancements);
     observer.observe(document.body, { childList: true, subtree: true });
   }
+  function isInIframe() {
+    try {
+      return window.top !== window.self;
+    } catch {
+      return true;
+    }
+  }
   function init() {
     settingsManager.load();
+    if (isInIframe() && !settingsManager.get().allowInFrame) {
+      return;
+    }
     popupManager.popup.applyTheme(settingsManager.get().theme);
     popupManager.popup.ensure();
     registerAdapters();

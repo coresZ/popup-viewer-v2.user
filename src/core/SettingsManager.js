@@ -4,12 +4,12 @@ import { gm } from '../utils/gm.js';
 const KEY = 'pv2:settings';
 const SITE_KEY = 'pv2:siteSettings';
 // 全局设置：跨站点共享
-const GLOBAL_KEYS = ['theme'];
+const GLOBAL_KEYS = ['theme', 'allowInFrame'];
 // 站点设置：按 hostname 分别记录，刷新不失效
 const SITE_KEYS = ['scrollbarVisible', 'panelSize', 'windowMode', 'linkIntercept', 'phoneModel', 'phonePosition'];
 
 function defaultGlobal() {
-  return { theme: 'auto' };
+  return { theme: 'auto', allowInFrame: false };
 }
 function defaultSite() {
   return {
