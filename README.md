@@ -73,6 +73,20 @@ npm run dev        # 监听模式构建
 
 技术栈：原生 JavaScript（无运行时依赖）· esbuild 打包 · Tampermonkey GM API（`GM_xmlhttpRequest` / `GM_addStyle` / `GM_getValue` / `GM_setValue`，无 GM 时回退 `fetch`/`localStorage`）。
 
+## Git 管理工具
+
+内置 `tools/git-tools.mjs`，一键完成构建、提交、推送（自动使用项目内 SSH 密钥 `id_ed25519_coresz`）：
+
+```bash
+npm run g -- status                            # 工作区状态 + 最近提交
+npm run g -- commit "提交信息"                   # 构建 + 暂存 + 提交
+npm run g -- push                              # 推送
+npm run g -- publish "提交信息"                  # 构建 + 提交 + 推送（一步到位）
+npm run g -- setup git@github.com:user/repo.git # 配置远程并切 main
+```
+
+说明：`commit`/`publish` 会先执行 `npm run build`，保证 `dist/` 与 `src/` 一致；加 `--no-build` 可跳过。提交信息未传时会在终端交互提示输入。
+
 ## 配置说明（`src/config.js`）
 
 - `popup`：窗体尺寸预设、默认大小、圆角、z-index
