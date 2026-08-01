@@ -84,7 +84,13 @@ export class CacheLoader {
     const cached = this._readCache(url);
     if (cached != null) {
       logger.debug(`[CacheLoader] cache hit: ${url}`);
-      renderIntoIframe({ html: cached.body, head: cached.head, url, container, sandboxAttrs: this.sandboxAttrs });
+      renderIntoIframe({
+        html: cached.body,
+        head: cached.head,
+        url,
+        container,
+        sandboxAttrs: this.sandboxAttrs
+      });
       onLoad?.();
       return () => {
         container.querySelector('#popup-panel-iframe')?.remove();
@@ -93,7 +99,13 @@ export class CacheLoader {
     const { promise, abort } = this.prefetch(url, keepScripts);
     promise
       .then((result) => {
-        renderIntoIframe({ html: result.body, head: result.head, url, container, sandboxAttrs: this.sandboxAttrs });
+        renderIntoIframe({
+          html: result.body,
+          head: result.head,
+          url,
+          container,
+          sandboxAttrs: this.sandboxAttrs
+        });
         onLoad?.();
       })
       .catch((error) => onError?.(error.message));

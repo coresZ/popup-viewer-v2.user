@@ -963,7 +963,13 @@
       const cached = this._readCache(url);
       if (cached != null) {
         logger.debug(`[CacheLoader] cache hit: ${url}`);
-        renderIntoIframe({ html: cached.body, head: cached.head, url, container, sandboxAttrs: this.sandboxAttrs });
+        renderIntoIframe({
+          html: cached.body,
+          head: cached.head,
+          url,
+          container,
+          sandboxAttrs: this.sandboxAttrs
+        });
         onLoad?.();
         return () => {
           container.querySelector("#popup-panel-iframe")?.remove();
@@ -971,7 +977,13 @@
       }
       const { promise, abort } = this.prefetch(url, keepScripts);
       promise.then((result) => {
-        renderIntoIframe({ html: result.body, head: result.head, url, container, sandboxAttrs: this.sandboxAttrs });
+        renderIntoIframe({
+          html: result.body,
+          head: result.head,
+          url,
+          container,
+          sandboxAttrs: this.sandboxAttrs
+        });
         onLoad?.();
       }).catch((error) => onError?.(error.message));
       return () => {
@@ -1196,7 +1208,49 @@
   }
 
   // ui/style.css
-  var style_default = `:root {
+  var style_default = `/* ===== 站点样式隔离：抵御宿主网站全局 CSS 对脚本 UI 的干扰 ===== */
+/* 用 @layer 将重置放入低优先级层，我们自己的样式(非 layer)始终覆盖它。
+   只作用于脚本 UI 的"外壳"(头部/工具栏/底部/设置/悬浮按钮)，
+   不碰 #popup-content-area，避免影响弹窗内打开的网站内容。
+   注意：@layer 无法完全挡住宿主页面同源无层级规则，因此对固定尺寸容器
+   额外补了无层级的 box-sizing 兜底。 */
+@layer pv-reset {
+  #popup-content-panel,
+  #popup-panel-header,
+  #popup-panel-header *,
+  #popup-panel-footer,
+  #popup-panel-footer *,
+  #popup-settings-popover,
+  #popup-settings-popover *,
+  #pv-float-settings {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+    border: 0;
+    outline: 0;
+    background: transparent;
+    vertical-align: baseline;
+    text-decoration: none;
+    text-shadow: none;
+    font-family: inherit;
+    font-size: inherit;
+    font-weight: inherit;
+    font-style: inherit;
+    line-height: inherit;
+    letter-spacing: inherit;
+    color: inherit;
+    text-align: left;
+  }
+}
+
+/* 固定尺寸容器：无层级兜底，确保盒模型不被宿主页面 *{box-sizing} 破坏 */
+#popup-content-panel,
+#popup-settings-popover,
+#pv-float-settings {
+  box-sizing: border-box;
+}
+
+:root {
   --popup-width: 50%;
   --popup-height: 75%;
   --popup-max-width: 2560px;
@@ -1496,6 +1550,8 @@ th.common a.xst:hover {
   overflow-y: auto;
   background-color: var(--popup-surface);
   color: var(--popup-text);
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
+    'Microsoft YaHei', Roboto, 'Helvetica Neue', Arial, sans-serif;
   border: 1px solid var(--popup-border);
   border-radius: 12px;
   box-shadow: var(--popup-shadow);
