@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name          页内弹窗打开新帖
-// @namespace     https://greasyfork.org/zh-CN/users/1186846-cores
+// @namespace     http://tampermonkey.net/
 // @version       2.0.0
 // @description   点击论坛帖子链接，在弹窗中加载内容 (插件化架构 V2)
 // @author        cores
