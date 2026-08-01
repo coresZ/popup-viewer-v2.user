@@ -4,16 +4,8 @@
 // @version       2.0.0
 // @description   点击论坛帖子链接，在弹窗中加载内容 (插件化架构 V2)
 // @author        cores
-// @match         https://www.tgb.cn/user/blog/*
-// @match         https://www.tgb.cn/blog/*
-// @match         https://www.tgb.cn/*
-// @match         https://www.chiphell.com/*
-// @match         https://shuo.tgb.cn/livenews/*
-// @match         https://www.wnflb2023.com/forum*
-// @match         https://www.52pojie.cn/forum.php?*
-// @match         *://1cili.com/*
-// @match         https://linux.do/*
-// @match         *://s.9cili.mom/*
+// @match         *://*/*
+// @noframes
 // @grant         GM_xmlhttpRequest
 // @grant         GM_addStyle
 // @grant         GM_getValue

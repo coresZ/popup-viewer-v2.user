@@ -3,7 +3,7 @@ import { config } from '../config.js';
 import { settingsManager } from '../core/SettingsManager.js';
 import { eventBus } from '../core/EventBus.js';
 
-export function createSettingsPanel({ onChange }) {
+export function createSettingsPanel({ onChange, onManageRules }) {
   const SIZE_ORDER = ['small', 'medium', 'large', 'phone'];
   const SIZE_LABELS = { small: '小', medium: '中', large: '大', phone: '手机' };
   const THEME_ORDER = ['auto', 'light', 'dark'];
@@ -164,6 +164,7 @@ export function createSettingsPanel({ onChange }) {
     syncPhoneModels();
     persist();
   });
+  const manageRulesBtn = el('button', { type: 'button', class: 'pv-settings-reset', text: '管理', onclick: () => onManageRules?.() });
 
   // ---- 布局 ----
   const group = (title) => el('div', { class: 'pv-settings-group' }, el('div', { class: 'pv-settings-group-title', text: title }));
@@ -211,6 +212,7 @@ export function createSettingsPanel({ onChange }) {
     sizeBlock,
     group('交互控制'),
     rowBlock('页面链接拦截', '开启后页面链接在弹窗内打开', linkInterceptSwitchWrap, '开启：页面链接点击在弹窗内打开；关闭：页面链接原页面打开，窗体内容里的链接在窗体内部打开（禁止新标签页），窗体自动切换为独立悬浮'),
+    rowBlock('链接规则', '拦截本站指定链接并在弹窗打开', manageRulesBtn, '规则按当前站点生效；点「取选」直接在页面上点一下链接即可生成，无需写选择器'),
     group('外观'),
     colBlock('外观主题', '跟随系统或手动指定', themeSeg.group),
     el('div', { class: 'pv-settings-footer' }, resetBtn)

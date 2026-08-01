@@ -1,6 +1,7 @@
 import { logger } from '../utils/logger.js';
 import { urlResolver } from '../security/UrlResolver.js';
 import { eventBus } from './EventBus.js';
+import { rulesManager } from './RulesManager.js';
 
 export class SiteManager {
   constructor() {
@@ -27,6 +28,14 @@ export class SiteManager {
     if (event.target.closest?.('#popup-content-panel')) return null;
     const hostname = window.location.hostname;
     const pathname = window.location.pathname;
+    // 用户规则优先于内置 adapter
+    const ruleHit = rulesManager.match(event, hostname);
+    if (ruleHit) {
+      const { url, title, element } = ruleHit;
+      if (url && urlResolver.isHttpUrl(url) && !urlResolver.isDangerous(url) && !urlResolver.isSamePageAnchor(url)) {
+        return { url, title: title || '查看内容', element };
+      }
+    }
     for (const adapter of this.activeAdapters(hostname, pathname)) {
       let parsed;
       try {

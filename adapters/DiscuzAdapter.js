@@ -4,6 +4,7 @@ export class DiscuzAdapter extends BaseAdapter {
   constructor(hostnamePatterns = ['chiphell', 'wnflb', '52pojie']) {
     super();
     this.name = 'Discuz';
+    this.forumStyles = true;
     this.patterns = hostnamePatterns;
   }
   match(hostname) {

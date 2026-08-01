@@ -4,6 +4,7 @@ import { el, svgIcon } from '../utils/dom.js';
 import { settingsManager } from '../core/SettingsManager.js';
 import { createToolbar } from './Toolbar.js';
 import { createSettingsPanel } from './SettingsPanel.js';
+import { createRulesPanel } from './RulesPanel.js';
 import style from './style.css';
 
 export class PopupPanel {
@@ -71,8 +72,14 @@ export class PopupPanel {
       this.showSettingsNear(this.floatBtn.getBoundingClientRect());
     });
     document.body.appendChild(this.floatBtn);
-    this.settingsPopover = createSettingsPanel({ onChange: (s) => this.applySettings(s) });
+    this.settingsPopover = createSettingsPanel({
+      onChange: (s) => this.applySettings(s),
+      onManageRules: () => this.showRulesPanel()
+    });
     document.body.appendChild(this.settingsPopover);
+    this.rulesPanel = createRulesPanel();
+    document.body.appendChild(this.rulesPanel.backdrop);
+    document.body.appendChild(this.rulesPanel.root);
     document.addEventListener('click', (e) => {
       if (!this.settingsPopover?.classList.contains('visible')) return;
       if (
@@ -253,6 +260,10 @@ export class PopupPanel {
   hideSettings() {
     this.settingsPopover?.classList.remove('visible');
     this.settingsBtn?.classList.remove('active');
+  }
+  showRulesPanel() {
+    this.hideSettings();
+    this.rulesPanel?.open();
   }
   getContentArea() {
     this.ensure();

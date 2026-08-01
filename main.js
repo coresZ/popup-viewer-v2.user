@@ -22,6 +22,15 @@ function registerAdapters() {
   siteManager.register(new CiliAdapter());
 }
 
+// Discuz 类论坛需要「基础链接样式优化」，加标记类避免通用选择器污染其它站点
+function applyForumMarker() {
+  const hostname = window.location.hostname;
+  const pathname = window.location.pathname;
+  if (siteManager.activeAdapters(hostname, pathname).some((a) => a.forumStyles)) {
+    document.documentElement.classList.add('pv-forum');
+  }
+}
+
 function setupEvents() {
   document.addEventListener(
     'click',
@@ -82,7 +91,10 @@ function startObserver() {
 function init() {
   settingsManager.load();
   popupManager.popup.applyTheme(settingsManager.get().theme);
+  // 立即构建 UI（含右下角设置按钮/规则面板），未匹配内置适配器的网站也能访问设置与规则
+  popupManager.popup.ensure();
   registerAdapters();
+  applyForumMarker();
   setupEvents();
   setupObserver();
   logger.log('Popup Viewer V2 已启用');

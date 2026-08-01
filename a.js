@@ -4,16 +4,8 @@
 // @version       2.0.0
 // @description   点击论坛帖子链接，在弹窗中加载内容 (插件化架构 V2)
 // @author        cores
-// @match         https://www.tgb.cn/user/blog/*
-// @match         https://www.tgb.cn/blog/*
-// @match         https://www.tgb.cn/*
-// @match         https://www.chiphell.com/*
-// @match         https://shuo.tgb.cn/livenews/*
-// @match         https://www.wnflb2023.com/forum*
-// @match         https://www.52pojie.cn/forum.php?*
-// @match         *://1cili.com/*
-// @match         https://linux.do/*
-// @match         *://s.9cili.mom/*
+// @match         *://*/*
+// @noframes
 // @grant         GM_xmlhttpRequest
 // @grant         GM_addStyle
 // @grant         GM_getValue
@@ -242,6 +234,179 @@
   };
   var urlResolver = new UrlResolver();
 
+  // utils/gm.js
+  var has = (fn) => typeof fn === "function";
+  function injectStyle(css) {
+    const style = document.createElement("style");
+    style.type = "text/css";
+    style.textContent = css;
+    (document.head || document.documentElement).appendChild(style);
+    return style;
+  }
+  function localGet(key, fallback) {
+    try {
+      const raw = localStorage.getItem("popup-viewer:" + key);
+      return raw === null ? fallback : JSON.parse(raw);
+    } catch {
+      return fallback;
+    }
+  }
+  function localSet(key, value) {
+    try {
+      localStorage.setItem("popup-viewer:" + key, JSON.stringify(value));
+    } catch {
+    }
+  }
+  var gm = {
+    addStyle(css) {
+      if (has(GM_addStyle)) {
+        try {
+          return GM_addStyle(css);
+        } catch {
+        }
+      }
+      return injectStyle(css);
+    },
+    xmlhttpRequest(options) {
+      if (has(GM_xmlhttpRequest)) {
+        return GM_xmlhttpRequest({
+          timeout: options.timeout || 15e3,
+          ...options
+        });
+      }
+      return fetch(options.url, { method: options.method || "GET" }).then(
+        async (res) => options.onload?.({
+          status: res.status,
+          statusText: res.statusText,
+          responseText: await res.text(),
+          finalUrl: res.url
+        })
+      ).catch((err) => options.onerror?.(err));
+    },
+    getValue(key, fallback) {
+      if (has(GM_getValue)) {
+        try {
+          return GM_getValue(key, fallback);
+        } catch {
+        }
+      }
+      return localGet(key, fallback);
+    },
+    setValue(key, value) {
+      if (has(GM_setValue)) {
+        try {
+          return GM_setValue(key, value);
+        } catch {
+        }
+      }
+      return localSet(key, value);
+    }
+  };
+
+  // core/RulesManager.js
+  var KEY = "pv2:rules";
+  var RulesManager = class {
+    constructor() {
+      this.rules = {};
+      this._loaded = false;
+    }
+    load() {
+      if (this._loaded) return this.rules;
+      this._loaded = true;
+      const raw = gm.getValue(KEY, {});
+      if (raw && typeof raw === "object") {
+        this.rules = {};
+        for (const [host, list] of Object.entries(raw)) {
+          if (Array.isArray(list)) {
+            this.rules[host] = list.filter((r) => r && typeof r.selector === "string" && r.selector.trim()).map((r) => ({ selector: r.selector.trim() }));
+          }
+        }
+      }
+      return this.rules;
+    }
+    getRules(hostname) {
+      return this.load()[hostname] || [];
+    }
+    addRule(hostname, selector) {
+      const rules = this.getRules(hostname);
+      if (!rules.some((r) => r.selector === selector)) {
+        rules.push({ selector });
+        this.load()[hostname] = rules;
+        this._persist();
+      }
+      return rules;
+    }
+    removeRule(hostname, index) {
+      const rules = this.getRules(hostname);
+      rules.splice(index, 1);
+      this.load()[hostname] = rules;
+      this._persist();
+      return rules;
+    }
+    _persist() {
+      gm.setValue(KEY, this.rules);
+    }
+    /**
+     * 命中当前站点用户规则的链接。
+     * @returns {{url:string,title:string,element:Element}|null}
+     */
+    match(event, hostname) {
+      const rules = this.getRules(hostname);
+      if (!rules.length) return null;
+      for (const rule of rules) {
+        let el2 = null;
+        try {
+          el2 = event.target.closest ? event.target.closest(rule.selector) : null;
+        } catch {
+          el2 = null;
+        }
+        if (!el2) continue;
+        const link = this._extractLink(el2);
+        if (link) return link;
+      }
+      return null;
+    }
+    _extractLink(el2) {
+      const get = (a) => el2.getAttribute ? el2.getAttribute(a) : null;
+      if (el2.tagName === "A") {
+        const href = get("href");
+        const url = this._resolve(href);
+        if (url) return { url, title: el2.title || (el2.textContent || "").trim() || "查看内容", element: el2 };
+      }
+      const dataUrl = get("data-topic-url") || get("data-href");
+      if (dataUrl) {
+        const url = this._resolve(dataUrl);
+        if (url) {
+          return {
+            url,
+            title: el2.title || (el2.textContent || "").trim().slice(0, 60) || "查看内容",
+            element: el2
+          };
+        }
+      }
+      const inner = el2.querySelector ? el2.querySelector("a[href]") : null;
+      if (inner) {
+        const url = this._resolve(inner.getAttribute("href"));
+        if (url) return { url, title: inner.title || (inner.textContent || "").trim() || "查看内容", element: inner };
+      }
+      const outer = el2.closest ? el2.closest("a[href]") : null;
+      if (outer) {
+        const url = this._resolve(outer.getAttribute("href"));
+        if (url) return { url, title: outer.title || (outer.textContent || "").trim() || "查看内容", element: outer };
+      }
+      return null;
+    }
+    _resolve(href) {
+      if (!href || typeof href !== "string") return null;
+      try {
+        return new URL(href, window.location.href).href;
+      } catch {
+        return null;
+      }
+    }
+  };
+  var rulesManager = new RulesManager();
+
   // core/SiteManager.js
   var SiteManager = class {
     constructor() {
@@ -268,6 +433,13 @@
       if (event.target.closest?.("#popup-content-panel")) return null;
       const hostname = window.location.hostname;
       const pathname = window.location.pathname;
+      const ruleHit = rulesManager.match(event, hostname);
+      if (ruleHit) {
+        const { url, title, element } = ruleHit;
+        if (url && urlResolver.isHttpUrl(url) && !urlResolver.isDangerous(url) && !urlResolver.isSamePageAnchor(url)) {
+          return { url, title: title || "查看内容", element };
+        }
+      }
       for (const adapter of this.activeAdapters(hostname, pathname)) {
         let parsed;
         try {
@@ -376,6 +548,7 @@
       path: '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line>'
     },
     close: { path: '<line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line>' },
+    plus: { path: '<line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line>' },
     info: {
       path: '<circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="12"></line><line x1="12" y1="8" x2="12.01" y2="8"></line>'
     },
@@ -491,75 +664,6 @@
         iframe.src = "about:blank";
         iframe.remove();
       };
-    }
-  };
-
-  // utils/gm.js
-  var has = (fn) => typeof fn === "function";
-  function injectStyle(css) {
-    const style = document.createElement("style");
-    style.type = "text/css";
-    style.textContent = css;
-    (document.head || document.documentElement).appendChild(style);
-    return style;
-  }
-  function localGet(key, fallback) {
-    try {
-      const raw = localStorage.getItem("popup-viewer:" + key);
-      return raw === null ? fallback : JSON.parse(raw);
-    } catch {
-      return fallback;
-    }
-  }
-  function localSet(key, value) {
-    try {
-      localStorage.setItem("popup-viewer:" + key, JSON.stringify(value));
-    } catch {
-    }
-  }
-  var gm = {
-    addStyle(css) {
-      if (has(GM_addStyle)) {
-        try {
-          return GM_addStyle(css);
-        } catch {
-        }
-      }
-      return injectStyle(css);
-    },
-    xmlhttpRequest(options) {
-      if (has(GM_xmlhttpRequest)) {
-        return GM_xmlhttpRequest({
-          timeout: options.timeout || 15e3,
-          ...options
-        });
-      }
-      return fetch(options.url, { method: options.method || "GET" }).then(
-        async (res) => options.onload?.({
-          status: res.status,
-          statusText: res.statusText,
-          responseText: await res.text(),
-          finalUrl: res.url
-        })
-      ).catch((err) => options.onerror?.(err));
-    },
-    getValue(key, fallback) {
-      if (has(GM_getValue)) {
-        try {
-          return GM_getValue(key, fallback);
-        } catch {
-        }
-      }
-      return localGet(key, fallback);
-    },
-    setValue(key, value) {
-      if (has(GM_setValue)) {
-        try {
-          return GM_setValue(key, value);
-        } catch {
-        }
-      }
-      return localSet(key, value);
     }
   };
 
@@ -691,7 +795,7 @@
   var sanitizer = new Sanitizer();
 
   // core/SettingsManager.js
-  var KEY = "pv2:settings";
+  var KEY2 = "pv2:settings";
   var SITE_KEY = "pv2:siteSettings";
   var GLOBAL_KEYS = ["theme"];
   function defaultGlobal() {
@@ -725,7 +829,7 @@
       if (this._loaded) return this.get();
       this._loaded = true;
       this.siteKey = currentSiteKey();
-      const g = gm.getValue(KEY, null);
+      const g = gm.getValue(KEY2, null);
       if (g && typeof g === "object") this.global = { ...defaultGlobal(), ...g };
       const all = gm.getValue(SITE_KEY, null);
       if (all && typeof all === "object" && all[this.siteKey]) {
@@ -764,7 +868,7 @@
       if (this.site.linkIntercept === false) this.site.windowMode = "float";
     }
     _persist() {
-      gm.setValue(KEY, this.global);
+      gm.setValue(KEY2, this.global);
       const all = gm.getValue(SITE_KEY, null) || {};
       all[this.siteKey] = this.site;
       gm.setValue(SITE_KEY, all);
@@ -1166,7 +1270,7 @@
   }
 
   // ui/SettingsPanel.js
-  function createSettingsPanel({ onChange }) {
+  function createSettingsPanel({ onChange, onManageRules }) {
     const SIZE_ORDER = ["small", "medium", "large", "phone"];
     const SIZE_LABELS = { small: "小", medium: "中", large: "大", phone: "手机" };
     const THEME_ORDER = ["auto", "light", "dark"];
@@ -1316,6 +1420,7 @@
       syncPhoneModels();
       persist();
     });
+    const manageRulesBtn = el("button", { type: "button", class: "pv-settings-reset", text: "管理", onclick: () => onManageRules?.() });
     const group = (title) => el("div", { class: "pv-settings-group" }, el("div", { class: "pv-settings-group-title", text: title }));
     const titleCol = (label, sub, tip) => el(
       "div",
@@ -1355,10 +1460,466 @@
       sizeBlock,
       group("交互控制"),
       rowBlock("页面链接拦截", "开启后页面链接在弹窗内打开", linkInterceptSwitchWrap, "开启：页面链接点击在弹窗内打开；关闭：页面链接原页面打开，窗体内容里的链接在窗体内部打开（禁止新标签页），窗体自动切换为独立悬浮"),
+      rowBlock("链接规则", "拦截本站指定链接并在弹窗打开", manageRulesBtn, "规则按当前站点生效；点「取选」直接在页面上点一下链接即可生成，无需写选择器"),
       group("外观"),
       colBlock("外观主题", "跟随系统或手动指定", themeSeg.group),
       el("div", { class: "pv-settings-footer" }, resetBtn)
     );
+  }
+
+  // utils/selector.js
+  function cssEscapeIdent(s) {
+    const t = String(s || "");
+    try {
+      if (typeof CSS !== "undefined" && CSS.escape) return CSS.escape(t);
+    } catch {
+    }
+    return t.replace(/([^a-zA-Z0-9_-])/g, "\\$1");
+  }
+  function isStableClassName(c) {
+    const s = String(c || "");
+    if (!s || s.length < 2 || s.length > 48) return false;
+    if (/^(pv-|popup)/i.test(s)) return false;
+    if (/^(is-|has-|js-|ng-|v-|css-|sc-|sx-|emotion|svelte-|cssmodule)/i.test(s)) return false;
+    if (/^(active|hover|focus|selected|current|open|show|hide|hidden|visible|disabled|checked|on|off)$/i.test(s)) return false;
+    if (/^[a-f0-9]{8,}$/i.test(s)) return false;
+    if (/\d{5,}/.test(s)) return false;
+    return /^[a-zA-Z_:-][\w:-]*$/.test(s);
+  }
+  function isStableId(id) {
+    const s = String(id || "");
+    if (!s || s.length > 64) return false;
+    if (/^(ember|react|vue|ng|app|pv-|popup)-/i.test(s)) return false;
+    if (/^[a-f0-9-]{12,}$/i.test(s)) return false;
+    if (/\d{6,}/.test(s)) return false;
+    return /^[a-zA-Z][\w:-]*$/.test(s);
+  }
+  function countMatches(sel) {
+    try {
+      return document.body ? document.body.querySelectorAll(sel).length : 0;
+    } catch {
+      return -1;
+    }
+  }
+  function buildSelectorCandidates(el2) {
+    const list = [];
+    const seen = /* @__PURE__ */ Object.create(null);
+    if (!el2 || el2.nodeType !== 1 || !el2.tagName) return list;
+    const tag = el2.tagName.toLowerCase();
+    const id = el2.id ? String(el2.id) : "";
+    const classes = Array.prototype.slice.call(el2.classList || []).filter(isStableClassName).slice(0, 4);
+    const push = (sel, note) => {
+      const s = String(sel || "").trim();
+      if (!s || seen[s]) return;
+      const n = countMatches(s);
+      if (n < 1) return;
+      seen[s] = 1;
+      list.push({ sel: s, count: n, note: note || "" });
+    };
+    if (id && isStableId(id)) push("#" + cssEscapeIdent(id), "id");
+    if (classes.length) {
+      push("." + classes.map(cssEscapeIdent).join("."), "class");
+      push(tag + "." + classes.map(cssEscapeIdent).join("."), "tag+class");
+      if (classes[0]) {
+        push("." + cssEscapeIdent(classes[0]), "主 class");
+        push(tag + "." + cssEscapeIdent(classes[0]), "tag+主 class");
+      }
+    } else if (tag && tag !== "div" && tag !== "span") {
+      push(tag, "标签");
+    }
+    let p = el2.parentElement;
+    let depth = 0;
+    while (p && p !== document.body && depth < 4) {
+      const pTag = p.tagName.toLowerCase();
+      const pClasses = Array.prototype.slice.call(p.classList || []).filter(isStableClassName).slice(0, 2);
+      if (pClasses.length) {
+        const pSel = pTag + "." + pClasses.map(cssEscapeIdent).join(".");
+        if (classes[0]) {
+          push(pSel + " " + tag + "." + cssEscapeIdent(classes[0]), "父级范围");
+          push(pSel + " ." + cssEscapeIdent(classes[0]), "父级+class");
+        }
+        push(pSel + " " + tag, "父级+标签");
+        if (depth === 0 && pClasses[0]) push("." + cssEscapeIdent(pClasses[0]), "父 class（整块）");
+      }
+      p = p.parentElement;
+      depth++;
+    }
+    try {
+      const parts = [];
+      let node = el2;
+      let guard = 0;
+      while (node && node.nodeType === 1 && node !== document.body && guard < 5) {
+        if (node.id && isStableId(node.id)) {
+          parts.unshift("#" + cssEscapeIdent(node.id));
+          break;
+        }
+        const t = node.tagName.toLowerCase();
+        const parent = node.parentElement;
+        if (!parent) break;
+        const kids = parent.children;
+        let idx = 1;
+        let same = 0;
+        for (let i = 0; i < kids.length; i++) {
+          if (kids[i].tagName === node.tagName) {
+            same++;
+            if (kids[i] === node) idx = same;
+          }
+        }
+        parts.unshift(same > 1 ? t + ":nth-of-type(" + idx + ")" : t);
+        node = parent;
+        guard++;
+      }
+      if (parts.length) push(parts.join(" > "), "路径");
+    } catch {
+    }
+    list.sort((a, b) => {
+      const score = (c) => {
+        if (c.count >= 2 && c.count <= 200) return 0;
+        if (c.count === 1) return 2;
+        if (c.count > 200 && c.count <= 800) return 1;
+        return 3;
+      };
+      const d = score(a) - score(b);
+      if (d) return d;
+      return a.sel.length - b.sel.length;
+    });
+    return list.slice(0, 8);
+  }
+
+  // ui/ElementPicker.js
+  function pickElement() {
+    return new Promise((resolve) => {
+      let done = false;
+      let phase = "hover";
+      let hoverEl = null;
+      let cands = [];
+      const overlay = el("div", { class: "pv-picker-overlay" });
+      const hint = el("div", { class: "pv-picker-bar", id: "pv-picker-hint" });
+      const highlight = el("div", { class: "pv-picker-highlight hidden" });
+      const cTitle = el("div", { class: "pv-picker-c-title", text: "确认选择器" });
+      const cCands = el("div", { class: "pv-picker-cands" });
+      const cInput = el("input", { type: "text", class: "pv-picker-input", placeholder: "可手动改写选择器" });
+      const cMeta = el("div", { class: "pv-picker-c-meta" });
+      const okBtn = el("button", { type: "button", class: "pv-picker-btn primary", text: "确认" });
+      const againBtn = el("button", { type: "button", class: "pv-picker-btn", text: "重新选" });
+      const cancelBtn = el("button", { type: "button", class: "pv-picker-btn", text: "取消" });
+      const cBtns = el("div", { class: "pv-picker-c-btns" }, againBtn, cancelBtn, okBtn);
+      const confirm = el("div", { class: "pv-picker-confirm hidden" }, cTitle, cCands, cInput, cMeta, cBtns);
+      document.body.appendChild(overlay);
+      document.body.appendChild(hint);
+      document.body.appendChild(confirm);
+      document.body.appendChild(highlight);
+      overlay.style.pointerEvents = "none";
+      hint.style.pointerEvents = "none";
+      confirm.style.pointerEvents = "auto";
+      function finish(sel) {
+        if (done) return;
+        done = true;
+        cleanup();
+        resolve(sel);
+      }
+      function cleanup() {
+        document.removeEventListener("mousemove", onMove, true);
+        document.removeEventListener("mouseover", onMove, true);
+        document.removeEventListener("click", onClick, true);
+        document.removeEventListener("touchend", onTouchEnd, true);
+        window.removeEventListener("scroll", onRepaint, true);
+        window.removeEventListener("resize", onRepaint, true);
+        document.removeEventListener("keydown", onKey);
+        overlay.remove();
+        hint.remove();
+        confirm.remove();
+        highlight.remove();
+      }
+      function isOwn(el2) {
+        return !!el2 && !!el2.closest && el2.closest(
+          '.pv-picker-overlay, .pv-picker-confirm, .pv-picker-bar, .pv-picker-highlight, [id^="popup-"], [id^="pv-"]'
+        );
+      }
+      function resolveTarget(raw) {
+        let el2 = raw;
+        if (!el2 || el2.nodeType !== 1) el2 = el2 && el2.parentElement;
+        if (!el2 || el2.nodeType !== 1) return null;
+        if (isOwn(el2)) return null;
+        if (el2.tagName === "SPAN" && el2.parentElement) {
+          const firstCls = String((el2.className || "").toString().split(/\s+/).filter(Boolean)[0] || "");
+          const p = el2.parentElement;
+          if ((!firstCls || !isStableClassName(firstCls)) && p && p !== document.body && p.tagName !== "BODY") {
+            el2 = p;
+          }
+        }
+        return el2;
+      }
+      function pickFromPoint(x, y) {
+        let els;
+        try {
+          els = document.elementsFromPoint(x, y);
+        } catch {
+          return null;
+        }
+        for (const el2 of els || []) {
+          if (isOwn(el2)) continue;
+          return resolveTarget(el2);
+        }
+        return null;
+      }
+      function paint(el2) {
+        const box = highlight;
+        if (!el2 || !el2.getBoundingClientRect) {
+          box.classList.add("hidden");
+          return;
+        }
+        const r = el2.getBoundingClientRect();
+        if (r.width < 1 && r.height < 1) {
+          box.classList.add("hidden");
+          return;
+        }
+        box.style.left = Math.max(0, r.left) + "px";
+        box.style.top = Math.max(0, r.top) + "px";
+        box.style.width = r.width + "px";
+        box.style.height = r.height + "px";
+        box.classList.remove("hidden");
+      }
+      function onRepaint() {
+        if (phase === "hover" && hoverEl) paint(hoverEl);
+      }
+      function onMove(e) {
+        if (phase !== "hover") return;
+        const el2 = pickFromPoint(e.clientX, e.clientY);
+        if (el2 === hoverEl) return;
+        hoverEl = el2;
+        paint(el2);
+        if (el2) {
+          const tag = el2.tagName.toLowerCase();
+          const cls = Array.prototype.slice.call(el2.classList || []).filter(isStableClassName).slice(0, 2).join(".");
+          hint.textContent = "取选：" + tag + (cls ? "." + cls : "") + (el2.id ? "#" + el2.id : "") + " · 单击选定 · Esc 取消";
+        } else {
+          hint.textContent = "取选：移动鼠标高亮，单击要拦截的链接 · Esc 取消";
+        }
+      }
+      function finishPick(el2) {
+        if (!el2) return;
+        cands = buildSelectorCandidates(el2);
+        if (!cands.length) return;
+        phase = "confirm";
+        highlight.classList.add("hidden");
+        hint.classList.add("hidden");
+        showConfirm();
+      }
+      function showConfirm() {
+        cCands.innerHTML = "";
+        cands.forEach((c, i) => {
+          const btn = el("button", { type: "button", class: "pv-picker-cand" + (i === 0 ? " is-on" : ""), title: c.note || "" });
+          btn.appendChild(el("code", { text: c.sel }));
+          btn.appendChild(el("em", { text: c.count + " 个" + (c.note ? " · " + c.note : "") }));
+          btn.addEventListener("click", () => {
+            cCands.querySelectorAll(".pv-picker-cand").forEach((b) => b.classList.remove("is-on"));
+            btn.classList.add("is-on");
+            cInput.value = c.sel;
+            updateMeta(c.sel);
+            try {
+              const hit = document.body.querySelector(c.sel);
+              if (hit) paint(hit);
+            } catch {
+            }
+          });
+          cCands.appendChild(btn);
+        });
+        cInput.value = cands[0].sel;
+        updateMeta(cands[0].sel);
+        confirm.classList.remove("hidden");
+        cInput.focus();
+        cInput.select();
+      }
+      function updateMeta(sel) {
+        let n = 0;
+        try {
+          n = document.body.querySelectorAll(sel).length;
+        } catch {
+        }
+        cMeta.textContent = "本页匹配 " + n + " 个元素";
+      }
+      function onClick(e) {
+        if (e.target.closest(".pv-picker-confirm") || e.target.closest(".pv-picker-bar")) return;
+        e.preventDefault();
+        e.stopPropagation();
+        if (typeof e.stopImmediatePropagation === "function") e.stopImmediatePropagation();
+        if (phase !== "hover") return;
+        if (e.button != null && e.button !== 0) return;
+        const el2 = pickFromPoint(e.clientX, e.clientY) || hoverEl;
+        finishPick(el2);
+      }
+      function onTouchEnd(e) {
+        if (phase !== "hover") return;
+        if (e.target.closest(".pv-picker-confirm") || e.target.closest(".pv-picker-bar")) return;
+        if (e.cancelable) e.preventDefault();
+        e.stopPropagation();
+        if (typeof e.stopImmediatePropagation === "function") e.stopImmediatePropagation();
+        let el2 = null;
+        try {
+          const t = e.changedTouches && e.changedTouches[0];
+          if (t) el2 = pickFromPoint(t.clientX, t.clientY);
+        } catch {
+        }
+        el2 = el2 || hoverEl;
+        finishPick(el2);
+      }
+      function onKey(e) {
+        if (e.key === "Escape") finish(null);
+      }
+      okBtn.addEventListener("click", () => {
+        const v = cInput.value.trim();
+        finish(v || null);
+      });
+      againBtn.addEventListener("click", () => {
+        phase = "hover";
+        confirm.classList.add("hidden");
+        hint.classList.remove("hidden");
+      });
+      cancelBtn.addEventListener("click", () => finish(null));
+      cInput.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          const v = cInput.value.trim();
+          finish(v || null);
+        }
+      });
+      cInput.addEventListener("input", () => {
+        const v = cInput.value.trim();
+        if (v) updateMeta(v);
+      });
+      document.addEventListener("mousemove", onMove, true);
+      document.addEventListener("mouseover", onMove, true);
+      document.addEventListener("click", onClick, true);
+      document.addEventListener("touchend", onTouchEnd, true);
+      window.addEventListener("scroll", onRepaint, true);
+      window.addEventListener("resize", onRepaint, true);
+      document.addEventListener("keydown", onKey);
+      hint.textContent = "取选：移动鼠标高亮，单击要拦截的链接 · Esc 取消";
+    });
+  }
+
+  // ui/RulesPanel.js
+  function createRulesPanel() {
+    const hostname = () => window.location.hostname;
+    let picking = false;
+    const backdrop = el("div", { id: "pv-rules-panel-backdrop", onclick: () => close() });
+    const closeBtn = el("button", { type: "button", class: "popup-panel-btn", title: "关闭 (Esc)", onclick: () => close() });
+    closeBtn.appendChild(svgIcon("close", { size: 15 }));
+    const hostEl = el("span", { id: "pv-rules-host" });
+    const header = el(
+      "div",
+      { id: "pv-rules-panel-header" },
+      el("span", { class: "pv-rules-title", text: "链接规则" }),
+      hostEl,
+      closeBtn
+    );
+    const listEl = el("div", { id: "pv-rules-list" });
+    const pickBtn = el(
+      "button",
+      { type: "button", id: "pv-rules-pick", onclick: () => startPick() },
+      svgIcon("plus", { size: 14 }),
+      el("span", { text: "取选新链接" })
+    );
+    const body = el(
+      "div",
+      { id: "pv-rules-panel-body" },
+      el("div", { class: "pv-rules-tip", text: "点击「取选新链接」，在页面上点一下要拦截的帖子链接，即可自动生成规则（仅当前站点生效，弹窗打开）" }),
+      listEl,
+      pickBtn
+    );
+    const root = el("div", { id: "pv-rules-panel" }, header, body);
+    const toastEl = el("div", { id: "pv-rules-toast" });
+    document.body.appendChild(toastEl);
+    let toastTimer = null;
+    function toast(msg) {
+      toastEl.textContent = msg;
+      toastEl.classList.add("visible");
+      clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => toastEl.classList.remove("visible"), 1600);
+    }
+    function open() {
+      root.classList.add("visible");
+      backdrop.classList.add("visible");
+      renderList();
+      closeBtn.focus();
+    }
+    function close() {
+      if (picking) return;
+      root.classList.remove("visible");
+      backdrop.classList.remove("visible");
+      toastEl.classList.remove("visible");
+    }
+    function renderList() {
+      listEl.innerHTML = "";
+      const rules = rulesManager.getRules(hostname());
+      hostEl.textContent = hostname() + "（" + rules.length + " 条）";
+      if (!rules.length) {
+        listEl.appendChild(el("div", { class: "pv-rules-empty", text: "还没有规则，点击「取选新链接」开始" }));
+        return;
+      }
+      rules.forEach((r, i) => {
+        const count = (() => {
+          try {
+            return document.querySelectorAll(r.selector).length;
+          } catch {
+            return 0;
+          }
+        })();
+        const row = el("div", { class: "pv-rules-row" });
+        const info = el(
+          "div",
+          { class: "pv-rules-row-info" },
+          el("div", { class: "pv-rules-row-sel", text: r.selector }),
+          el("div", { class: "pv-rules-row-count", text: "本页匹配 " + count + " 个链接" })
+        );
+        const del = el(
+          "button",
+          { type: "button", class: "pv-rules-del", title: "删除", onclick: (e) => {
+            e.stopPropagation();
+            confirmDelete(del, i);
+          } },
+          svgIcon("close", { size: 13 })
+        );
+        row.appendChild(info);
+        row.appendChild(del);
+        listEl.appendChild(row);
+      });
+    }
+    function confirmDelete(btn, index) {
+      if (btn.dataset.confirm === "1") {
+        rulesManager.removeRule(hostname(), index);
+        renderList();
+        toast("已删除");
+        return;
+      }
+      btn.dataset.confirm = "1";
+      btn.classList.add("confirming");
+      setTimeout(() => {
+        btn.dataset.confirm = "";
+        btn.classList.remove("confirming");
+      }, 2200);
+    }
+    async function startPick() {
+      if (picking) return;
+      picking = true;
+      pickBtn.disabled = true;
+      root.classList.remove("visible");
+      backdrop.classList.remove("visible");
+      const selector = await pickElement();
+      root.classList.add("visible");
+      backdrop.classList.add("visible");
+      picking = false;
+      pickBtn.disabled = false;
+      if (!selector) return;
+      rulesManager.addRule(hostname(), selector);
+      renderList();
+      toast("已添加规则");
+    }
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && root.classList.contains("visible")) close();
+    });
+    return { root, backdrop, open, close };
   }
 
   // ui/style.css
@@ -1376,7 +1937,19 @@
   #popup-panel-footer *,
   #popup-settings-popover,
   #popup-settings-popover *,
-  #pv-float-settings {
+  #pv-float-settings,
+  #pv-rules-panel,
+  #pv-rules-panel *,
+  #pv-rules-panel-backdrop,
+  #pv-rules-toast,
+  #pv-rules-toast *,
+  #pv-picker-overlay,
+  #pv-picker-overlay *,
+  .pv-picker-bar,
+  .pv-picker-bar *,
+  .pv-picker-confirm,
+  .pv-picker-confirm *,
+  .pv-picker-highlight {
     box-sizing: border-box;
     margin: 0;
     padding: 0;
@@ -1400,7 +1973,10 @@
 /* 固定尺寸容器：无层级兜底，确保盒模型不被宿主页面 *{box-sizing} 破坏 */
 #popup-content-panel,
 #popup-settings-popover,
-#pv-float-settings {
+#pv-float-settings,
+#pv-rules-panel,
+#pv-rules-panel-backdrop,
+#pv-rules-toast {
   box-sizing: border-box;
 }
 
@@ -1486,19 +2062,19 @@
   }
 }
 
-/* ===== 基础链接样式优化 ===== */
-.suh a,
-table tr td a,
-th.common a {
+/* ===== 基础链接样式优化（仅 Discuz 类论坛生效，避免全站污染） ===== */
+html.pv-forum .suh a,
+html.pv-forum table tr td a,
+html.pv-forum th.common a {
   cursor: pointer;
   transition: color 0.2s ease-in-out, text-shadow 0.2s ease-in-out;
   text-decoration: none;
   position: relative;
   color: inherit;
 }
-.suh a:hover,
-table tr td a:hover,
-th.common a.xst:hover {
+html.pv-forum .suh a:hover,
+html.pv-forum table tr td a:hover,
+html.pv-forum th.common a.xst:hover {
   color: var(--popup-accent);
   text-shadow: 0 0 5px rgba(37, 99, 235, 0.3);
 }
@@ -1938,6 +2514,364 @@ th.common a.xst:hover {
   outline-offset: 1px;
 }
 
+/* ===== 链接规则面板 ===== */
+#pv-rules-panel-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 10002;
+  background-color: var(--popup-overlay);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.2s ease;
+}
+#pv-rules-panel-backdrop.visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+#pv-rules-panel {
+  position: fixed;
+  z-index: 10003;
+  width: 440px;
+  max-width: calc(100vw - 24px);
+  max-height: calc(100vh - 48px);
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -48%) scale(0.97);
+  background-color: var(--popup-surface);
+  color: var(--popup-text);
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
+    'Microsoft YaHei', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  border: 1px solid var(--popup-border);
+  border-radius: 14px;
+  box-shadow: var(--popup-shadow);
+  display: flex;
+  flex-direction: column;
+  font-size: 13px;
+  overflow: hidden;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.18s ease, transform 0.22s cubic-bezier(0.16, 1, 0.3, 1);
+}
+#pv-rules-panel.visible {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translate(-50%, -50%) scale(1);
+}
+#pv-rules-panel-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--popup-border);
+  background-color: var(--popup-header-bg);
+  flex: 0 0 auto;
+}
+.pv-rules-title {
+  font-size: 14px;
+  font-weight: 600;
+}
+#pv-rules-host {
+  flex: 1;
+  font-size: 11px;
+  color: var(--popup-faint);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+#pv-rules-panel-body {
+  padding: 14px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.pv-rules-tip {
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--popup-faint);
+}
+#pv-rules-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.pv-rules-empty {
+  color: var(--popup-faint);
+  text-align: center;
+  padding: 18px 0;
+  border: 1px dashed var(--popup-border);
+  border-radius: 10px;
+}
+.pv-rules-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 12px;
+  border: 1px solid var(--popup-border);
+  border-radius: 10px;
+  background-color: var(--popup-bg);
+}
+.pv-rules-row-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.pv-rules-row-sel {
+  font-family: Consolas, 'Courier New', monospace;
+  font-size: 12px;
+  color: var(--popup-accent);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.pv-rules-row-count {
+  font-size: 11px;
+  color: var(--popup-faint);
+}
+.pv-rules-del {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid var(--popup-border);
+  border-radius: 7px;
+  background: transparent;
+  color: var(--popup-muted);
+  cursor: pointer;
+  flex: 0 0 auto;
+}
+.pv-rules-del:hover {
+  color: var(--popup-danger);
+  border-color: var(--popup-danger-soft);
+  background-color: var(--popup-danger-soft);
+}
+.pv-rules-del.confirming {
+  color: #fff;
+  background-color: var(--popup-danger);
+  border-color: var(--popup-danger);
+}
+#pv-rules-pick {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  background-color: var(--popup-accent);
+  border: 1px solid var(--popup-accent);
+  color: #fff;
+  font-weight: 500;
+  padding: 8px 16px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+#pv-rules-pick:hover {
+  background-color: var(--popup-accent-hover);
+}
+#pv-rules-pick:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+#pv-rules-pick svg {
+  width: 14px;
+  height: 14px;
+}
+#pv-rules-panel .popup-panel-btn {
+  width: 30px;
+  height: 30px;
+  padding: 0;
+}
+#pv-rules-panel .popup-panel-btn:hover {
+  color: var(--popup-danger);
+  background-color: var(--popup-danger-soft);
+}
+#pv-rules-toast {
+  position: fixed;
+  left: 50%;
+  bottom: 28px;
+  transform: translateX(-50%) translateY(8px);
+  z-index: 10006;
+  background-color: var(--popup-text);
+  color: var(--popup-bg);
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
+    'Microsoft YaHei', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  font-size: 12px;
+  padding: 8px 16px;
+  border-radius: 999px;
+  opacity: 0;
+  pointer-events: none;
+  box-shadow: var(--popup-shadow);
+  transition: opacity 0.18s ease, transform 0.18s ease;
+}
+#pv-rules-toast.visible {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+}
+
+/* ===== 取选链接模式 ===== */
+.pv-picker-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 10010;
+  background-color: rgba(15, 23, 42, 0.35);
+  pointer-events: none;
+}
+.pv-picker-bar {
+  position: fixed;
+  z-index: 10011;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border-radius: 10px;
+  font-size: 13px;
+  color: var(--popup-text);
+  background-color: var(--popup-surface);
+  border: 1px solid var(--popup-border);
+  box-shadow: var(--popup-shadow);
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
+    'Microsoft YaHei', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  pointer-events: none;
+}
+#pv-picker-hint {
+  top: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  max-width: calc(100vw - 24px);
+  white-space: nowrap;
+}
+#pv-picker-hint b {
+  font-weight: 700;
+}
+.pv-picker-confirm {
+  position: fixed;
+  bottom: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 10011;
+  width: min(560px, calc(100vw - 24px));
+  max-height: calc(100vh - 48px);
+  overflow-y: auto;
+  padding: 12px 14px;
+  border-radius: 12px;
+  font-size: 13px;
+  color: var(--popup-text);
+  background-color: var(--popup-surface);
+  border: 1px solid var(--popup-border);
+  box-shadow: var(--popup-shadow);
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
+    'Microsoft YaHei', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.pv-picker-confirm.hidden,
+#pv-picker-hint.hidden,
+.pv-picker-highlight.hidden {
+  display: none;
+}
+.pv-picker-c-title {
+  font-weight: 600;
+  font-size: 13px;
+}
+.pv-picker-cands {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  max-height: 140px;
+  overflow-y: auto;
+}
+.pv-picker-cand {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--popup-border);
+  background: transparent;
+  color: var(--popup-muted);
+  border-radius: 8px;
+  padding: 4px 9px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: border-color 0.15s ease, color 0.15s ease, background 0.15s ease;
+}
+.pv-picker-cand.is-on {
+  border-color: var(--popup-accent);
+  color: var(--popup-accent);
+  background-color: var(--popup-accent-soft);
+}
+.pv-picker-cand code {
+  font-family: Consolas, 'Courier New', monospace;
+  font-size: 11px;
+}
+.pv-picker-cand em {
+  font-style: normal;
+  color: var(--popup-faint);
+  font-size: 11px;
+}
+.pv-picker-input {
+  padding: 6px 9px;
+  border: 1px solid var(--popup-border);
+  border-radius: 8px;
+  background-color: var(--popup-bg);
+  color: var(--popup-text);
+  font-family: Consolas, 'Courier New', monospace;
+  font-size: 12px;
+  outline: none;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.pv-picker-input:focus {
+  border-color: var(--popup-accent);
+  box-shadow: 0 0 0 3px var(--popup-focus-ring);
+}
+.pv-picker-c-meta {
+  font-size: 12px;
+  color: var(--popup-muted);
+}
+.pv-picker-c-btns {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.pv-picker-btn {
+  appearance: none;
+  -webkit-appearance: none;
+  border: 1px solid var(--popup-border);
+  background: transparent;
+  color: var(--popup-muted);
+  border-radius: 8px;
+  padding: 5px 14px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+.pv-picker-btn:hover {
+  color: var(--popup-accent);
+  border-color: var(--popup-accent-soft);
+  background-color: var(--popup-accent-soft);
+}
+.pv-picker-btn.primary {
+  background-color: var(--popup-accent);
+  border-color: var(--popup-accent);
+  color: #fff;
+  font-weight: 500;
+}
+.pv-picker-btn.primary:hover {
+  background-color: var(--popup-accent-hover);
+  color: #fff;
+}
+.pv-picker-highlight {
+  position: fixed;
+  z-index: 10012;
+  pointer-events: none;
+  border: 2px solid var(--popup-accent);
+  border-radius: 4px;
+  background-color: var(--popup-accent-soft);
+  transition: left 0.08s ease, top 0.08s ease, width 0.08s ease, height 0.08s ease;
+}
+
 /* ===== 独立悬浮设置按钮 ===== */
 #pv-float-settings {
   position: fixed;
@@ -2195,7 +3129,14 @@ a.xst::after {
 @media (prefers-reduced-motion: reduce) {
   #popup-content-panel,
   #popup-panel-overlay,
-  #popup-settings-popover {
+  #popup-settings-popover,
+  #pv-rules-panel,
+  #pv-rules-panel-backdrop,
+  #pv-rules-toast,
+  .pv-picker-bar,
+  .pv-picker-confirm,
+  .pv-picker-overlay,
+  .pv-picker-highlight {
     transition: none;
   }
   .spinner {
@@ -2284,8 +3225,14 @@ a.xst::after {
         this.showSettingsNear(this.floatBtn.getBoundingClientRect());
       });
       document.body.appendChild(this.floatBtn);
-      this.settingsPopover = createSettingsPanel({ onChange: (s) => this.applySettings(s) });
+      this.settingsPopover = createSettingsPanel({
+        onChange: (s) => this.applySettings(s),
+        onManageRules: () => this.showRulesPanel()
+      });
       document.body.appendChild(this.settingsPopover);
+      this.rulesPanel = createRulesPanel();
+      document.body.appendChild(this.rulesPanel.backdrop);
+      document.body.appendChild(this.rulesPanel.root);
       document.addEventListener("click", (e) => {
         if (!this.settingsPopover?.classList.contains("visible")) return;
         if (e.target.closest("#popup-settings-popover") || e.target.closest("#popup-panel-settings") || e.target.closest("#pv-float-settings")) {
@@ -2458,6 +3405,10 @@ a.xst::after {
     hideSettings() {
       this.settingsPopover?.classList.remove("visible");
       this.settingsBtn?.classList.remove("active");
+    }
+    showRulesPanel() {
+      this.hideSettings();
+      this.rulesPanel?.open();
     }
     getContentArea() {
       this.ensure();
@@ -2820,6 +3771,7 @@ a.xst::after {
     constructor(hostnamePatterns = ["chiphell", "wnflb", "52pojie"]) {
       super();
       this.name = "Discuz";
+      this.forumStyles = true;
       this.patterns = hostnamePatterns;
     }
     match(hostname) {
@@ -3061,6 +4013,13 @@ a.xst::after {
     siteManager.register(new LinuxAdapter());
     siteManager.register(new CiliAdapter());
   }
+  function applyForumMarker() {
+    const hostname = window.location.hostname;
+    const pathname = window.location.pathname;
+    if (siteManager.activeAdapters(hostname, pathname).some((a) => a.forumStyles)) {
+      document.documentElement.classList.add("pv-forum");
+    }
+  }
   function setupEvents() {
     document.addEventListener(
       "click",
@@ -3117,7 +4076,9 @@ a.xst::after {
   function init() {
     settingsManager.load();
     popupManager.popup.applyTheme(settingsManager.get().theme);
+    popupManager.popup.ensure();
     registerAdapters();
+    applyForumMarker();
     setupEvents();
     setupObserver();
     logger.log("Popup Viewer V2 已启用");
