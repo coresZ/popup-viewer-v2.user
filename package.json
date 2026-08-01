@@ -6,7 +6,12 @@
   "type": "module",
   "scripts": {
     "build": "node build.mjs",
-    "dev": "node build.mjs --watch"
+    "dev": "node build.mjs --watch",
+    "g": "node tools/git-tools.mjs",
+    "g:status": "node tools/git-tools.mjs status",
+    "g:commit": "node tools/git-tools.mjs commit",
+    "g:push": "node tools/git-tools.mjs push",
+    "g:publish": "node tools/git-tools.mjs publish"
   },
   "devDependencies": {
     "esbuild": "^0.28.0"
