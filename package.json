@@ -1,0 +1,14 @@
+{
+  "name": "popup-viewer-v2",
+  "version": "2.0.0",
+  "private": true,
+  "description": "页内弹窗打开新帖 (Popup Viewer V2) - 插件化油猴脚本",
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs",
+    "dev": "node build.mjs --watch"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.0"
+  }
+}
