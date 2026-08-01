@@ -9,12 +9,13 @@ export class RequestLoader {
     this.sandboxAttrs =
       'allow-forms allow-modals allow-pointer-lock allow-popups allow-popups-to-escape-sandbox allow-presentation allow-same-origin allow-scripts';
   }
-  load({ url, hostname, keepScripts = false, container, onError, onLoad }) {
+  load({ url, hostname, keepScripts = false, container, onError, onLoad, mobileUA = null }) {
     logger.debug(`[RequestLoader] fetch ${url}`);
     const abort = gm.xmlhttpRequest({
       method: 'GET',
       url,
       timeout: config.loader.timeout,
+      ...(mobileUA ? { headers: { 'User-Agent': mobileUA } } : {}),
       onload: (response) => {
         if (response.status !== 200) {
           onError(`加载失败 (HTTP ${response.status})`);

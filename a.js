@@ -13,7 +13,6 @@
 // @match         https://www.52pojie.cn/forum.php?*
 // @match         *://1cili.com/*
 // @match         https://linux.do/*
-// @match         https://github.com/*/*/issues
 // @match         *://s.9cili.mom/*
 // @grant         GM_xmlhttpRequest
 // @grant         GM_addStyle
@@ -43,6 +42,36 @@
       },
       defaultSize: "medium",
       scrollbarVisible: true
+    },
+    // 手机模式预置（尺寸 + 对应移动端 UA，仅影响抓取加载路径）
+    phone: {
+      sizes: {
+        "iphone": {
+          label: "iPhone",
+          width: "393px",
+          height: "852px",
+          ua: "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
+        },
+        "iphone-max": {
+          label: "Max",
+          width: "430px",
+          height: "932px",
+          ua: "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
+        },
+        "android": {
+          label: "安卓",
+          width: "412px",
+          height: "915px",
+          ua: "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36"
+        },
+        "small": {
+          label: "小屏",
+          width: "360px",
+          height: "780px",
+          ua: "Mozilla/5.0 (Linux; Android 13; SM-G991B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
+        }
+      },
+      defaultModel: "iphone"
     },
     loader: {
       timeout: 15e3,
@@ -347,6 +376,12 @@
       path: '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line>'
     },
     close: { path: '<line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line>' },
+    info: {
+      path: '<circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="12"></line><line x1="12" y1="8" x2="12.01" y2="8"></line>'
+    },
+    smartphone: {
+      path: '<rect x="5" y="2" width="14" height="20" rx="2" ry="2"></rect><line x1="12" y1="18" x2="12.01" y2="18"></line>'
+    },
     external: {
       path: '<path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path><polyline points="15 3 21 3 21 9"></polyline><line x1="10" y1="14" x2="21" y2="3"></line>'
     },
@@ -420,8 +455,11 @@
     constructor(sandbox) {
       this.sandbox = sandbox;
     }
-    load({ url, hostname, container, onError, onLoad }) {
+    load({ url, hostname, container, onError, onLoad, mobileUA = null }) {
       logger.debug(`[IframeLoader] direct load ${url}`);
+      if (mobileUA) {
+        logger.debug("[IframeLoader] 直接 iframe 无法设置移动端 UA：" + url);
+      }
       const iframe = el("iframe", {
         id: "popup-panel-iframe",
         sandbox: this.sandbox.buildSandboxAttrs(hostname)
@@ -557,7 +595,24 @@
       const doc = new DOMParser().parseFromString(html, "text/html");
       const head = this._collectHead(doc, baseUrl);
       this._purge(doc, options);
+      this._resolveLazyImages(doc);
       return { head, body: doc.body ? doc.body.innerHTML : "" };
+    }
+    /**
+     * 解析懒加载图片：真实地址放在 data-original/data-src/data-lazy-src，
+     * src 常为占位图（懒加载 JS 被净化后不会执行）。把真实地址换到 src。
+     */
+    _resolveLazyImages(doc) {
+      doc.querySelectorAll("img[data-original], img[data-src], img[data-lazy-src]").forEach((img) => {
+        const real = img.getAttribute("data-original") || img.getAttribute("data-src") || img.getAttribute("data-lazy-src");
+        if (!real) return;
+        const cur = (img.getAttribute("src") || "").trim();
+        const isPlaceholder = !cur || /placeholder|loading|blank|spacer|1x1|pixel|px\.gif/i.test(cur);
+        if (isPlaceholder) img.setAttribute("src", real);
+        for (const attr of ["data-original", "data-src", "data-lazy-src"]) img.removeAttribute(attr);
+        img.classList.remove("lazy");
+        img.loading = "lazy";
+      });
     }
     /**
      * 收集原页面的样式（stylesheet 链接与 head 中的 <style> 块），
@@ -648,6 +703,7 @@
       panelSize: config.popup.defaultSize,
       windowMode: "coupled",
       linkIntercept: true,
+      phoneModel: config.phone.defaultModel,
       phonePosition: null
     };
   }
@@ -677,6 +733,9 @@
       }
       if (!config.popup.sizes[this.site.panelSize]) {
         this.site.panelSize = defaultSite().panelSize;
+      }
+      if (!config.phone.sizes[this.site.phoneModel]) {
+        this.site.phoneModel = defaultSite().phoneModel;
       }
       this._applyInvariants();
       return this.get();
@@ -773,12 +832,13 @@
     constructor() {
       this.sandboxAttrs = "allow-forms allow-modals allow-pointer-lock allow-popups allow-popups-to-escape-sandbox allow-presentation allow-same-origin allow-scripts";
     }
-    load({ url, hostname, keepScripts = false, container, onError, onLoad }) {
+    load({ url, hostname, keepScripts = false, container, onError, onLoad, mobileUA = null }) {
       logger.debug(`[RequestLoader] fetch ${url}`);
       const abort = gm.xmlhttpRequest({
         method: "GET",
         url,
         timeout: config.loader.timeout,
+        ...mobileUA ? { headers: { "User-Agent": mobileUA } } : {},
         onload: (response) => {
           if (response.status !== 200) {
             onError(`加载失败 (HTTP ${response.status})`);
@@ -817,12 +877,13 @@
 
   // loaders/ParserLoader.js
   var ParserLoader = class {
-    load({ url, hostname, keepScripts, container, onError, onLoad }) {
+    load({ url, hostname, keepScripts, container, onError, onLoad, mobileUA = null }) {
       logger.debug(`[ParserLoader] fetch & parse ${url}`);
       const abort = gm.xmlhttpRequest({
         method: "GET",
         url,
         timeout: config.loader.timeout,
+        ...mobileUA ? { headers: { "User-Agent": mobileUA } } : {},
         onload: (response) => {
           if (response.status !== 200) {
             onError(`加载失败 (HTTP ${response.status})`);
@@ -911,18 +972,18 @@
      * 发起抓取并缓存，返回 { promise, abort }。
      * 同一 URL 的并发请求会去重复用。
      */
-    prefetch(url, keepScripts = false) {
+    prefetch(url, keepScripts = false, mobileUA = null) {
       const cached = this._readCache(url);
       if (cached != null) return { promise: Promise.resolve(cached), abort: () => {
       } };
       const existing = this.inflight.get(url);
       if (existing) return existing;
-      const entry = this._fetch(url, keepScripts);
+      const entry = this._fetch(url, keepScripts, mobileUA);
       entry.promise.finally(() => this.inflight.delete(url));
       this.inflight.set(url, entry);
       return entry;
     }
-    _fetch(url, keepScripts) {
+    _fetch(url, keepScripts, mobileUA = null) {
       let abort = () => {
       };
       const promise = new Promise((resolve, reject) => {
@@ -930,6 +991,7 @@
           method: "GET",
           url,
           timeout: config.loader.timeout,
+          ...mobileUA ? { headers: { "User-Agent": mobileUA } } : {},
           onload: (response) => {
             if (response.status !== 200) {
               reject(new Error(`加载失败 (HTTP ${response.status})`));
@@ -958,7 +1020,7 @@
       });
       return { promise, abort };
     }
-    load({ url, keepScripts = false, container, onError, onLoad }) {
+    load({ url, keepScripts = false, container, onError, onLoad, mobileUA = null }) {
       logger.debug(`[CacheLoader] ${url}`);
       const cached = this._readCache(url);
       if (cached != null) {
@@ -975,7 +1037,7 @@
           container.querySelector("#popup-panel-iframe")?.remove();
         };
       }
-      const { promise, abort } = this.prefetch(url, keepScripts);
+      const { promise, abort } = this.prefetch(url, keepScripts, mobileUA);
       promise.then((result) => {
         renderIntoIframe({
           html: result.body,
@@ -1033,7 +1095,16 @@
     prefetch(url) {
       const hostname = this._hostnameOf(url);
       const keepScripts = this._keepScripts(hostname);
-      return this.loaders.cache.prefetch(url, keepScripts);
+      return this.loaders.cache.prefetch(url, keepScripts, this._mobileUA());
+    }
+    /**
+     * 手机模式下返回对应的移动端 UA，否则 null。
+     */
+    _mobileUA() {
+      const s = settingsManager.get();
+      if (s.panelSize !== "phone") return null;
+      const m = config.phone.sizes[s.phoneModel] || config.phone.sizes[config.phone.defaultModel];
+      return m ? m.ua : null;
     }
     _hostnameOf(url) {
       try {
@@ -1061,6 +1132,7 @@
         url,
         hostname,
         keepScripts,
+        mobileUA: this._mobileUA(),
         container: ctx.container,
         onError: ctx.onError,
         onLoad: ctx.onLoad
@@ -1099,48 +1171,100 @@
     const SIZE_LABELS = { small: "小", medium: "中", large: "大", phone: "手机" };
     const THEME_ORDER = ["auto", "light", "dark"];
     const THEME_LABELS = { auto: "跟随系统", light: "浅色", dark: "深色" };
+    const DEFAULT_SIZE = "medium";
+    const DEFAULT_THEME = "auto";
+    const PHONE_ORDER = Object.keys(config.phone.sizes);
+    const PHONE_LABELS = Object.fromEntries(PHONE_ORDER.map((k) => [k, config.phone.sizes[k].label]));
+    const PHONE_ICONS = Object.fromEntries(PHONE_ORDER.map((k) => [k, svgIcon("smartphone", { size: 12 })]));
     const persist = () => {
       onChange?.(settingsManager.get());
       eventBus.emit("settings-changed", settingsManager.get());
     };
-    const makeSeg = (order, labels, getKey, setKey) => {
+    const tipEl = el("div", { id: "pv-settings-tip", class: "hidden" });
+    document.body.appendChild(tipEl);
+    let tipTarget = null;
+    function toggleTip(btn, text) {
+      if (tipTarget === btn) {
+        hideTip();
+        return;
+      }
+      tipTarget = btn;
+      tipEl.textContent = text;
+      tipEl.classList.remove("hidden");
+      const r = btn.getBoundingClientRect();
+      const w = tipEl.offsetWidth;
+      let left = r.left;
+      if (left + w > window.innerWidth - 8) left = window.innerWidth - 8 - w;
+      if (left < 8) left = 8;
+      tipEl.style.left = left + "px";
+      tipEl.style.top = r.bottom + 6 + "px";
+    }
+    function hideTip() {
+      tipTarget = null;
+      tipEl.classList.add("hidden");
+    }
+    function makeTip(text) {
+      const btn = el("button", {
+        type: "button",
+        class: "pv-settings-tip",
+        "aria-label": "说明",
+        onclick: (e) => {
+          e.stopPropagation();
+          toggleTip(btn, text);
+        }
+      });
+      btn.appendChild(svgIcon("info", { size: 13 }));
+      return btn;
+    }
+    document.addEventListener("click", (e) => {
+      if (tipEl.classList.contains("hidden")) return;
+      if (e.target.closest(".pv-settings-tip") || e.target === tipEl) return;
+      hideTip();
+    });
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") hideTip();
+    });
+    const makeSeg = (order, labels, getKey, setKey, { icons = {}, defaultOf, onChange: onChange2 } = {}) => {
       const btns = {};
-      const group = el("div", { class: "pv-seg" });
+      const group2 = el("div", { class: "pv-seg" });
       const sync = () => {
         const current = getKey();
-        Object.entries(btns).forEach(([k, b]) => b.classList.toggle("active", k === current));
+        Object.entries(btns).forEach(([k, b]) => {
+          b.classList.toggle("active", k === current);
+          b.classList.toggle("is-default", !!defaultOf && k === defaultOf);
+        });
       };
       order.forEach((k) => {
-        const btn = el("button", {
-          type: "button",
-          class: "pv-seg-item",
-          text: labels[k],
-          onclick: () => {
-            settingsManager.set({ [setKey]: k });
-            sync();
-            persist();
-          }
-        });
+        const children = [];
+        if (icons[k]) children.push(icons[k]);
+        children.push(el("span", { text: labels[k] }));
+        const btn = el(
+          "button",
+          {
+            type: "button",
+            class: "pv-seg-item",
+            onclick: () => {
+              settingsManager.set({ [setKey]: k });
+              sync();
+              onChange2?.();
+              persist();
+            }
+          },
+          ...children
+        );
         btns[k] = btn;
-        group.appendChild(btn);
+        group2.appendChild(btn);
       });
       sync();
-      return { group, sync };
+      return { group: group2, sync };
     };
-    const sizeSeg = makeSeg(SIZE_ORDER, SIZE_LABELS, () => settingsManager.get().panelSize, "panelSize");
-    const themeSeg = makeSeg(THEME_ORDER, THEME_LABELS, () => settingsManager.get().theme || "auto", "theme");
-    const scrollSwitch = el("input", { type: "checkbox", id: "pv-settings-scroll" });
-    scrollSwitch.checked = settingsManager.get().scrollbarVisible !== false;
-    scrollSwitch.addEventListener("change", () => {
-      settingsManager.set({ scrollbarVisible: scrollSwitch.checked });
-      persist();
+    const sizeSeg = makeSeg(SIZE_ORDER, SIZE_LABELS, () => settingsManager.get().panelSize, "panelSize", {
+      icons: { phone: svgIcon("smartphone", { size: 12 }) },
+      defaultOf: DEFAULT_SIZE,
+      onChange: syncPhoneModels
     });
-    const linkInterceptSwitch = el("input", { type: "checkbox", id: "pv-settings-link-intercept" });
-    linkInterceptSwitch.checked = settingsManager.get().linkIntercept !== false;
-    linkInterceptSwitch.addEventListener("change", () => {
-      settingsManager.set({ linkIntercept: linkInterceptSwitch.checked });
-      if (!linkInterceptSwitch.checked) windowModeSeg.sync();
-      persist();
+    const themeSeg = makeSeg(THEME_ORDER, THEME_LABELS, () => settingsManager.get().theme || "auto", "theme", {
+      defaultOf: DEFAULT_THEME
     });
     const windowModeSeg = makeSeg(
       ["coupled", "float"],
@@ -1148,6 +1272,38 @@
       () => settingsManager.get().windowMode || "coupled",
       "windowMode"
     );
+    const phoneModelSeg = makeSeg(
+      PHONE_ORDER,
+      PHONE_LABELS,
+      () => settingsManager.get().phoneModel || config.phone.defaultModel,
+      "phoneModel",
+      { icons: PHONE_ICONS }
+    );
+    const phoneModelsWrap = el(
+      "div",
+      { class: "pv-settings-phone-models hidden", id: "pv-settings-phone-models" },
+      el("div", { class: "pv-settings-sub", text: "手机型号" }),
+      phoneModelSeg.group
+    );
+    function syncPhoneModels() {
+      phoneModelsWrap.classList.toggle("hidden", settingsManager.get().panelSize !== "phone");
+    }
+    syncPhoneModels();
+    const scrollSwitch = el("input", { type: "checkbox", id: "pv-settings-scroll" });
+    scrollSwitch.checked = settingsManager.get().scrollbarVisible !== false;
+    scrollSwitch.addEventListener("change", () => {
+      settingsManager.set({ scrollbarVisible: scrollSwitch.checked });
+      persist();
+    });
+    const scrollSwitchWrap = el("label", { class: "pv-switch" }, scrollSwitch, el("span", { class: "pv-switch-track" }));
+    const linkInterceptSwitch = el("input", { type: "checkbox", id: "pv-settings-link-intercept" });
+    linkInterceptSwitch.checked = settingsManager.get().linkIntercept !== false;
+    linkInterceptSwitch.addEventListener("change", () => {
+      settingsManager.set({ linkIntercept: linkInterceptSwitch.checked });
+      if (!linkInterceptSwitch.checked) windowModeSeg.sync();
+      persist();
+    });
+    const linkInterceptSwitchWrap = el("label", { class: "pv-switch" }, linkInterceptSwitch, el("span", { class: "pv-switch-track" }));
     const resetBtn = el("button", { type: "button", class: "pv-settings-reset", text: "恢复默认" });
     resetBtn.addEventListener("click", () => {
       settingsManager.reset();
@@ -1156,53 +1312,51 @@
       sizeSeg.sync();
       themeSeg.sync();
       windowModeSeg.sync();
+      phoneModelSeg.sync();
+      syncPhoneModels();
       persist();
     });
+    const group = (title) => el("div", { class: "pv-settings-group" }, el("div", { class: "pv-settings-group-title", text: title }));
+    const titleCol = (label, sub, tip) => el(
+      "div",
+      { class: "pv-settings-title-col" },
+      el(
+        "div",
+        { class: "pv-settings-label-line" },
+        el("span", { class: "pv-settings-label", text: label }),
+        tip ? makeTip(tip) : null
+      ),
+      sub ? el("div", { class: "pv-settings-sub", text: sub }) : null
+    );
+    const rowBlock = (label, sub, control, tip) => el(
+      "div",
+      { class: "pv-settings-item" },
+      el("div", { class: "pv-settings-item-head" }, titleCol(label, sub, tip), control)
+    );
+    const colBlock = (label, sub, control, tip) => el(
+      "div",
+      { class: "pv-settings-item" },
+      el("div", { class: "pv-settings-item-head" }, titleCol(label, sub, tip)),
+      control
+    );
+    const sizeBlock = el(
+      "div",
+      { class: "pv-settings-item" },
+      el("div", { class: "pv-settings-item-head" }, titleCol("窗体大小", "弹窗的默认尺寸")),
+      sizeSeg.group,
+      phoneModelsWrap
+    );
     return el(
       "div",
       { id: "popup-settings-popover" },
-      el(
-        "div",
-        { class: "pv-settings-row" },
-        el("span", { class: "pv-settings-label", text: "窗体滚动条" }),
-        el("label", { class: "pv-switch" }, scrollSwitch, el("span", { class: "pv-switch-track" }))
-      ),
-      el(
-        "div",
-        { class: "pv-settings-col" },
-        el(
-          "div",
-          { class: "pv-settings-col-head" },
-          el("span", { class: "pv-settings-label", text: "页面链接拦截" }),
-          el("label", { class: "pv-switch" }, linkInterceptSwitch, el("span", { class: "pv-switch-track" }))
-        ),
-        el("div", {
-          class: "pv-settings-hint",
-          text: "开启：页面链接点击在弹窗内打开；关闭：页面链接原页面打开，窗体内容里的链接在窗体内部打开（禁止新标签页），窗体自动切换为独立悬浮"
-        })
-      ),
-      el(
-        "div",
-        { class: "pv-settings-col" },
-        el("span", { class: "pv-settings-label", text: "窗体大小" }),
-        sizeSeg.group
-      ),
-      el(
-        "div",
-        { class: "pv-settings-col" },
-        el("span", { class: "pv-settings-label", text: "外观主题" }),
-        themeSeg.group
-      ),
-      el(
-        "div",
-        { class: "pv-settings-col" },
-        el("span", { class: "pv-settings-label", text: "窗体驻留方式" }),
-        windowModeSeg.group,
-        el("div", {
-          class: "pv-settings-hint",
-          text: "跟随页面：弹窗带遮罩；独立悬浮：无遮罩、页面可交互，点击链接仍在弹窗内打开内容"
-        })
-      ),
+      group("窗体行为"),
+      rowBlock("窗体滚动条", "显示或隐藏窗体内的滚动条", scrollSwitchWrap),
+      colBlock("窗体驻留方式", "弹窗遮罩与页面交互", windowModeSeg.group, "跟随页面：弹窗带遮罩；独立悬浮：无遮罩、页面可交互，点击链接仍在弹窗内打开内容"),
+      sizeBlock,
+      group("交互控制"),
+      rowBlock("页面链接拦截", "开启后页面链接在弹窗内打开", linkInterceptSwitchWrap, "开启：页面链接点击在弹窗内打开；关闭：页面链接原页面打开，窗体内容里的链接在窗体内部打开（禁止新标签页），窗体自动切换为独立悬浮"),
+      group("外观"),
+      colBlock("外观主题", "跟随系统或手动指定", themeSeg.group),
       el("div", { class: "pv-settings-footer" }, resetBtn)
     );
   }
@@ -1544,7 +1698,7 @@ th.common a.xst:hover {
 /* ===== 设置面板 ===== */
 #popup-settings-popover {
   position: fixed;
-  width: 268px;
+  width: 280px;
   z-index: 10002;
   max-height: calc(100vh - 32px);
   overflow-y: auto;
@@ -1568,60 +1722,118 @@ th.common a.xst:hover {
   pointer-events: auto;
   transform: translateY(0);
 }
-.pv-settings-row,
-.pv-settings-col {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 9px 10px;
+.pv-settings-group {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--popup-border);
+}
+.pv-settings-group:first-child {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: none;
+}
+.pv-settings-group-title {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  color: var(--popup-faint);
+  padding: 0 6px 6px;
+}
+.pv-settings-item {
+  padding: 7px 6px;
   border-radius: 8px;
 }
-.pv-settings-row:hover,
-.pv-settings-col:hover {
+.pv-settings-item:hover {
   background-color: var(--popup-btn-hover);
 }
-.pv-settings-col {
-  flex-direction: column;
-  align-items: stretch;
-  gap: 8px;
-}
-.pv-settings-col-head {
+.pv-settings-item-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
+}
+.pv-settings-item-head + .pv-seg {
+  margin-top: 8px;
+}
+.pv-settings-title-col {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.pv-settings-label-line {
+  display: flex;
+  align-items: center;
+  gap: 4px;
 }
 .pv-settings-label {
   font-size: 13px;
-  font-weight: 500;
+  font-weight: 600;
   color: var(--popup-text);
 }
-.pv-settings-hint {
+.pv-settings-sub {
   font-size: 11px;
-  line-height: 1.5;
+  line-height: 1.4;
   color: var(--popup-faint);
 }
-.pv-settings-col .pv-seg {
-  display: flex;
+.pv-settings-tip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--popup-faint);
+  cursor: pointer;
+  flex: 0 0 auto;
 }
-.pv-settings-col .pv-seg-item {
-  flex: 1;
-  padding: 5px 4px;
+.pv-settings-tip:hover {
+  color: var(--popup-accent);
+  background-color: var(--popup-accent-soft);
+}
+.pv-settings-phone-models {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--popup-border);
+}
+.pv-settings-phone-models.hidden {
+  display: none;
+}
+#pv-settings-tip {
+  position: fixed;
+  z-index: 10005;
+  width: 220px;
+  padding: 8px 10px;
+  background-color: var(--popup-text);
+  color: var(--popup-bg);
+  font-size: 12px;
+  line-height: 1.5;
+  border-radius: 8px;
+  box-shadow: var(--popup-shadow);
+  pointer-events: none;
+}
+#pv-settings-tip.hidden {
+  display: none;
 }
 .pv-settings-footer {
   display: flex;
-  justify-content: flex-end;
-  padding: 8px 10px 6px;
+  justify-content: center;
+  padding: 10px 0 2px;
   border-top: 1px solid var(--popup-border);
-  margin-top: 2px;
+  margin-top: 4px;
 }
 .pv-settings-reset {
   border: 1px solid var(--popup-border);
   background: transparent;
   color: var(--popup-muted);
-  border-radius: 7px;
-  padding: 5px 12px;
+  border-radius: 999px;
+  padding: 5px 18px;
   font-size: 12px;
   cursor: pointer;
   transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
@@ -1679,32 +1891,47 @@ th.common a.xst:hover {
   outline: 2px solid var(--popup-focus-ring);
   outline-offset: 2px;
 }
-/* 分段控件 */
+/* 分段控件（胶囊式） */
 .pv-seg {
   display: flex;
-  gap: 3px;
-  background-color: var(--popup-btn-active);
-  border-radius: 8px;
-  padding: 3px;
+  gap: 6px;
+  padding: 0;
+  background: transparent;
 }
 .pv-seg-item {
-  border: none;
+  flex: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  border: 1px solid var(--popup-border);
   background: transparent;
   color: var(--popup-muted);
   font-size: 12px;
-  padding: 5px 12px;
-  border-radius: 6px;
+  padding: 5px 8px;
+  border-radius: 999px;
   cursor: pointer;
-  transition: background 0.15s ease, color 0.15s ease, box-shadow 0.15s ease;
+  white-space: nowrap;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
 }
 .pv-seg-item:hover {
   color: var(--popup-text);
+  border-color: var(--popup-muted);
 }
 .pv-seg-item.active {
-  background-color: var(--popup-surface);
+  background-color: var(--popup-accent-soft);
+  border-color: var(--popup-accent);
   color: var(--popup-accent);
   font-weight: 600;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12);
+}
+.pv-seg-item.is-default.active::after {
+  content: '';
+  display: block;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: currentColor;
+  margin: 2px auto 0;
 }
 .pv-seg-item:focus-visible {
   outline: 2px solid var(--popup-focus-ring);
@@ -2154,8 +2381,17 @@ a.xst::after {
       this.applyTheme(s.theme);
       this.contentArea?.classList.toggle("pv-hide-scrollbar", s.scrollbarVisible === false);
       const size = config.popup.sizes[nextSize] || config.popup.sizes[config.popup.defaultSize];
-      this.panel?.style.setProperty("--popup-width", size.width);
-      this.panel?.style.setProperty("--popup-height", size.height);
+      let width = size.width;
+      let height = size.height;
+      if (nextSize === "phone") {
+        const m = config.phone.sizes[s.phoneModel] || config.phone.sizes[config.phone.defaultModel];
+        if (m) {
+          width = m.width;
+          height = m.height;
+        }
+      }
+      this.panel?.style.setProperty("--popup-width", width);
+      this.panel?.style.setProperty("--popup-height", height);
       if (nextSize === "phone") {
         this.restorePhonePosition();
       } else if (prevSize === "phone") {
@@ -2206,8 +2442,8 @@ a.xst::after {
     showSettingsNear(rect) {
       const margin = 8;
       const pop = this.settingsPopover;
-      const popW = 268;
-      const popH = 340;
+      const popW = pop.offsetWidth || 280;
+      const popH = pop.offsetHeight || 320;
       let left = rect.right - popW;
       let top = rect.bottom + margin;
       if (left < margin) left = margin;
@@ -2666,6 +2902,23 @@ a.xst::after {
       return { url, title: link.title || (link.textContent || "").trim() || "查看内容", element: link };
     }
     _parseGeneric(event) {
+      const titleLink = event.target.closest?.(".Nbbs-tiezi-lists .middle-list-tittle a[href]");
+      if (titleLink) {
+        const url2 = this.resolveHref(titleLink.href, window.location.href);
+        if (url2) {
+          return { url: url2, title: titleLink.title || (titleLink.textContent || "").trim() || "查看帖子", element: titleLink };
+        }
+      }
+      const block = event.target.closest?.(".Nbbs-tiezi-lists [data-topic-url]");
+      if (block) {
+        const url2 = this.resolveHref(block.dataset.topicUrl, window.location.href);
+        if (url2) {
+          const container2 = block.closest(".Nbbs-tiezi-lists");
+          const titleA = container2?.querySelector(".middle-list-tittle a");
+          const title = titleA?.title || (titleA?.textContent || "").trim() || "查看帖子";
+          return { url: url2, title, element: block };
+        }
+      }
       const target = event.target;
       const titleDiv = target.closest?.("div.items-content-tittle.popup-trigger");
       const remarkDiv = target.closest?.("div.items-content-remark.popup-trigger");
@@ -2727,6 +2980,10 @@ a.xst::after {
         });
         return;
       }
+      doc.querySelectorAll(".Nbbs-tiezi-lists .middle-list-tittle a[href]").forEach((a) => {
+        if (a.href && !a.href.startsWith("javascript:")) a.classList.add("popup-trigger");
+      });
+      doc.querySelectorAll(".Nbbs-tiezi-lists [data-topic-url]").forEach((n) => n.classList.add("popup-trigger"));
       doc.querySelectorAll("div.items-content-tittle, div.items-content-remark").forEach((containerDiv) => {
         if (!containerDiv.closest("div.items-list-content")) return;
         let linkElement = null;
@@ -2759,29 +3016,6 @@ a.xst::after {
       const url = this.resolveHref(link.href, window.location.href);
       if (!url) return null;
       return { url, title: (link.textContent || "").trim() || "查看主题", element: link };
-    }
-    enhance() {
-    }
-  };
-
-  // adapters/GithubAdapter.js
-  var GithubAdapter = class extends BaseAdapter {
-    constructor() {
-      super();
-      this.name = "GitHub";
-      this.linkSelector = "a.IssuePullRequestTitle-module__ListItemTitle_1--_xOfg";
-      this.parentSelector = "div.IssueRow-module__row--XmR1f";
-    }
-    match(hostname, pathname) {
-      return hostname === "github.com" && pathname.includes("/issues");
-    }
-    parseClick(event) {
-      const link = event.target.closest?.(this.linkSelector);
-      if (!link) return null;
-      if (!link.closest(this.parentSelector)) return null;
-      const url = this.resolveHref(link.href, window.location.href);
-      if (!url) return null;
-      return { url, title: (link.textContent || "").trim() || "查看 GitHub Issue", element: link };
     }
     enhance() {
     }
@@ -2825,7 +3059,6 @@ a.xst::after {
     siteManager.register(new DiscuzAdapter());
     siteManager.register(new TgbAdapter());
     siteManager.register(new LinuxAdapter());
-    siteManager.register(new GithubAdapter());
     siteManager.register(new CiliAdapter());
   }
   function setupEvents() {

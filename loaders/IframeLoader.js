@@ -6,8 +6,11 @@ export class IframeLoader {
   constructor(sandbox) {
     this.sandbox = sandbox;
   }
-  load({ url, hostname, container, onError, onLoad }) {
+  load({ url, hostname, container, onError, onLoad, mobileUA = null }) {
     logger.debug(`[IframeLoader] direct load ${url}`);
+    if (mobileUA) {
+      logger.debug('[IframeLoader] 直接 iframe 无法设置移动端 UA：' + url);
+    }
     const iframe = el('iframe', {
       id: 'popup-panel-iframe',
       sandbox: this.sandbox.buildSandboxAttrs(hostname)

@@ -11,7 +11,6 @@ import { settingsManager } from './core/SettingsManager.js';
 import { DiscuzAdapter } from './adapters/DiscuzAdapter.js';
 import { TgbAdapter } from './adapters/TgbAdapter.js';
 import { LinuxAdapter } from './adapters/LinuxAdapter.js';
-import { GithubAdapter } from './adapters/GithubAdapter.js';
 import { CiliAdapter } from './adapters/CiliAdapter.js';
 
 const prefetch = new PrefetchManager(loaderManager);
@@ -20,7 +19,6 @@ function registerAdapters() {
   siteManager.register(new DiscuzAdapter());
   siteManager.register(new TgbAdapter());
   siteManager.register(new LinuxAdapter());
-  siteManager.register(new GithubAdapter());
   siteManager.register(new CiliAdapter());
 }
 

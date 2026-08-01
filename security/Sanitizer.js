@@ -29,7 +29,27 @@ export class Sanitizer {
     const doc = new DOMParser().parseFromString(html, 'text/html');
     const head = this._collectHead(doc, baseUrl);
     this._purge(doc, options);
+    this._resolveLazyImages(doc);
     return { head, body: doc.body ? doc.body.innerHTML : '' };
+  }
+  /**
+   * 解析懒加载图片：真实地址放在 data-original/data-src/data-lazy-src，
+   * src 常为占位图（懒加载 JS 被净化后不会执行）。把真实地址换到 src。
+   */
+  _resolveLazyImages(doc) {
+    doc.querySelectorAll('img[data-original], img[data-src], img[data-lazy-src]').forEach((img) => {
+      const real =
+        img.getAttribute('data-original') ||
+        img.getAttribute('data-src') ||
+        img.getAttribute('data-lazy-src');
+      if (!real) return;
+      const cur = (img.getAttribute('src') || '').trim();
+      const isPlaceholder = !cur || /placeholder|loading|blank|spacer|1x1|pixel|px\.gif/i.test(cur);
+      if (isPlaceholder) img.setAttribute('src', real);
+      for (const attr of ['data-original', 'data-src', 'data-lazy-src']) img.removeAttribute(attr);
+      img.classList.remove('lazy');
+      img.loading = 'lazy';
+    });
   }
   /**
    * 收集原页面的样式（stylesheet 链接与 head 中的 <style> 块），

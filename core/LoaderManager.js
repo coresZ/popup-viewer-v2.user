@@ -5,6 +5,7 @@ import { IframeLoader } from '../loaders/IframeLoader.js';
 import { RequestLoader } from '../loaders/RequestLoader.js';
 import { ParserLoader } from '../loaders/ParserLoader.js';
 import { CacheLoader } from '../loaders/CacheLoader.js';
+import { settingsManager } from './SettingsManager.js';
 
 export class LoaderManager {
   constructor() {
@@ -42,7 +43,16 @@ export class LoaderManager {
   prefetch(url) {
     const hostname = this._hostnameOf(url);
     const keepScripts = this._keepScripts(hostname);
-    return this.loaders.cache.prefetch(url, keepScripts);
+    return this.loaders.cache.prefetch(url, keepScripts, this._mobileUA());
+  }
+  /**
+   * 手机模式下返回对应的移动端 UA，否则 null。
+   */
+  _mobileUA() {
+    const s = settingsManager.get();
+    if (s.panelSize !== 'phone') return null;
+    const m = config.phone.sizes[s.phoneModel] || config.phone.sizes[config.phone.defaultModel];
+    return m ? m.ua : null;
   }
   _hostnameOf(url) {
     try {
@@ -70,6 +80,7 @@ export class LoaderManager {
       url,
       hostname,
       keepScripts,
+      mobileUA: this._mobileUA(),
       container: ctx.container,
       onError: ctx.onError,
       onLoad: ctx.onLoad

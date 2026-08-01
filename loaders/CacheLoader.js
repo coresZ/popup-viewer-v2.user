@@ -35,23 +35,24 @@ export class CacheLoader {
    * 发起抓取并缓存，返回 { promise, abort }。
    * 同一 URL 的并发请求会去重复用。
    */
-  prefetch(url, keepScripts = false) {
+  prefetch(url, keepScripts = false, mobileUA = null) {
     const cached = this._readCache(url);
     if (cached != null) return { promise: Promise.resolve(cached), abort: () => {} };
     const existing = this.inflight.get(url);
     if (existing) return existing;
-    const entry = this._fetch(url, keepScripts);
+    const entry = this._fetch(url, keepScripts, mobileUA);
     entry.promise.finally(() => this.inflight.delete(url));
     this.inflight.set(url, entry);
     return entry;
   }
-  _fetch(url, keepScripts) {
+  _fetch(url, keepScripts, mobileUA = null) {
     let abort = () => {};
     const promise = new Promise((resolve, reject) => {
       const req = gm.xmlhttpRequest({
         method: 'GET',
         url,
         timeout: config.loader.timeout,
+        ...(mobileUA ? { headers: { 'User-Agent': mobileUA } } : {}),
         onload: (response) => {
           if (response.status !== 200) {
             reject(new Error(`加载失败 (HTTP ${response.status})`));
@@ -79,7 +80,7 @@ export class CacheLoader {
     });
     return { promise, abort };
   }
-  load({ url, keepScripts = false, container, onError, onLoad }) {
+  load({ url, keepScripts = false, container, onError, onLoad, mobileUA = null }) {
     logger.debug(`[CacheLoader] ${url}`);
     const cached = this._readCache(url);
     if (cached != null) {
@@ -96,7 +97,7 @@ export class CacheLoader {
         container.querySelector('#popup-panel-iframe')?.remove();
       };
     }
-    const { promise, abort } = this.prefetch(url, keepScripts);
+    const { promise, abort } = this.prefetch(url, keepScripts, mobileUA);
     promise
       .then((result) => {
         renderIntoIframe({

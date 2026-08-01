@@ -13,7 +13,6 @@
 // @match         https://www.52pojie.cn/forum.php?*
 // @match         *://1cili.com/*
 // @match         https://linux.do/*
-// @match         https://github.com/*/*/issues
 // @match         *://s.9cili.mom/*
 // @grant         GM_xmlhttpRequest
 // @grant         GM_addStyle

@@ -6,12 +6,13 @@ import { clear } from '../utils/dom.js';
 import { settingsManager } from '../core/SettingsManager.js';
 
 export class ParserLoader {
-  load({ url, hostname, keepScripts, container, onError, onLoad }) {
+  load({ url, hostname, keepScripts, container, onError, onLoad, mobileUA = null }) {
     logger.debug(`[ParserLoader] fetch & parse ${url}`);
     const abort = gm.xmlhttpRequest({
       method: 'GET',
       url,
       timeout: config.loader.timeout,
+      ...(mobileUA ? { headers: { 'User-Agent': mobileUA } } : {}),
       onload: (response) => {
         if (response.status !== 200) {
           onError(`加载失败 (HTTP ${response.status})`);

@@ -16,6 +16,36 @@ export const config = {
     defaultSize: 'medium',
     scrollbarVisible: true
   },
+  // 手机模式预置（尺寸 + 对应移动端 UA，仅影响抓取加载路径）
+  phone: {
+    sizes: {
+      'iphone': {
+        label: 'iPhone',
+        width: '393px',
+        height: '852px',
+        ua: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1'
+      },
+      'iphone-max': {
+        label: 'Max',
+        width: '430px',
+        height: '932px',
+        ua: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1'
+      },
+      'android': {
+        label: '安卓',
+        width: '412px',
+        height: '915px',
+        ua: 'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36'
+      },
+      'small': {
+        label: '小屏',
+        width: '360px',
+        height: '780px',
+        ua: 'Mozilla/5.0 (Linux; Android 13; SM-G991B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36'
+      }
+    },
+    defaultModel: 'iphone'
+  },
   loader: {
     timeout: 15e3,
     // 默认加载方式: 'auto' | 'iframe' | 'request' | 'parser'

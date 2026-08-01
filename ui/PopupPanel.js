@@ -175,8 +175,17 @@ export class PopupPanel {
     this.applyTheme(s.theme);
     this.contentArea?.classList.toggle('pv-hide-scrollbar', s.scrollbarVisible === false);
     const size = config.popup.sizes[nextSize] || config.popup.sizes[config.popup.defaultSize];
-    this.panel?.style.setProperty('--popup-width', size.width);
-    this.panel?.style.setProperty('--popup-height', size.height);
+    let width = size.width;
+    let height = size.height;
+    if (nextSize === 'phone') {
+      const m = config.phone.sizes[s.phoneModel] || config.phone.sizes[config.phone.defaultModel];
+      if (m) {
+        width = m.width;
+        height = m.height;
+      }
+    }
+    this.panel?.style.setProperty('--popup-width', width);
+    this.panel?.style.setProperty('--popup-height', height);
     if (nextSize === 'phone') {
       this.restorePhonePosition();
     } else if (prevSize === 'phone') {
@@ -227,8 +236,9 @@ export class PopupPanel {
   showSettingsNear(rect) {
     const margin = 8;
     const pop = this.settingsPopover;
-    const popW = 268;
-    const popH = 340;
+    // 隐藏态使用 opacity/pointer-events，offsetWidth/offsetHeight 仍可测量实际尺寸
+    const popW = pop.offsetWidth || 280;
+    const popH = pop.offsetHeight || 320;
     let left = rect.right - popW;
     let top = rect.bottom + margin;
     if (left < margin) left = margin;

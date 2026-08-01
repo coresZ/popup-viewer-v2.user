@@ -42,6 +42,26 @@ export class TgbAdapter extends BaseAdapter {
     return { url, title: link.title || (link.textContent || '').trim() || '查看内容', element: link };
   }
   _parseGeneric(event) {
+    // 新布局（板块列表，如 /bbs/）：Nbbs-tiezi-lists
+    const titleLink = event.target.closest?.('.Nbbs-tiezi-lists .middle-list-tittle a[href]');
+    if (titleLink) {
+      const url = this.resolveHref(titleLink.href, window.location.href);
+      if (url) {
+        return { url, title: titleLink.title || (titleLink.textContent || '').trim() || '查看帖子', element: titleLink };
+      }
+    }
+    // 可点击块（回复数/时间等，带 data-topic-url）
+    const block = event.target.closest?.('.Nbbs-tiezi-lists [data-topic-url]');
+    if (block) {
+      const url = this.resolveHref(block.dataset.topicUrl, window.location.href);
+      if (url) {
+        const container = block.closest('.Nbbs-tiezi-lists');
+        const titleA = container?.querySelector('.middle-list-tittle a');
+        const title = titleA?.title || (titleA?.textContent || '').trim() || '查看帖子';
+        return { url, title, element: block };
+      }
+    }
+    // 旧布局
     const target = event.target;
     const titleDiv = target.closest?.('div.items-content-tittle.popup-trigger');
     const remarkDiv = target.closest?.('div.items-content-remark.popup-trigger');
@@ -109,6 +129,12 @@ export class TgbAdapter extends BaseAdapter {
       });
       return;
     }
+    // 新布局（板块列表，如 /bbs/）
+    doc.querySelectorAll('.Nbbs-tiezi-lists .middle-list-tittle a[href]').forEach((a) => {
+      if (a.href && !a.href.startsWith('javascript:')) a.classList.add('popup-trigger');
+    });
+    doc.querySelectorAll('.Nbbs-tiezi-lists [data-topic-url]').forEach((n) => n.classList.add('popup-trigger'));
+    // 旧布局
     doc.querySelectorAll('div.items-content-tittle, div.items-content-remark').forEach((containerDiv) => {
       if (!containerDiv.closest('div.items-list-content')) return;
       let linkElement = null;
