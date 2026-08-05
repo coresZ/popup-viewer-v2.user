@@ -1056,9 +1056,9 @@ var __PopupKitModule = (() => {
       requestAnimationFrame(() => {
         this.panel.classList.add("visible");
         this.overlay.classList.add("visible");
+        this._onOpen?.(opts);
       });
       this._load(opts);
-      this._onOpen?.(opts);
     }
     _load(opts) {
       this._abort?.();
