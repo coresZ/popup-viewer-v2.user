@@ -6,7 +6,7 @@ import { clear } from '../utils/dom.js';
 import { settingsManager } from '../core/SettingsManager.js';
 
 export class ParserLoader {
-  load({ url, hostname, keepScripts, container, onError, onLoad, mobileUA = null }) {
+  load({ url, hostname, keepScripts, container, onError, onLoad, mobileUA = null, linkIntercept }) {
     logger.debug(`[ParserLoader] fetch & parse ${url}`);
     const abort = gm.xmlhttpRequest({
       method: 'GET',
@@ -24,7 +24,7 @@ export class ParserLoader {
             `<!DOCTYPE html><html><body>${sanitizedBody}</body></html>`,
             'text/html'
           );
-          this._absolutize(doc, url);
+          this._absolutize(doc, url, linkIntercept);
           const body = clear(container);
           const wrap = doc.body;
           while (wrap.firstChild) body.appendChild(wrap.firstChild);
@@ -46,7 +46,7 @@ export class ParserLoader {
       } catch {}
     };
   }
-  _absolutize(doc, baseUrl) {
+  _absolutize(doc, baseUrl, linkIntercept) {
     const base = baseUrl;
     doc.querySelectorAll('[href],[src],[poster],[data-src]').forEach((node) => {
       ['href', 'src', 'poster', 'data-src'].forEach((attr) => {
@@ -57,8 +57,9 @@ export class ParserLoader {
         } catch {}
       });
     });
+    const openNewTab = linkIntercept !== undefined ? linkIntercept : settingsManager.get().linkIntercept !== false;
     doc.querySelectorAll('a[href]').forEach((link) => {
-      if (settingsManager.get().linkIntercept !== false) {
+      if (openNewTab) {
         link.target = '_blank';
         link.rel = 'noopener noreferrer';
       }

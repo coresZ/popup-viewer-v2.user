@@ -67,20 +67,24 @@ export class LoaderManager {
   /**
    * 加载内容到容器。
    * @param {string} url
-   * @param {Object} ctx { container, hostname, onError, onLoad }
+   * @param {Object} ctx { container, hostname, onError, onLoad, keepScripts?, mobileUA?, linkIntercept?, loadingSelector? }
    * @returns {Function} abort 函数
    */
   load(url, ctx) {
     const hostname = ctx.hostname || this._hostnameOf(url);
     const mode = this.resolveMode(url, hostname);
     const loader = this.loaders[mode] || this.loaders.request;
-    const keepScripts = this._keepScripts(hostname);
+    const keepScripts = ctx.keepScripts !== undefined ? ctx.keepScripts : this._keepScripts(hostname);
+    const mobileUA = ctx.mobileUA !== undefined ? ctx.mobileUA : this._mobileUA();
+    const linkIntercept = ctx.linkIntercept !== undefined ? ctx.linkIntercept : undefined;
     logger.log(`[LoaderManager] mode=${mode} scripts=${keepScripts} ${url}`);
     const abort = loader.load({
       url,
       hostname,
       keepScripts,
-      mobileUA: this._mobileUA(),
+      mobileUA,
+      linkIntercept,
+      loadingSelector: ctx.loadingSelector,
       container: ctx.container,
       onError: ctx.onError,
       onLoad: ctx.onLoad

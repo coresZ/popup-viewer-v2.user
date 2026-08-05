@@ -6,7 +6,7 @@ export class IframeLoader {
   constructor(sandbox) {
     this.sandbox = sandbox;
   }
-  load({ url, hostname, container, onError, onLoad, mobileUA = null }) {
+  load({ url, hostname, container, onError, onLoad, mobileUA = null, loadingSelector = '#popup-panel-loading' }) {
     logger.debug(`[IframeLoader] direct load ${url}`);
     if (mobileUA) {
       logger.debug('[IframeLoader] 直接 iframe 无法设置移动端 UA：' + url);
@@ -29,12 +29,12 @@ export class IframeLoader {
     }, config.loader.timeout);
     iframe.addEventListener('load', () => {
       if (settled) return;
-      container.querySelector('#popup-panel-loading')?.remove();
+      container.querySelector(loadingSelector)?.remove();
       container.classList.add('iframe-direct-load');
       finish(onLoad);
     });
     iframe.addEventListener('error', () => finish(onError, `加载 ${url} 失败。`));
-    container.querySelector('#popup-panel-loading')?.remove();
+    container.querySelector(loadingSelector)?.remove();
     container.appendChild(iframe);
     iframe.src = url;
     return () => {

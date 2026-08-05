@@ -10,6 +10,7 @@
 - **多种加载方式**：自动选择直接 iframe（保留登录态/脚本）或抓取净化渲染（安全沙箱）
 - **手机模式**：预置 iPhone / Max / 安卓 / 小屏尺寸，并携带对应移动端 UA 抓取
 - **窗体大小预设**：小 / 中 / 大 / 手机，可记忆拖动位置
+- **视口自适应**：窗体尺寸与位置始终约束在可视区域内（`max-width/height` 用 `min()` 联动视口），打开 DevTools 或缩放窗口时自动收缩并拉回可视区
 - **页面链接拦截开关**：一键切换页面链接是否在弹窗内打开
 - **高级：在 iframe 中运行**（默认关闭）：默认只在顶层页面运行（等同 `@noframes`），可按需开启（见下方风险说明）
 - **设置按站点持久化**：各站独立记录；主题全局共享；刷新不丢失
@@ -56,8 +57,9 @@
 │   ├── loaders/          # 加载器：iframe/请求/解析/缓存/渲染
 │   ├── adapters/         # 站点适配器
 │   ├── security/         # 安全：净化/URL 校验/沙箱
+│   ├── kit/              # 弹窗库：PopupKit 入口 + 精简增强面板
 │   └── utils/            # 工具
-├── dist/                 # 构建产物（用户脚本）
+├── dist/                 # 构建产物（用户脚本 + 弹窗库）
 ├── build.mjs             # esbuild 构建脚本
 ├── banner.txt            # 用户脚本头部（@match/@grant）
 └── package.json
@@ -67,11 +69,46 @@
 
 ```bash
 npm install        # 安装依赖
-npm run build      # 构建 → dist/popup-viewer-v2.user.js
+npm run build      # 构建 → dist/popup-viewer-v2.user.js + dist/popup-viewer-kit.js
+npm run build -- --only=main   # 只构建主脚本
+npm run build -- --only=kit    # 只构建弹窗库
 npm run dev        # 监听模式构建
 ```
 
 技术栈：原生 JavaScript（无运行时依赖）· esbuild 打包 · Tampermonkey GM API（`GM_xmlhttpRequest` / `GM_addStyle` / `GM_getValue` / `GM_setValue`，无 GM 时回退 `fetch`/`localStorage`）。
+
+### 弹窗库（PopupKit）
+
+`dist/popup-viewer-kit.js` 是把弹窗能力（多加载器 + 安全净化 + 增强面板）封装成的独立库脚本，暴露全局 `window.PopupKit`，供其他油猴脚本通过 `@require` 引用：
+
+```js
+window.PopupKit.open({ url, title, width, height, linkIntercept })
+window.PopupKit.close()
+window.PopupKit.refresh()            // 刷新当前内容（保持位置/尺寸）
+window.PopupKit.isOpen()
+window.PopupKit.prefetch(url)        // 后台预热
+window.PopupKit.hasCached(url)
+window.PopupKit.config
+
+// 生命周期回调（宿主脚本设置）
+window.PopupKit._onOpen  = ({ url, title }) => {}
+window.PopupKit._onClose = ({ url }) => {}
+```
+
+库不自动初始化、不创建工具栏/规则面板，仅提供弹窗 API。
+
+**隔离设计**：所有 DOM id/class 使用 `pvk-` 前缀，样式自包含（`src/kit/kit.css`），不依赖主脚本的 SettingsManager / Loading / ErrorView，可与 popup-viewer-v2 主脚本或 page-picker-kit 同页共存而不冲突。加载行为通过 `open` 参数注入（`linkIntercept`、`loadingSelector` 等），无需共享设置。
+
+内置增强面板（`src/kit/KitPopupPanel.js`）：
+
+- **拖拽**：按住头部拖动，释放时自动约束回视口内
+- **全屏**：按钮或快捷键 `F` 切换
+- **刷新**：按钮或快捷键 `R`，刷新保持窗体位置与尺寸
+- **新标签页打开**：保留当前 URL 在新页打开
+- **快捷键**：`Esc` 关闭 · `F` 全屏 · `R` 刷新
+- **尺寸可配**：`open({ width, height })` 自定义窗体大小（默认 50% × 75%）
+- **视口自适应**：打开 DevTools 或缩放窗口时，窗体自动收缩（`min()` 联动 `100vw/100dvh`）并 clamp 回可视区域，不会被压缩出屏幕
+- **安全渲染**：非直载站点走抓取净化，剥离 `<script>`/事件属性，绝对化链接与懒加载图片
 
 ## Git 管理工具
 

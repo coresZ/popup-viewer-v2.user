@@ -170,8 +170,9 @@ html.pv-forum th.common a.xst:hover {
   pointer-events: none;
   width: var(--popup-width);
   height: var(--popup-height);
-  max-width: var(--popup-max-width);
-  max-height: var(--popup-max-height);
+  max-width: min(var(--popup-max-width), calc(100vw - 24px));
+  max-height: min(var(--popup-max-height), calc(100vh - 24px));
+  max-height: min(var(--popup-max-height), calc(100dvh - 24px));
   top: 50%;
   left: 50%;
   border: 1px solid var(--popup-border);

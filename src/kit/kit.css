@@ -1,0 +1,366 @@
+/* PopupKit 独立样式：pvk- 前缀，与 popup-viewer-v2 主脚本（popup-/pv-）
+   及 page-picker-kit（ppk-）完全隔离，避免同页多脚本 ID/CSS 冲突。
+   自包含 loading/error/spinner，不依赖主脚本 Loading.js/ErrorView.js 的样式。 */
+@layer pvk-reset {
+  #pvk-panel,
+  #pvk-panel *,
+  #pvk-overlay,
+  #pvk-loading,
+  #pvk-loading *,
+  #pvk-error,
+  #pvk-error *,
+  .pvk-btn {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+    border: 0;
+    outline: 0;
+    background: transparent;
+    vertical-align: baseline;
+    text-decoration: none;
+    text-shadow: none;
+    font-family: inherit;
+    font-size: inherit;
+    font-weight: inherit;
+    font-style: inherit;
+    line-height: inherit;
+    letter-spacing: inherit;
+    color: inherit;
+    text-align: left;
+  }
+}
+
+#pvk-panel {
+  box-sizing: border-box;
+}
+
+:root {
+  --pvk-accent: #2563eb;
+  --pvk-accent-hover: #1d4ed8;
+  --pvk-accent-soft: rgba(37, 99, 235, 0.1);
+  --pvk-danger: #dc2626;
+  --pvk-danger-soft: rgba(220, 38, 38, 0.1);
+  --pvk-header-bg: #fafbfc;
+  --pvk-border: #e4e7ec;
+  --pvk-text: #1a2233;
+  --pvk-muted: #64748b;
+  --pvk-faint: #94a3b8;
+  --pvk-bg: #ffffff;
+  --pvk-surface: #ffffff;
+  --pvk-btn-bg: rgba(15, 23, 42, 0.07);
+  --pvk-btn-hover: rgba(15, 23, 42, 0.12);
+  --pvk-btn-active: rgba(15, 23, 42, 0.17);
+  --pvk-focus-ring: rgba(37, 99, 235, 0.4);
+  --pvk-shadow:
+    0 0 0 1px rgba(15, 23, 42, 0.04),
+    0 24px 60px -18px rgba(15, 23, 42, 0.28),
+    0 8px 24px -12px rgba(15, 23, 42, 0.16);
+  --pvk-overlay: rgba(15, 23, 42, 0.28);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --pvk-accent: #60a5fa;
+    --pvk-accent-hover: #93c5fd;
+    --pvk-accent-soft: rgba(96, 165, 250, 0.14);
+    --pvk-danger: #f87171;
+    --pvk-danger-soft: rgba(248, 113, 113, 0.14);
+    --pvk-header-bg: #121a2b;
+    --pvk-border: #263247;
+    --pvk-text: #e2e8f0;
+    --pvk-muted: #94a3b8;
+    --pvk-faint: #64748b;
+    --pvk-bg: #0f172a;
+    --pvk-surface: #151e30;
+    --pvk-btn-bg: rgba(148, 163, 184, 0.14);
+    --pvk-btn-hover: rgba(148, 163, 184, 0.22);
+    --pvk-btn-active: rgba(148, 163, 184, 0.28);
+    --pvk-focus-ring: rgba(96, 165, 250, 0.5);
+    --pvk-shadow:
+      0 0 0 1px rgba(255, 255, 255, 0.04),
+      0 28px 70px -20px rgba(0, 0, 0, 0.72),
+      0 10px 28px -14px rgba(0, 0, 0, 0.5);
+    --pvk-overlay: rgba(0, 0, 0, 0.52);
+  }
+}
+
+/* 面板核心 */
+#pvk-panel {
+  position: fixed;
+  z-index: 10000;
+  width: 50%;
+  height: 75%;
+  max-width: min(2560px, calc(100vw - 24px));
+  max-height: min(1440px, calc(100vh - 24px));
+  max-height: min(1440px, calc(100dvh - 24px));
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%) scale(0.96);
+  transform-origin: center;
+  background-color: var(--pvk-surface);
+  color: var(--pvk-text);
+  box-shadow: var(--pvk-shadow);
+  border: 1px solid var(--pvk-border);
+  border-radius: 12px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
+    'Microsoft YaHei', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.25s ease, transform 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+}
+#pvk-panel.visible {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translate(-50%, -50%) scale(1);
+}
+
+/* 头部 */
+#pvk-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 0 10px 0 14px;
+  background-color: var(--pvk-header-bg);
+  border-bottom: 1px solid var(--pvk-border);
+  height: 46px;
+  min-height: 46px;
+  flex: 0 0 auto;
+  cursor: grab;
+  user-select: none;
+}
+#pvk-header:active {
+  cursor: grabbing;
+}
+#pvk-title {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+  flex: 1;
+}
+.pvk-title-mark {
+  flex: 0 0 auto;
+  width: 26px;
+  height: 26px;
+  border-radius: 8px;
+  background: var(--pvk-accent-soft);
+  color: var(--pvk-accent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.pvk-title-mark svg {
+  width: 15px;
+  height: 15px;
+  fill: none;
+  stroke: currentColor;
+}
+.pvk-title-text {
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0.1px;
+  color: var(--pvk-text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+#pvk-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
+}
+.pvk-btn {
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  background-color: var(--pvk-btn-bg);
+  color: var(--pvk-muted);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  transition: background-color 0.15s ease, color 0.15s ease, transform 0.1s ease;
+}
+.pvk-btn svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  pointer-events: none;
+}
+.pvk-btn:hover {
+  background-color: var(--pvk-btn-hover);
+  color: var(--pvk-text);
+}
+.pvk-btn:active {
+  transform: scale(0.92);
+}
+.pvk-btn:focus-visible {
+  outline: 2px solid var(--pvk-focus-ring);
+  outline-offset: 1px;
+}
+#pvk-close:hover {
+  color: var(--pvk-danger);
+  background-color: var(--pvk-danger-soft);
+}
+#pvk-actions .pvk-btn:hover {
+  color: var(--pvk-accent);
+  background-color: var(--pvk-accent-soft);
+}
+
+/* 内容区 */
+#pvk-content {
+  flex: 1;
+  overflow-y: auto;
+  position: relative;
+  background-color: var(--pvk-bg);
+  padding: 20px;
+  box-sizing: border-box;
+  scroll-behavior: smooth;
+  scrollbar-width: thin;
+  scrollbar-color: var(--pvk-faint) transparent;
+}
+#pvk-content::-webkit-scrollbar {
+  width: 8px;
+}
+#pvk-content::-webkit-scrollbar-thumb {
+  background-color: var(--pvk-faint);
+  border-radius: 8px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+#pvk-content.iframe-direct-load {
+  padding: 0;
+}
+#pvk-iframe {
+  width: 100%;
+  height: 100%;
+  border: none;
+  background-color: #fff;
+}
+
+/* 遮罩 */
+#pvk-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 9998;
+  background-color: var(--pvk-overlay);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.3s ease-in-out;
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+}
+#pvk-overlay.visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+/* 加载状态 */
+#pvk-loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: var(--pvk-muted);
+  padding: 25px;
+}
+.pvk-spinner {
+  width: 38px;
+  height: 38px;
+  margin-bottom: 20px;
+  border: 3px solid var(--pvk-accent-soft);
+  border-radius: 50%;
+  border-top: 3px solid var(--pvk-accent);
+  animation: pvk-spin 0.8s linear infinite;
+}
+@keyframes pvk-spin {
+  0% {
+    transform: rotate(0deg);
+  }
+  100% {
+    transform: rotate(360deg);
+  }
+}
+.pvk-loading-hint {
+  font-size: 15px;
+  font-weight: 500;
+  color: var(--pvk-text);
+}
+.pvk-loading-sub {
+  margin-top: 8px;
+  font-size: 13px;
+  color: var(--pvk-faint);
+}
+
+/* 错误状态 */
+#pvk-error {
+  padding: 35px;
+  color: var(--pvk-text);
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  box-sizing: border-box;
+}
+#pvk-error .pvk-error-icon {
+  color: var(--pvk-danger);
+  margin-bottom: 6px;
+}
+#pvk-error h3 {
+  margin-top: 16px;
+  margin-bottom: 10px;
+  font-weight: 600;
+  font-size: 1.15em;
+}
+#pvk-error p {
+  margin-bottom: 24px;
+  color: var(--pvk-muted);
+  max-width: 420px;
+  line-height: 1.6;
+  word-break: break-all;
+}
+#pvk-error button {
+  padding: 10px 20px;
+  background: var(--pvk-accent);
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  font-weight: 500;
+  font-size: 14px;
+  transition: background 0.15s ease-in-out, transform 0.1s ease-in-out;
+}
+#pvk-error button:hover {
+  background: var(--pvk-accent-hover);
+}
+#pvk-error button:active {
+  transform: scale(0.97);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #pvk-panel,
+  #pvk-overlay {
+    transition: none;
+  }
+  .pvk-spinner {
+    animation-duration: 1.6s;
+  }
+}
+@media (max-width: 560px), (max-height: 560px) {
+  #pvk-panel {
+    max-width: calc(100vw - 16px);
+    max-height: calc(100vh - 16px);
+  }
+}

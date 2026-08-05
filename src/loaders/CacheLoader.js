@@ -80,7 +80,7 @@ export class CacheLoader {
     });
     return { promise, abort };
   }
-  load({ url, keepScripts = false, container, onError, onLoad, mobileUA = null }) {
+  load({ url, keepScripts = false, container, onError, onLoad, mobileUA = null, linkIntercept, loadingSelector }) {
     logger.debug(`[CacheLoader] ${url}`);
     const cached = this._readCache(url);
     if (cached != null) {
@@ -90,7 +90,9 @@ export class CacheLoader {
         head: cached.head,
         url,
         container,
-        sandboxAttrs: this.sandboxAttrs
+        sandboxAttrs: this.sandboxAttrs,
+        linkIntercept,
+        loadingSelector
       });
       onLoad?.();
       return () => {
@@ -105,7 +107,9 @@ export class CacheLoader {
           head: result.head,
           url,
           container,
-          sandboxAttrs: this.sandboxAttrs
+          sandboxAttrs: this.sandboxAttrs,
+          linkIntercept,
+          loadingSelector
         });
         onLoad?.();
       })

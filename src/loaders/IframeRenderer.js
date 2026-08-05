@@ -2,8 +2,8 @@ import { logger } from '../utils/logger.js';
 import { el } from '../utils/dom.js';
 import { settingsManager } from '../core/SettingsManager.js';
 
-export function renderIntoIframe({ html, url, container, sandboxAttrs, head = '' }) {
-  container.querySelector('#popup-panel-loading')?.remove();
+export function renderIntoIframe({ html, url, container, sandboxAttrs, head = '', linkIntercept, loadingSelector = '#popup-panel-loading' }) {
+  container.querySelector(loadingSelector)?.remove();
   container.classList.add('iframe-direct-load');
   const iframe = el('iframe', {
     id: 'popup-panel-iframe',
@@ -17,7 +17,7 @@ export function renderIntoIframe({ html, url, container, sandboxAttrs, head = ''
   iframeDoc.close();
   iframe.addEventListener('load', () => {
     try {
-      fixLinks(iframeDoc);
+      fixLinks(iframeDoc, linkIntercept);
       injectReadStyle(iframeDoc);
     } catch (err) {
       logger.error('[renderIntoIframe] manipulate error', err);
@@ -49,8 +49,8 @@ function buildBaseHref(url) {
   }
 }
 
-function fixLinks(iframeDoc) {
-  const openNewTab = settingsManager.get().linkIntercept !== false;
+function fixLinks(iframeDoc, linkIntercept) {
+  const openNewTab = linkIntercept !== undefined ? linkIntercept : settingsManager.get().linkIntercept !== false;
   iframeDoc.querySelectorAll('a[href]').forEach((link) => {
     if (openNewTab) link.target = '_blank';
     const href = link.getAttribute('href');

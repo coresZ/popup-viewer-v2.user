@@ -354,10 +354,49 @@ export class PopupPanel {
       if (!dragging) return;
       dragging = false;
       this.panel.style.transition = '';
+      this._clampToViewport();
       if (this.currentPanelSize === 'phone') this.savePhonePosition();
     };
     document.addEventListener('mousemove', move);
     document.addEventListener('mouseup', up);
+    window.addEventListener('resize', () => {
+      if (this.panel?.classList.contains('visible')) {
+        requestAnimationFrame(() => this._clampToViewport());
+      }
+    });
+  }
+  /**
+   * 把弹窗约束回视口内（DevTools 占位 / 窗口缩放后调用），
+   * 避免窗体被压缩出可视区域。
+   */
+  _clampToViewport() {
+    if (!this.panel || this.isFullScreen) return;
+    const rect = this.panel.getBoundingClientRect();
+    const pad = 8;
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    let left = rect.left;
+    let top = rect.top;
+    if (rect.width > vw - pad * 2) {
+      left = pad;
+    } else {
+      if (left < pad) left = pad;
+      else if (left + rect.width > vw - pad) left = vw - pad - rect.width;
+    }
+    if (rect.height > vh - pad * 2) {
+      top = pad;
+    } else {
+      if (top < pad) top = pad;
+      else if (top + rect.height > vh - pad) top = vh - pad - rect.height;
+    }
+    if (left !== rect.left || top !== rect.top) {
+      this.panel.style.transition = 'none';
+      this.panel.style.left = `${left}px`;
+      this.panel.style.top = `${top}px`;
+      this.panel.style.transform = 'none';
+      void this.panel.offsetWidth;
+      this.panel.style.transition = '';
+    }
   }
   _setupKeyboard() {
     if (this._onKeydownBound) return;
