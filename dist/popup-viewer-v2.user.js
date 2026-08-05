@@ -926,7 +926,7 @@
   }
   function injectReadStyle(iframeDoc) {
     const style = iframeDoc.createElement("style");
-    style.textContent = "body{font-family:Segoe UI,sans-serif;padding:10px;word-wrap:break-word;overflow-wrap:break-word;}img,video,iframe{max-width:100%;height:auto;}a{color:#007bff;text-decoration:none;}a:hover{text-decoration:underline;}a:visited{color:#6a0dad;}";
+    style.textContent = "body{font-family:Segoe UI,sans-serif;padding:10px;word-wrap:break-word;overflow-wrap:break-word;overscroll-behavior:contain;}img,video,iframe{max-width:100%;height:auto;}a{color:#007bff;text-decoration:none;}a:hover{text-decoration:underline;}a:visited{color:#6a0dad;}";
     iframeDoc.head.insertBefore(style, iframeDoc.head.firstChild);
   }
 
@@ -2103,6 +2103,7 @@ html.pv-forum th.common a.xst:hover {\r
 #popup-content-panel {\r
   position: fixed;\r
   z-index: var(--popup-z-index);\r
+  overscroll-behavior: contain;\r
   background-color: var(--popup-surface);\r
   color: var(--popup-text);\r
   box-shadow: var(--popup-shadow);\r
@@ -2259,6 +2260,7 @@ html.pv-forum th.common a.xst:hover {\r
 #popup-content-area {\r
   flex: 1;\r
   overflow-y: auto;\r
+  overscroll-behavior: contain;\r
   position: relative;\r
   background-color: var(--popup-bg);\r
   padding: 20px;\r
@@ -3575,6 +3577,28 @@ a.xst::after {\r
         }
       };
       document.addEventListener("keydown", this._onKeydownBound);
+      document.addEventListener(
+        "wheel",
+        (e) => {
+          if (!this.panel || !this.panel.classList.contains("visible")) return;
+          if (this.isFullScreen) {
+            e.preventDefault();
+            e.stopPropagation();
+          } else {
+            const content = this.contentArea;
+            if (content && content.contains(e.target)) {
+              const { scrollTop, scrollHeight, clientHeight } = content;
+              const atBottom = scrollTop + clientHeight >= scrollHeight - 1;
+              const canScroll = scrollHeight > clientHeight;
+              if (!canScroll || atBottom) {
+                e.preventDefault();
+                e.stopPropagation();
+              }
+            }
+          }
+        },
+        true
+      );
     }
   };
 

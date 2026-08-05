@@ -412,5 +412,28 @@ export class PopupPanel {
       }
     };
     document.addEventListener('keydown', this._onKeydownBound);
+    // 滚动链兜底：弹窗内容滚到底时不滚动外部页面
+    document.addEventListener(
+      'wheel',
+      (e) => {
+        if (!this.panel || !this.panel.classList.contains('visible')) return;
+        if (this.isFullScreen) {
+          e.preventDefault();
+          e.stopPropagation();
+        } else {
+          const content = this.contentArea;
+          if (content && content.contains(e.target)) {
+            const { scrollTop, scrollHeight, clientHeight } = content;
+            const atBottom = scrollTop + clientHeight >= scrollHeight - 1;
+            const canScroll = scrollHeight > clientHeight;
+            if (!canScroll || atBottom) {
+              e.preventDefault();
+              e.stopPropagation();
+            }
+          }
+        }
+      },
+      true
+    );
   }
 }

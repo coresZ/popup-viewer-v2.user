@@ -64,6 +64,6 @@ function fixLinks(iframeDoc, linkIntercept) {
 function injectReadStyle(iframeDoc) {
   const style = iframeDoc.createElement('style');
   style.textContent =
-    'body{font-family:Segoe UI,sans-serif;padding:10px;word-wrap:break-word;overflow-wrap:break-word;}img,video,iframe{max-width:100%;height:auto;}a{color:#007bff;text-decoration:none;}a:hover{text-decoration:underline;}a:visited{color:#6a0dad;}';
+    'body{font-family:Segoe UI,sans-serif;padding:10px;word-wrap:break-word;overflow-wrap:break-word;overscroll-behavior:contain;}img,video,iframe{max-width:100%;height:auto;}a{color:#007bff;text-decoration:none;}a:hover{text-decoration:underline;}a:visited{color:#6a0dad;}';
   iframeDoc.head.insertBefore(style, iframeDoc.head.firstChild);
 }

@@ -158,6 +158,7 @@ html.pv-forum th.common a.xst:hover {
 #popup-content-panel {
   position: fixed;
   z-index: var(--popup-z-index);
+  overscroll-behavior: contain;
   background-color: var(--popup-surface);
   color: var(--popup-text);
   box-shadow: var(--popup-shadow);
@@ -314,6 +315,7 @@ html.pv-forum th.common a.xst:hover {
 #popup-content-area {
   flex: 1;
   overflow-y: auto;
+  overscroll-behavior: contain;
   position: relative;
   background-color: var(--popup-bg);
   padding: 20px;
