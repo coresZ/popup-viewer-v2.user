@@ -667,7 +667,7 @@
   };
 
   // src/security/Sanitizer.js
-  var Sanitizer = class {
+  var Sanitizer = class _Sanitizer {
     constructor() {
       this.removedTags = /* @__PURE__ */ new Set([
         "script",
@@ -698,24 +698,94 @@
       const doc = new DOMParser().parseFromString(html, "text/html");
       const head = this._collectHead(doc, baseUrl);
       this._purge(doc, options);
-      this._resolveLazyImages(doc);
+      this._resolveLazyImages(doc, baseUrl);
       return { head, body: doc.body ? doc.body.innerHTML : "" };
     }
     /**
-     * 解析懒加载图片：真实地址放在 data-original/data-src/data-lazy-src，
-     * src 常为占位图（懒加载 JS 被净化后不会执行）。把真实地址换到 src。
+     * 解析懒加载图片：真实地址常放在 data-original/data-src/data-srcset 等各类 data 属性里，
+     * src 多为占位图（懒加载 JS 被净化后不会执行）。只要找到真实地址就换到 src 并绝对化，
+     * 不依赖对「占位图文件名」的精确识别——各站点占位图命名千差万别，正则穷举必然漏。
      */
-    _resolveLazyImages(doc) {
-      doc.querySelectorAll("img[data-original], img[data-src], img[data-lazy-src]").forEach((img) => {
-        const real = img.getAttribute("data-original") || img.getAttribute("data-src") || img.getAttribute("data-lazy-src");
-        if (!real) return;
-        const cur = (img.getAttribute("src") || "").trim();
-        const isPlaceholder = !cur || /placeholder|loading|blank|spacer|1x1|pixel|px\.gif/i.test(cur);
-        if (isPlaceholder) img.setAttribute("src", real);
-        for (const attr of ["data-original", "data-src", "data-lazy-src"]) img.removeAttribute(attr);
-        img.classList.remove("lazy");
-        img.loading = "lazy";
+    static REAL_SRC_ATTRS = [
+      "data-src",
+      "data-original",
+      "data-lazy-src",
+      "data-actualsrc",
+      "data-src-real",
+      "data-real-src",
+      "data-url",
+      "data-large",
+      "data-big",
+      "data-hd-src",
+      "data-original-src",
+      "data-echo",
+      "data-lazyload",
+      "data-lazy-load",
+      "data-full",
+      "data-img"
+    ];
+    static PLACEHOLDER_RE = /^(data:|about:|blob:)/i;
+    _resolveLazyImages(doc, baseUrl) {
+      doc.querySelectorAll("img").forEach((img) => {
+        const real = this._firstRealAttr(img);
+        if (real) {
+          const resolved = this._absolutize(real, baseUrl);
+          if (resolved) img.setAttribute("src", resolved);
+          this._clearRealAttrs(img);
+          img.classList.remove("lazy");
+          img.loading = "lazy";
+          return;
+        }
+        if (this._resolveSrcset(img, baseUrl)) {
+          this._clearRealAttrs(img);
+          img.classList.remove("lazy");
+          img.loading = "lazy";
+        }
       });
+    }
+    _firstRealAttr(img) {
+      for (const attr of _Sanitizer.REAL_SRC_ATTRS) {
+        const value = img.getAttribute(attr);
+        if (value && value.trim()) return value.trim();
+      }
+      return null;
+    }
+    _absolutize(value, baseUrl) {
+      if (!value) return null;
+      if (/^(javascript|vbscript|file):/i.test(value.trim())) return null;
+      try {
+        return new URL(value, baseUrl || void 0).href;
+      } catch {
+        return value;
+      }
+    }
+    /**
+     * 处理 data-srcset / data-original-set：绝对化并写回 srcset；
+     * src 仍是占位图时用第一个候选作为兜底 src。返回是否处理过。
+     */
+    _resolveSrcset(img, baseUrl) {
+      const raw = img.getAttribute("data-srcset") || img.getAttribute("data-original-set");
+      if (!raw) return false;
+      const absolute = raw.split(",").map((entry) => entry.trim()).filter(Boolean).map((entry) => {
+        const parts = entry.split(/\s+/);
+        const url = parts[0];
+        if (!url) return entry;
+        try {
+          return new URL(url, baseUrl || void 0).href + (parts.length > 1 ? " " + parts.slice(1).join(" ") : "");
+        } catch {
+          return entry;
+        }
+      });
+      if (absolute.length) img.setAttribute("srcset", absolute.join(", "));
+      img.removeAttribute("data-srcset");
+      img.removeAttribute("data-original-set");
+      const cur = (img.getAttribute("src") || "").trim();
+      const first = absolute[0] ? absolute[0].split(/\s+/)[0] : null;
+      if (first && (!cur || _Sanitizer.PLACEHOLDER_RE.test(cur))) img.setAttribute("src", first);
+      return true;
+    }
+    _clearRealAttrs(img) {
+      for (const attr of _Sanitizer.REAL_SRC_ATTRS) img.removeAttribute(attr);
     }
     /**
      * 收集原页面的样式（stylesheet 链接与 head 中的 <style> 块），
@@ -782,9 +852,15 @@
           node.removeAttribute(name);
           continue;
         }
-        if (name === "href" || name === "src") {
+        if (name === "href") {
           const scheme = String(value).trim().split(":")[0].toLowerCase();
           if (["javascript", "data", "vbscript", "file"].includes(scheme)) {
+            node.removeAttribute(name);
+          }
+        }
+        if (name === "src" || name === "poster") {
+          const scheme = String(value).trim().split(":")[0].toLowerCase();
+          if (["javascript", "vbscript", "file"].includes(scheme)) {
             node.removeAttribute(name);
           }
         }
@@ -876,6 +952,24 @@
   var settingsManager = new SettingsManager();
 
   // src/loaders/IframeRenderer.js
+  var IMG_REAL_ATTRS = [
+    "data-src",
+    "data-original",
+    "data-lazy-src",
+    "data-actualsrc",
+    "data-src-real",
+    "data-real-src",
+    "data-url",
+    "data-large",
+    "data-big",
+    "data-hd-src",
+    "data-original-src",
+    "data-echo",
+    "data-lazyload",
+    "data-lazy-load",
+    "data-full",
+    "data-img"
+  ];
   function renderIntoIframe({ html, url, container, sandboxAttrs, head = "", linkIntercept, loadingSelector = "#popup-panel-loading" }) {
     container.querySelector(loadingSelector)?.remove();
     container.classList.add("iframe-direct-load");
@@ -889,15 +983,19 @@
     iframeDoc.open();
     iframeDoc.write(buildDocument(html, url, head));
     iframeDoc.close();
-    iframe.addEventListener("load", () => {
+    const runFixes = () => {
+      if (!iframe.isConnected || !iframe.contentWindow) return;
       try {
         fixLinks(iframeDoc, linkIntercept);
         injectReadStyle(iframeDoc);
+        fixImages(iframeDoc);
       } catch (err) {
         logger.error("[renderIntoIframe] manipulate error", err);
       }
-    });
+    };
+    iframe.addEventListener("load", runFixes);
     if (iframeDoc.readyState === "complete") iframe.dispatchEvent(new Event("load"));
+    [1500, 3500].forEach((delay) => setTimeout(runFixes, delay));
     return iframe;
   }
   function buildDocument(html, url, head = "") {
@@ -907,7 +1005,9 @@
   function buildBaseHref(url) {
     try {
       const u = new URL(url);
-      return u.origin ? u.origin + u.pathname : u.pathname;
+      let base = u.origin ? u.origin + u.pathname : u.pathname;
+      if (!/\.[a-z0-9]+$/i.test(u.pathname) && !u.pathname.endsWith("/")) base += "/";
+      return base;
     } catch {
       return url;
     }
@@ -928,6 +1028,44 @@
     const style = iframeDoc.createElement("style");
     style.textContent = "body{font-family:Segoe UI,sans-serif;padding:10px;word-wrap:break-word;overflow-wrap:break-word;overscroll-behavior:contain;}img,video,iframe{max-width:100%;height:auto;}a{color:#007bff;text-decoration:none;}a:hover{text-decoration:underline;}a:visited{color:#6a0dad;}";
     iframeDoc.head.insertBefore(style, iframeDoc.head.firstChild);
+  }
+  function fixImages(iframeDoc) {
+    iframeDoc.querySelectorAll("img").forEach((img) => {
+      img.loading = "eager";
+      const cur = img.getAttribute("src") || "";
+      if (!cur || img.complete && img.naturalWidth === 0) {
+        for (const attr of IMG_REAL_ATTRS) {
+          const value = img.getAttribute(attr);
+          if (value && value.trim()) {
+            try {
+              img.src = new URL(value.trim(), iframeDoc.baseURI).href;
+            } catch {
+              img.src = value.trim();
+            }
+            img.removeAttribute(attr);
+            break;
+          }
+        }
+      }
+      const dsrcset = img.getAttribute("data-srcset") || img.getAttribute("data-original-set");
+      if (dsrcset) {
+        const first = dsrcset.split(",")[0].trim().split(/\s+/)[0];
+        if (first) {
+          try {
+            img.src = new URL(first, iframeDoc.baseURI).href;
+          } catch {
+            img.src = first;
+          }
+        }
+        img.removeAttribute("data-srcset");
+        img.removeAttribute("data-original-set");
+      }
+      if (img.complete && img.naturalWidth === 0 && img.src && !/^data:/i.test(img.src)) {
+        const s = img.src;
+        img.src = "";
+        img.src = s;
+      }
+    });
   }
 
   // src/loaders/RequestLoader.js

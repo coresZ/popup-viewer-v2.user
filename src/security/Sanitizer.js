@@ -29,27 +29,98 @@ export class Sanitizer {
     const doc = new DOMParser().parseFromString(html, 'text/html');
     const head = this._collectHead(doc, baseUrl);
     this._purge(doc, options);
-    this._resolveLazyImages(doc);
+    this._resolveLazyImages(doc, baseUrl);
     return { head, body: doc.body ? doc.body.innerHTML : '' };
   }
   /**
-   * 解析懒加载图片：真实地址放在 data-original/data-src/data-lazy-src，
-   * src 常为占位图（懒加载 JS 被净化后不会执行）。把真实地址换到 src。
+   * 解析懒加载图片：真实地址常放在 data-original/data-src/data-srcset 等各类 data 属性里，
+   * src 多为占位图（懒加载 JS 被净化后不会执行）。只要找到真实地址就换到 src 并绝对化，
+   * 不依赖对「占位图文件名」的精确识别——各站点占位图命名千差万别，正则穷举必然漏。
    */
-  _resolveLazyImages(doc) {
-    doc.querySelectorAll('img[data-original], img[data-src], img[data-lazy-src]').forEach((img) => {
-      const real =
-        img.getAttribute('data-original') ||
-        img.getAttribute('data-src') ||
-        img.getAttribute('data-lazy-src');
-      if (!real) return;
-      const cur = (img.getAttribute('src') || '').trim();
-      const isPlaceholder = !cur || /placeholder|loading|blank|spacer|1x1|pixel|px\.gif/i.test(cur);
-      if (isPlaceholder) img.setAttribute('src', real);
-      for (const attr of ['data-original', 'data-src', 'data-lazy-src']) img.removeAttribute(attr);
-      img.classList.remove('lazy');
-      img.loading = 'lazy';
+  static REAL_SRC_ATTRS = [
+    'data-src',
+    'data-original',
+    'data-lazy-src',
+    'data-actualsrc',
+    'data-src-real',
+    'data-real-src',
+    'data-url',
+    'data-large',
+    'data-big',
+    'data-hd-src',
+    'data-original-src',
+    'data-echo',
+    'data-lazyload',
+    'data-lazy-load',
+    'data-full',
+    'data-img'
+  ];
+  static PLACEHOLDER_RE = /^(data:|about:|blob:)/i;
+  _resolveLazyImages(doc, baseUrl) {
+    doc.querySelectorAll('img').forEach((img) => {
+      const real = this._firstRealAttr(img);
+      if (real) {
+        const resolved = this._absolutize(real, baseUrl);
+        if (resolved) img.setAttribute('src', resolved);
+        this._clearRealAttrs(img);
+        img.classList.remove('lazy');
+        img.loading = 'lazy';
+        return;
+      }
+      if (this._resolveSrcset(img, baseUrl)) {
+        this._clearRealAttrs(img);
+        img.classList.remove('lazy');
+        img.loading = 'lazy';
+      }
     });
+  }
+  _firstRealAttr(img) {
+    for (const attr of Sanitizer.REAL_SRC_ATTRS) {
+      const value = img.getAttribute(attr);
+      if (value && value.trim()) return value.trim();
+    }
+    return null;
+  }
+  _absolutize(value, baseUrl) {
+    if (!value) return null;
+    if (/^(javascript|vbscript|file):/i.test(value.trim())) return null;
+    try {
+      return new URL(value, baseUrl || undefined).href;
+    } catch {
+      return value;
+    }
+  }
+  /**
+   * 处理 data-srcset / data-original-set：绝对化并写回 srcset；
+   * src 仍是占位图时用第一个候选作为兜底 src。返回是否处理过。
+   */
+  _resolveSrcset(img, baseUrl) {
+    const raw = img.getAttribute('data-srcset') || img.getAttribute('data-original-set');
+    if (!raw) return false;
+    const absolute = raw
+      .split(',')
+      .map((entry) => entry.trim())
+      .filter(Boolean)
+      .map((entry) => {
+        const parts = entry.split(/\s+/);
+        const url = parts[0];
+        if (!url) return entry;
+        try {
+          return new URL(url, baseUrl || undefined).href + (parts.length > 1 ? ' ' + parts.slice(1).join(' ') : '');
+        } catch {
+          return entry;
+        }
+      });
+    if (absolute.length) img.setAttribute('srcset', absolute.join(', '));
+    img.removeAttribute('data-srcset');
+    img.removeAttribute('data-original-set');
+    const cur = (img.getAttribute('src') || '').trim();
+    const first = absolute[0] ? absolute[0].split(/\s+/)[0] : null;
+    if (first && (!cur || Sanitizer.PLACEHOLDER_RE.test(cur))) img.setAttribute('src', first);
+    return true;
+  }
+  _clearRealAttrs(img) {
+    for (const attr of Sanitizer.REAL_SRC_ATTRS) img.removeAttribute(attr);
   }
   /**
    * 收集原页面的样式（stylesheet 链接与 head 中的 <style> 块），
@@ -118,9 +189,17 @@ export class Sanitizer {
         node.removeAttribute(name);
         continue;
       }
-      if (name === 'href' || name === 'src') {
+      if (name === 'href') {
         const scheme = String(value).trim().split(':')[0].toLowerCase();
         if (['javascript', 'data', 'vbscript', 'file'].includes(scheme)) {
+          node.removeAttribute(name);
+        }
+      }
+      if (name === 'src' || name === 'poster') {
+        // 图片/海报允许 data: URI（data: 图片在 <img> 中无害），
+        // 仅拦截会执行代码或读本地文件的协议；iframe/script 等标签已整体移除。
+        const scheme = String(value).trim().split(':')[0].toLowerCase();
+        if (['javascript', 'vbscript', 'file'].includes(scheme)) {
           node.removeAttribute(name);
         }
       }
