@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name          页内弹窗打开新帖
 // @namespace     http://tampermonkey.net/
-// @version       2.0.1
+// @version       2.0.5
 // @description   点击论坛帖子链接，在弹窗中加载内容 (插件化架构 V2)
 // @author        cores
 // @match         *://*/*
@@ -722,7 +722,11 @@
       "data-lazyload",
       "data-lazy-load",
       "data-full",
-      "data-img"
+      "data-img",
+      // Discuz 系论坛（52pojie/wnflb/chiphell 等）附件图：src 为 1x1 none.gif 占位，
+      // 真实地址放在 zoomfile/file 属性里，点击时才由 JS 换入
+      "zoomfile",
+      "file"
     ];
     static PLACEHOLDER_RE = /^(data:|about:|blob:)/i;
     _resolveLazyImages(doc, baseUrl) {
@@ -953,6 +957,10 @@
 
   // src/loaders/IframeRenderer.js
   var IMG_REAL_ATTRS = [
+    // Discuz 系论坛（52pojie/wnflb/chiphell 等）附件图：src 为 1x1 none.gif 占位，
+    // 真实地址放在 zoomfile/file 属性里，点击时才由 JS 换入
+    "zoomfile",
+    "file",
     "data-src",
     "data-original",
     "data-lazy-src",
@@ -1033,7 +1041,8 @@
     iframeDoc.querySelectorAll("img").forEach((img) => {
       img.loading = "eager";
       const cur = img.getAttribute("src") || "";
-      if (!cur || img.complete && img.naturalWidth === 0) {
+      const isPlaceholderSrc = !cur || /(?:none|placeholder|loading|blank|spacer|1x1|pixel)(?:\.gif|\.png|\.jpg|\.jpeg|\.webp)?$/i.test(cur);
+      if (isPlaceholderSrc || img.complete && img.naturalWidth === 0) {
         for (const attr of IMG_REAL_ATTRS) {
           const value = img.getAttribute(attr);
           if (value && value.trim()) {

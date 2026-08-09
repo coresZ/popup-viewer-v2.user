@@ -53,7 +53,11 @@ export class Sanitizer {
     'data-lazyload',
     'data-lazy-load',
     'data-full',
-    'data-img'
+    'data-img',
+    // Discuz 系论坛（52pojie/wnflb/chiphell 等）附件图：src 为 1x1 none.gif 占位，
+    // 真实地址放在 zoomfile/file 属性里，点击时才由 JS 换入
+    'zoomfile',
+    'file'
   ];
   static PLACEHOLDER_RE = /^(data:|about:|blob:)/i;
   _resolveLazyImages(doc, baseUrl) {

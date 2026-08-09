@@ -3,6 +3,10 @@ import { el } from '../utils/dom.js';
 import { settingsManager } from '../core/SettingsManager.js';
 
 const IMG_REAL_ATTRS = [
+  // Discuz 系论坛（52pojie/wnflb/chiphell 等）附件图：src 为 1x1 none.gif 占位，
+  // 真实地址放在 zoomfile/file 属性里，点击时才由 JS 换入
+  'zoomfile',
+  'file',
   'data-src',
   'data-original',
   'data-lazy-src',
@@ -103,7 +107,11 @@ function fixImages(iframeDoc) {
   iframeDoc.querySelectorAll('img').forEach((img) => {
     img.loading = 'eager';
     const cur = img.getAttribute('src') || '';
-    if (!cur || (img.complete && img.naturalWidth === 0)) {
+    // src 为 1x1 占位图（Discuz none.gif、懒加载占位等）也算未显示，
+    // 否则 naturalWidth=1 会绕过 naturalWidth===0 的判定导致真实图永不加载
+    const isPlaceholderSrc =
+      !cur || /(?:none|placeholder|loading|blank|spacer|1x1|pixel)(?:\.gif|\.png|\.jpg|\.jpeg|\.webp)?$/i.test(cur);
+    if (isPlaceholderSrc || (img.complete && img.naturalWidth === 0)) {
       for (const attr of IMG_REAL_ATTRS) {
         const value = img.getAttribute(attr);
         if (value && value.trim()) {
