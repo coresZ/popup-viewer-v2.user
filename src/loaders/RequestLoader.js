@@ -2,13 +2,10 @@ import { config } from '../config.js';
 import { logger } from '../utils/logger.js';
 import { gm } from '../utils/gm.js';
 import { sanitizer } from '../security/Sanitizer.js';
+import { contentSandboxAttrs } from '../security/Sandbox.js';
 import { renderIntoIframe } from './IframeRenderer.js';
 
 export class RequestLoader {
-  constructor() {
-    this.sandboxAttrs =
-      'allow-forms allow-modals allow-pointer-lock allow-popups allow-popups-to-escape-sandbox allow-presentation allow-same-origin allow-scripts';
-  }
   load({ url, hostname, keepScripts = false, container, onError, onLoad, mobileUA = null, linkIntercept, loadingSelector }) {
     logger.debug(`[RequestLoader] fetch ${url}`);
     const abort = gm.xmlhttpRequest({
@@ -28,7 +25,7 @@ export class RequestLoader {
             head: result.head,
             url,
             container,
-            sandboxAttrs: this.sandboxAttrs,
+            sandboxAttrs: contentSandboxAttrs(keepScripts),
             linkIntercept,
             loadingSelector
           });

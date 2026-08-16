@@ -1,3 +1,26 @@
+// 懒加载图片真实地址属性：Discuz 系 zoomfile/file 最权威（占位图 none.gif），
+// 其次各站通用 data-* 懒加载属性。净化阶段与渲染兜底阶段共用，避免两处漂移。
+export const REAL_SRC_ATTRS = [
+  'zoomfile',
+  'file',
+  'data-src',
+  'data-original',
+  'data-lazy-src',
+  'data-actualsrc',
+  'data-src-real',
+  'data-real-src',
+  'data-url',
+  'data-large',
+  'data-big',
+  'data-hd-src',
+  'data-original-src',
+  'data-echo',
+  'data-lazyload',
+  'data-lazy-load',
+  'data-full',
+  'data-img'
+];
+
 export class Sanitizer {
   constructor() {
     this.removedTags = new Set([
@@ -37,28 +60,6 @@ export class Sanitizer {
    * src 多为占位图（懒加载 JS 被净化后不会执行）。只要找到真实地址就换到 src 并绝对化，
    * 不依赖对「占位图文件名」的精确识别——各站点占位图命名千差万别，正则穷举必然漏。
    */
-  static REAL_SRC_ATTRS = [
-    'data-src',
-    'data-original',
-    'data-lazy-src',
-    'data-actualsrc',
-    'data-src-real',
-    'data-real-src',
-    'data-url',
-    'data-large',
-    'data-big',
-    'data-hd-src',
-    'data-original-src',
-    'data-echo',
-    'data-lazyload',
-    'data-lazy-load',
-    'data-full',
-    'data-img',
-    // Discuz 系论坛（52pojie/wnflb/chiphell 等）附件图：src 为 1x1 none.gif 占位，
-    // 真实地址放在 zoomfile/file 属性里，点击时才由 JS 换入
-    'zoomfile',
-    'file'
-  ];
   static PLACEHOLDER_RE = /^(data:|about:|blob:)/i;
   _resolveLazyImages(doc, baseUrl) {
     doc.querySelectorAll('img').forEach((img) => {
@@ -79,7 +80,7 @@ export class Sanitizer {
     });
   }
   _firstRealAttr(img) {
-    for (const attr of Sanitizer.REAL_SRC_ATTRS) {
+    for (const attr of REAL_SRC_ATTRS) {
       const value = img.getAttribute(attr);
       if (value && value.trim()) return value.trim();
     }
@@ -124,7 +125,7 @@ export class Sanitizer {
     return true;
   }
   _clearRealAttrs(img) {
-    for (const attr of Sanitizer.REAL_SRC_ATTRS) img.removeAttribute(attr);
+    for (const attr of REAL_SRC_ATTRS) img.removeAttribute(attr);
   }
   /**
    * 收集原页面的样式（stylesheet 链接与 head 中的 <style> 块），
@@ -183,28 +184,28 @@ export class Sanitizer {
     const attrs = node.attributes;
     if (!attrs || !attrs.length) return;
     for (let i = attrs.length - 1; i >= 0; i--) {
-      const name = attrs[i].name;
+      const name = attrs[i].name.toLowerCase();
       const value = attrs[i].value;
       if (this.dangerousEventAttrs.test(name)) {
-        node.removeAttribute(name);
+        node.removeAttribute(attrs[i].name);
         continue;
       }
-      if (name.toLowerCase() === 'srcdoc') {
-        node.removeAttribute(name);
+      if (name === 'srcdoc') {
+        node.removeAttribute(attrs[i].name);
         continue;
       }
-      if (name === 'href') {
+      // 链接/导航类：禁止 javascript:/data:/vbscript:/file:（含 SVG xlink:href）
+      if (name === 'href' || name === 'xlink:href') {
         const scheme = String(value).trim().split(':')[0].toLowerCase();
         if (['javascript', 'data', 'vbscript', 'file'].includes(scheme)) {
-          node.removeAttribute(name);
+          node.removeAttribute(attrs[i].name);
         }
       }
-      if (name === 'src' || name === 'poster') {
-        // 图片/海报允许 data: URI（data: 图片在 <img> 中无害），
-        // 仅拦截会执行代码或读本地文件的协议；iframe/script 等标签已整体移除。
+      // 媒体类：允许 data: URI（图片/海报无害），仅拦截可执行代码或读本地文件的协议
+      if (name === 'src' || name === 'poster' || name === 'background') {
         const scheme = String(value).trim().split(':')[0].toLowerCase();
         if (['javascript', 'vbscript', 'file'].includes(scheme)) {
-          node.removeAttribute(name);
+          node.removeAttribute(attrs[i].name);
         }
       }
     }

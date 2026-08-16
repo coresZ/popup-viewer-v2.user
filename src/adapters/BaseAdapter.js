@@ -6,16 +6,16 @@ export class BaseAdapter {
   match(hostname, pathname) {
     return false;
   }
+  /** 域名精确/子域名匹配：example.com 命中 example.com 与 www.example.com，但不命中 evil-example.com */
+  matchDomain(hostname, domains) {
+    return domains.some((d) => hostname === d || hostname.endsWith('.' + d));
+  }
   /** 从点击事件的目标元素中解析出可打开的链接信息 */
   parseClick(event) {
     return null;
   }
-  /** 返回该站点可增强的链接选择器列表 */
-  getEnhanceSelectors() {
-    return [];
-  }
-  /** 对某个 DOM 元素应用视觉增强（添加 popup-trigger 类等） */
-  enhance(element) {
+  /** 对当前页面 DOM 应用视觉增强（添加 popup-trigger 类等） */
+  enhance(doc, hostname, pathname) {
     return false;
   }
   /** 供子类使用的通用 URL 解析辅助 */

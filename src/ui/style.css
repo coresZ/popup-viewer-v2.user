@@ -188,6 +188,29 @@ html.pv-forum th.common a.xst:hover {
   transform: translate(-50%, -50%) scale(1);
 }
 
+/* ===== 拖拽 / 缩放反馈 ===== */
+#popup-content-panel.pv-dragging,
+#popup-content-panel.pv-resizing {
+  user-select: none;
+  box-shadow:
+    0 0 0 1px var(--popup-accent-soft),
+    0 0 0 3px var(--popup-focus-ring),
+    0 28px 70px -20px rgba(15, 23, 42, 0.4),
+    0 10px 28px -14px rgba(15, 23, 42, 0.26);
+}
+.pv-resize {
+  position: absolute;
+  z-index: 3;
+}
+.pv-resize-n { top: 0; left: 10px; right: 10px; height: 6px; cursor: ns-resize; }
+.pv-resize-s { bottom: 0; left: 10px; right: 10px; height: 6px; cursor: ns-resize; }
+.pv-resize-e { right: 0; top: 10px; bottom: 10px; width: 6px; cursor: ew-resize; }
+.pv-resize-w { left: 0; top: 10px; bottom: 10px; width: 6px; cursor: ew-resize; }
+.pv-resize-ne { top: 0; right: 0; width: 12px; height: 12px; cursor: nesw-resize; }
+.pv-resize-nw { top: 0; left: 0; width: 12px; height: 12px; cursor: nwse-resize; }
+.pv-resize-se { bottom: 0; right: 0; width: 12px; height: 12px; cursor: nwse-resize; }
+.pv-resize-sw { bottom: 0; left: 0; width: 12px; height: 12px; cursor: nesw-resize; }
+
 /* ===== 面板头部 ===== */
 #popup-panel-header {
   display: flex;

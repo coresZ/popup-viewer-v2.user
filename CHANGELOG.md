@@ -1,5 +1,34 @@
 # Changelog
 
+## [2.0.7] - 2026-08-09
+
+### Added
+
+- **弹窗自由缩放**：窗体新增 8 向边缘/角落拖拽手柄，可任意调整大小（最小 260×200），从左边/上边缩放时对边锚定不漂移，释放后自动约束回视口；自定义尺寸按站点持久化，重新打开/刷新不丢失。设置面板中重新点击「小/中/大/手机」预设可退出自定义尺寸
+- **拖拽手感优化**：拖拽 mousemove 用 rAF 合并避免高频重排；拖拽中全页 grabbing 光标 + 窗体高亮描边阴影反馈
+
+### Fixed
+
+- **缩放后切换大小预设不生效**：缩放此前写内联 `width/height` 覆盖 CSS 变量，导致点「小/中/大」窗体不变；现缩放全程改写 `--popup-width/height` 变量，与预设共用同一数据源，切换即时生效
+
+## [2.0.6] - 2026-08-09
+
+### Security
+
+- **非信任站点渲染不再授予脚本权限**：抓取净化注入的 iframe 此前始终带 `allow-same-origin + allow-scripts`，一旦净化遗漏即可同源访问父页面。现按 `keepScripts` 动态生成 sandbox——非信任站点仅 `allow-same-origin`（无 `allow-scripts`），脚本无法执行
+- **Sanitizer 补齐协议校验**：新增 `xlink:href`、`background` 的危险协议拦截（javascript:/data:/vbscript:/file:）
+
+### Fixed
+
+- **adapter 域名匹配过宽**：Discuz/Cili 从 `hostname.includes` 改为后缀精确匹配，避免误匹配 `evil-chiphell.com` 之类
+- **Esc 键盘冲突**：规则面板、取选模式打开时按 Esc 只关闭当前层，不再连带关闭弹窗
+
+### Changed
+
+- **构建**：新增 `--minify` 开关（默认不压缩），`npm run build:min` 产出压缩版；去掉 kit 多余的 `globalName`
+- **性能**：全页面 `mouseover` 增加廉价前置判断，非链接元素不再进入完整解析；`logger.log` 改为 `pv2_debug` 门控
+- **去重/清理**：主面板与 Kit 面板的拖拽/视口约束/滚动链抽为共享工具 `utils/panelBehavior.js`；懒加载图片属性列表单一来源；`LoaderManager` 私有方法公开化；移除死代码（`registerEnhancer`、`getEnhanceSelectors`、`config.popup` 未用字段、`logger.info`）
+
 ## [2.0.5] - 2026-08-09
 
 ### Fixed

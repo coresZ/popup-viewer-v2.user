@@ -351,6 +351,12 @@
   transform: scale(0.97);
 }
 
+/* 拖拽反馈（共享 setupDrag 会添加 pv-dragging 类） */
+#pvk-panel.pv-dragging {
+  user-select: none;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.4), 0 28px 70px -20px rgba(0, 0, 0, 0.5);
+}
+
 @media (prefers-reduced-motion: reduce) {
   #pvk-panel,
   #pvk-overlay {

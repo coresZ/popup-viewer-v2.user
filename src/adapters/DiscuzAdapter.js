@@ -1,14 +1,14 @@
 import { BaseAdapter } from './BaseAdapter.js';
 
 export class DiscuzAdapter extends BaseAdapter {
-  constructor(hostnamePatterns = ['chiphell', 'wnflb', '52pojie']) {
+  constructor(hostnamePatterns = ['chiphell.com', 'wnflb2023.com', '52pojie.cn']) {
     super();
     this.name = 'Discuz';
     this.forumStyles = true;
     this.patterns = hostnamePatterns;
   }
   match(hostname) {
-    return this.patterns.some((p) => hostname.includes(p));
+    return this.matchDomain(hostname, this.patterns);
   }
   parseClick(event) {
     const link = event.target.closest?.('a.xst');

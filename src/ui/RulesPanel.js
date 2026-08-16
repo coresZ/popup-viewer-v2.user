@@ -121,7 +121,11 @@ export function createRulesPanel() {
   }
 
   document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && root.classList.contains('visible')) close();
+    if (e.key === 'Escape' && root.classList.contains('visible')) {
+      // 规则面板优先级高于弹窗面板：只关规则面板，不再触发弹窗的 Esc 关闭
+      e.stopImmediatePropagation();
+      close();
+    }
   });
 
   return { root, backdrop, open, close };

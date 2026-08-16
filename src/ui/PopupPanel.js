@@ -1,6 +1,7 @@
 import { config } from '../config.js';
 import { gm } from '../utils/gm.js';
 import { el, svgIcon } from '../utils/dom.js';
+import { clampToViewport, setupDrag, setupResize, setupWheelScrollChain } from '../utils/panelBehavior.js';
 import { settingsManager } from '../core/SettingsManager.js';
 import { createToolbar } from './Toolbar.js';
 import { createSettingsPanel } from './SettingsPanel.js';
@@ -107,6 +108,7 @@ export class PopupPanel {
       this.handlers.onOpenInWindow?.(url, (link.textContent || '').trim());
     });
     this._setupDrag(header);
+    this._setupResize();
     this._setupKeyboard();
     return this.panel;
   }
@@ -181,15 +183,21 @@ export class PopupPanel {
     this.currentPanelSize = nextSize;
     this.applyTheme(s.theme);
     this.contentArea?.classList.toggle('pv-hide-scrollbar', s.scrollbarVisible === false);
-    const size = config.popup.sizes[nextSize] || config.popup.sizes[config.popup.defaultSize];
-    let width = size.width;
-    let height = size.height;
-    if (nextSize === 'phone') {
+    let width;
+    let height;
+    if (nextSize === 'custom' && s.customSize) {
+      // 自由缩放后的自定义尺寸（像素）
+      width = `${s.customSize.width}px`;
+      height = `${s.customSize.height}px`;
+    } else if (nextSize === 'phone') {
       const m = config.phone.sizes[s.phoneModel] || config.phone.sizes[config.phone.defaultModel];
-      if (m) {
-        width = m.width;
-        height = m.height;
-      }
+      const size = config.popup.sizes[config.popup.defaultSize];
+      width = m ? m.width : size.width;
+      height = m ? m.height : size.height;
+    } else {
+      const size = config.popup.sizes[nextSize] || config.popup.sizes[config.popup.defaultSize];
+      width = size.width;
+      height = size.height;
     }
     this.panel?.style.setProperty('--popup-width', width);
     this.panel?.style.setProperty('--popup-height', height);
@@ -324,44 +332,33 @@ export class PopupPanel {
     btn.title = this.isFullScreen ? '恢复 (F)' : '全屏 (F)';
   }
   _setupDrag(header) {
-    let dragging = false;
-    let startX = 0,
-      startY = 0,
-      startLeft = 0,
-      startTop = 0;
-    header.addEventListener('mousedown', (e) => {
-      if (e.target.closest('button')) return;
-      if (this.isFullScreen) return;
-      if (e.button !== 0) return;
-      dragging = true;
-      const rect = this.panel.getBoundingClientRect();
-      startX = e.clientX;
-      startY = e.clientY;
-      startLeft = rect.left;
-      startTop = rect.top;
-      this.panel.style.transition = 'none';
-      this.panel.style.left = `${rect.left}px`;
-      this.panel.style.top = `${rect.top}px`;
-      this.panel.style.transform = 'none';
-      e.preventDefault();
+    setupDrag({
+      header,
+      panel: this.panel,
+      isFullScreen: () => this.isFullScreen,
+      onDragEnd: () => {
+        this._clampToViewport();
+        if (this.currentPanelSize === 'phone') this.savePhonePosition();
+      }
     });
-    const move = (e) => {
-      if (!dragging) return;
-      this.panel.style.left = `${startLeft + (e.clientX - startX)}px`;
-      this.panel.style.top = `${startTop + (e.clientY - startY)}px`;
-    };
-    const up = () => {
-      if (!dragging) return;
-      dragging = false;
-      this.panel.style.transition = '';
-      this._clampToViewport();
-      if (this.currentPanelSize === 'phone') this.savePhonePosition();
-    };
-    document.addEventListener('mousemove', move);
-    document.addEventListener('mouseup', up);
     window.addEventListener('resize', () => {
       if (this.panel?.classList.contains('visible')) {
         requestAnimationFrame(() => this._clampToViewport());
+      }
+    });
+  }
+  /** 8 向自由缩放：拖边/角调整窗体大小，释放后持久化为自定义尺寸。 */
+  _setupResize() {
+    setupResize({
+      panel: this.panel,
+      isFullScreen: () => this.isFullScreen,
+      onResizeEnd: (rect) => {
+        const width = Math.round(rect.width);
+        const height = Math.round(rect.height);
+        this.panel.style.setProperty('--popup-width', `${width}px`);
+        this.panel.style.setProperty('--popup-height', `${height}px`);
+        this.currentPanelSize = 'custom';
+        settingsManager.set({ panelSize: 'custom', customSize: { width, height } });
       }
     });
   }
@@ -370,33 +367,7 @@ export class PopupPanel {
    * 避免窗体被压缩出可视区域。
    */
   _clampToViewport() {
-    if (!this.panel || this.isFullScreen) return;
-    const rect = this.panel.getBoundingClientRect();
-    const pad = 8;
-    const vw = window.innerWidth;
-    const vh = window.innerHeight;
-    let left = rect.left;
-    let top = rect.top;
-    if (rect.width > vw - pad * 2) {
-      left = pad;
-    } else {
-      if (left < pad) left = pad;
-      else if (left + rect.width > vw - pad) left = vw - pad - rect.width;
-    }
-    if (rect.height > vh - pad * 2) {
-      top = pad;
-    } else {
-      if (top < pad) top = pad;
-      else if (top + rect.height > vh - pad) top = vh - pad - rect.height;
-    }
-    if (left !== rect.left || top !== rect.top) {
-      this.panel.style.transition = 'none';
-      this.panel.style.left = `${left}px`;
-      this.panel.style.top = `${top}px`;
-      this.panel.style.transform = 'none';
-      void this.panel.offsetWidth;
-      this.panel.style.transition = '';
-    }
+    clampToViewport(this.panel, { isFullScreen: this.isFullScreen });
   }
   _setupKeyboard() {
     if (this._onKeydownBound) return;
@@ -413,27 +384,10 @@ export class PopupPanel {
     };
     document.addEventListener('keydown', this._onKeydownBound);
     // 滚动链兜底：弹窗内容滚到底时不滚动外部页面
-    document.addEventListener(
-      'wheel',
-      (e) => {
-        if (!this.panel || !this.panel.classList.contains('visible')) return;
-        if (this.isFullScreen) {
-          e.preventDefault();
-          e.stopPropagation();
-        } else {
-          const content = this.contentArea;
-          if (content && content.contains(e.target)) {
-            const { scrollTop, scrollHeight, clientHeight } = content;
-            const atBottom = scrollTop + clientHeight >= scrollHeight - 1;
-            const canScroll = scrollHeight > clientHeight;
-            if (!canScroll || atBottom) {
-              e.preventDefault();
-              e.stopPropagation();
-            }
-          }
-        }
-      },
-      true
-    );
+    setupWheelScrollChain({
+      panel: this.panel,
+      contentArea: () => this.contentArea,
+      isFullScreen: () => this.isFullScreen
+    });
   }
 }

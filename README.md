@@ -11,6 +11,7 @@
 - **弹窗图片显示**：自动识别各站懒加载图片（`data-original`/`data-src`/`srcset`/Discuz `zoomfile`/`file` 等），1x1 占位图（如 Discuz `none.gif`）也能正确换入真实地址
 - **手机模式**：预置 iPhone / Max / 安卓 / 小屏尺寸，并携带对应移动端 UA 抓取
 - **窗体大小预设**：小 / 中 / 大 / 手机，可记忆拖动位置
+- **窗体自由缩放**：拖拽窗体四边/四角任意调整大小（最小 260×200），自定义尺寸按站点记忆；重新点击大小预设即恢复预设尺寸
 - **视口自适应**：窗体尺寸与位置始终约束在可视区域内（`max-width/height` 用 `min()` 联动视口），打开 DevTools 或缩放窗口时自动收缩并拉回可视区
 - **页面链接拦截开关**：一键切换页面链接是否在弹窗内打开
 - **高级：在 iframe 中运行**（默认关闭）：默认只在顶层页面运行（等同 `@noframes`），可按需开启（见下方风险说明）
@@ -71,6 +72,7 @@
 ```bash
 npm install        # 安装依赖
 npm run build      # 构建 → dist/popup-viewer-v2.user.js + dist/popup-viewer-kit.js
+npm run build:min  # 构建压缩版（体积更小，产物不可读，适合发布）
 npm run build -- --only=main   # 只构建主脚本
 npm run build -- --only=kit    # 只构建弹窗库
 npm run dev        # 监听模式构建

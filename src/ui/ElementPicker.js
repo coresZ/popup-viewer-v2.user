@@ -52,7 +52,7 @@ export function pickElement() {
       document.removeEventListener('touchend', onTouchEnd, true);
       window.removeEventListener('scroll', onRepaint, true);
       window.removeEventListener('resize', onRepaint, true);
-      document.removeEventListener('keydown', onKey);
+      document.removeEventListener('keydown', onKey, true);
       overlay.remove();
       hint.remove();
       confirm.remove();
@@ -206,7 +206,11 @@ export function pickElement() {
     }
 
     function onKey(e) {
-      if (e.key === 'Escape') finish(null);
+      if (e.key === 'Escape') {
+        // 取选模式优先级最高：仅取消取选，不让弹窗面板的 Esc 同时关闭弹窗
+        if (typeof e.stopImmediatePropagation === 'function') e.stopImmediatePropagation();
+        finish(null);
+      }
     }
 
     okBtn.addEventListener('click', () => {
@@ -237,7 +241,8 @@ export function pickElement() {
     document.addEventListener('touchend', onTouchEnd, true);
     window.addEventListener('scroll', onRepaint, true);
     window.addEventListener('resize', onRepaint, true);
-    document.addEventListener('keydown', onKey);
+    // capture 阶段注册，确保先于弹窗面板的 keydown 处理 Esc
+    document.addEventListener('keydown', onKey, true);
 
     hint.textContent = '取选：移动鼠标高亮，单击要拦截的链接 · Esc 取消';
   });

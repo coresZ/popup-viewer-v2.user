@@ -1,4 +1,5 @@
 import { el, svg, svgIcon } from '../utils/dom.js';
+import { clampToViewport, setupDrag, setupWheelScrollChain } from '../utils/panelBehavior.js';
 
 /**
  * PopupKit 用的精简增强弹窗面板：
@@ -197,74 +198,22 @@ export class KitPopupPanel {
     this.maximizeBtn.title = this.isFullScreen ? '恢复 (F)' : '全屏 (F)';
   }
   _setupDrag(header) {
-    let dragging = false;
-    let startX = 0;
-    let startY = 0;
-    let startLeft = 0;
-    let startTop = 0;
-    header.addEventListener('mousedown', (e) => {
-      if (e.target.closest('button')) return;
-      if (this.isFullScreen) return;
-      if (e.button !== 0) return;
-      dragging = true;
-      const rect = this.panel.getBoundingClientRect();
-      startX = e.clientX;
-      startY = e.clientY;
-      startLeft = rect.left;
-      startTop = rect.top;
-      this.panel.style.transition = 'none';
-      this.panel.style.left = `${rect.left}px`;
-      this.panel.style.top = `${rect.top}px`;
-      this.panel.style.transform = 'none';
-      e.preventDefault();
+    setupDrag({
+      header,
+      panel: this.panel,
+      isFullScreen: () => this.isFullScreen,
+      onDragEnd: () => {
+        this._dragged = true;
+        this._clampToViewport();
+      }
     });
-    const move = (e) => {
-      if (!dragging) return;
-      this.panel.style.left = `${startLeft + (e.clientX - startX)}px`;
-      this.panel.style.top = `${startTop + (e.clientY - startY)}px`;
-    };
-    const up = () => {
-      if (!dragging) return;
-      dragging = false;
-      this.panel.style.transition = '';
-      this._dragged = true;
-      this._clampToViewport();
-    };
-    document.addEventListener('mousemove', move);
-    document.addEventListener('mouseup', up);
   }
   /**
    * 把弹窗约束回视口内（DevTools 占位 / 窗口缩放后调用），
    * 避免窗体被压缩出可视区域。
    */
   _clampToViewport() {
-    if (!this.panel || this.isFullScreen) return;
-    const rect = this.panel.getBoundingClientRect();
-    const pad = 8;
-    const vw = window.innerWidth;
-    const vh = window.innerHeight;
-    let left = rect.left;
-    let top = rect.top;
-    if (rect.width > vw - pad * 2) {
-      left = pad;
-    } else {
-      if (left < pad) left = pad;
-      else if (left + rect.width > vw - pad) left = vw - pad - rect.width;
-    }
-    if (rect.height > vh - pad * 2) {
-      top = pad;
-    } else {
-      if (top < pad) top = pad;
-      else if (top + rect.height > vh - pad) top = vh - pad - rect.height;
-    }
-    if (left !== rect.left || top !== rect.top) {
-      this.panel.style.transition = 'none';
-      this.panel.style.left = `${left}px`;
-      this.panel.style.top = `${top}px`;
-      this.panel.style.transform = 'none';
-      void this.panel.offsetWidth;
-      this.panel.style.transition = '';
-    }
+    clampToViewport(this.panel, { isFullScreen: this.isFullScreen });
   }
   _setupKeyboard() {
     document.addEventListener('keydown', (e) => {
@@ -284,28 +233,11 @@ export class KitPopupPanel {
       }
     });
     // 滚动链兜底：弹窗内容滚到底时不滚动外部页面（overscroll-behavior 之外的保险）
-    document.addEventListener(
-      'wheel',
-      (e) => {
-        if (!this.panel || !this.panel.classList.contains('visible')) return;
-        if (this.isFullScreen) {
-          e.preventDefault();
-          e.stopPropagation();
-        } else {
-          const content = this.contentArea;
-          if (content && content.contains(e.target)) {
-            const { scrollTop, scrollHeight, clientHeight } = content;
-            const atBottom = scrollTop + clientHeight >= scrollHeight - 1;
-            const canScroll = scrollHeight > clientHeight;
-            if (!canScroll || atBottom) {
-              e.preventDefault();
-              e.stopPropagation();
-            }
-          }
-        }
-      },
-      true
-    );
+    setupWheelScrollChain({
+      panel: this.panel,
+      contentArea: () => this.contentArea,
+      isFullScreen: () => this.isFullScreen
+    });
   }
   _showLoading(container) {
     container.replaceChildren(

@@ -44,6 +44,11 @@ function setupEvents() {
     'mouseover',
     (e) => {
       if (settingsManager.get().linkIntercept === false) return;
+      // 廉价前置判断：仅在可能命中链接的元素上才进入完整解析，
+      // 避免 @match *://*/* 下每次鼠标划过任意元素都跑一遍规则/适配器解析
+      const target = e.target;
+      if (!target || !target.closest) return;
+      if (!target.closest('a, [data-topic-url], [data-href], td.suh, .popup-trigger, .xst')) return;
       const hostname = window.location.hostname;
       let candidate = null;
       try {

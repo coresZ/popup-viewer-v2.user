@@ -6,7 +6,7 @@ export class CiliAdapter extends BaseAdapter {
     this.name = 'Cili';
   }
   match(hostname) {
-    return hostname.includes('cili.');
+    return this.matchDomain(hostname, ['1cili.com', '9cili.mom']);
   }
   parseClick(event) {
     const tableRow = event.target.closest?.('tr');

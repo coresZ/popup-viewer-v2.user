@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name          页内弹窗打开新帖
 // @namespace     http://tampermonkey.net/
-// @version       2.0.5
+// @version       2.0.7
 // @description   点击论坛帖子链接，在弹窗中加载内容 (插件化架构 V2)
 // @author        cores
 // @match         *://*/*
@@ -18,12 +18,6 @@
   // src/config.js
   var config = {
     popup: {
-      width: "50%",
-      height: "75%",
-      maxWidth: "2560px",
-      maxHeight: "1440px",
-      radius: "12px",
-      zIndex: 1e4,
       // 窗体大小预设（可在设置面板切换）
       sizes: {
         small: { width: "40%", height: "60%" },
@@ -110,10 +104,7 @@
   }
   var logger = {
     log(...args) {
-      console.log(PREFIX, ...args);
-    },
-    info(...args) {
-      console.info(PREFIX, ...args);
+      if (configDebug()) console.log(PREFIX, ...args);
     },
     warn(...args) {
       console.warn(PREFIX, ...args);
@@ -410,15 +401,10 @@
   var SiteManager = class {
     constructor() {
       this.adapters = [];
-      this.enhancers = [];
     }
     register(adapter) {
       this.adapters.push(adapter);
       return adapter;
-    }
-    registerEnhancer(fn) {
-      this.enhancers.push(fn);
-      return fn;
     }
     activeAdapters(hostname, pathname) {
       return this.adapters.filter((a) => a.match(hostname, pathname));
@@ -483,13 +469,6 @@
           logger.error(`[${adapter.name}] enhance error`, err);
         }
       }
-      for (const fn of this.enhancers) {
-        try {
-          fn(hostname, pathname);
-        } catch (err) {
-          logger.error("enhancer error", err);
-        }
-      }
     }
   };
   var siteManager = new SiteManager();
@@ -539,6 +518,19 @@
   };
   function createDefaultSandbox(policy) {
     return new Sandbox(policy);
+  }
+  function contentSandboxAttrs(keepScripts = false) {
+    const attrs = [
+      "allow-forms",
+      "allow-modals",
+      "allow-pointer-lock",
+      "allow-popups",
+      "allow-popups-to-escape-sandbox",
+      "allow-presentation",
+      "allow-same-origin"
+    ];
+    if (keepScripts) attrs.push("allow-scripts");
+    return attrs.join(" ");
   }
 
   // src/utils/dom.js
@@ -667,6 +659,26 @@
   };
 
   // src/security/Sanitizer.js
+  var REAL_SRC_ATTRS = [
+    "zoomfile",
+    "file",
+    "data-src",
+    "data-original",
+    "data-lazy-src",
+    "data-actualsrc",
+    "data-src-real",
+    "data-real-src",
+    "data-url",
+    "data-large",
+    "data-big",
+    "data-hd-src",
+    "data-original-src",
+    "data-echo",
+    "data-lazyload",
+    "data-lazy-load",
+    "data-full",
+    "data-img"
+  ];
   var Sanitizer = class _Sanitizer {
     constructor() {
       this.removedTags = /* @__PURE__ */ new Set([
@@ -706,28 +718,6 @@
      * src 多为占位图（懒加载 JS 被净化后不会执行）。只要找到真实地址就换到 src 并绝对化，
      * 不依赖对「占位图文件名」的精确识别——各站点占位图命名千差万别，正则穷举必然漏。
      */
-    static REAL_SRC_ATTRS = [
-      "data-src",
-      "data-original",
-      "data-lazy-src",
-      "data-actualsrc",
-      "data-src-real",
-      "data-real-src",
-      "data-url",
-      "data-large",
-      "data-big",
-      "data-hd-src",
-      "data-original-src",
-      "data-echo",
-      "data-lazyload",
-      "data-lazy-load",
-      "data-full",
-      "data-img",
-      // Discuz 系论坛（52pojie/wnflb/chiphell 等）附件图：src 为 1x1 none.gif 占位，
-      // 真实地址放在 zoomfile/file 属性里，点击时才由 JS 换入
-      "zoomfile",
-      "file"
-    ];
     static PLACEHOLDER_RE = /^(data:|about:|blob:)/i;
     _resolveLazyImages(doc, baseUrl) {
       doc.querySelectorAll("img").forEach((img) => {
@@ -748,7 +738,7 @@
       });
     }
     _firstRealAttr(img) {
-      for (const attr of _Sanitizer.REAL_SRC_ATTRS) {
+      for (const attr of REAL_SRC_ATTRS) {
         const value = img.getAttribute(attr);
         if (value && value.trim()) return value.trim();
       }
@@ -789,7 +779,7 @@
       return true;
     }
     _clearRealAttrs(img) {
-      for (const attr of _Sanitizer.REAL_SRC_ATTRS) img.removeAttribute(attr);
+      for (const attr of REAL_SRC_ATTRS) img.removeAttribute(attr);
     }
     /**
      * 收集原页面的样式（stylesheet 链接与 head 中的 <style> 块），
@@ -846,26 +836,26 @@
       const attrs = node.attributes;
       if (!attrs || !attrs.length) return;
       for (let i = attrs.length - 1; i >= 0; i--) {
-        const name = attrs[i].name;
+        const name = attrs[i].name.toLowerCase();
         const value = attrs[i].value;
         if (this.dangerousEventAttrs.test(name)) {
-          node.removeAttribute(name);
+          node.removeAttribute(attrs[i].name);
           continue;
         }
-        if (name.toLowerCase() === "srcdoc") {
-          node.removeAttribute(name);
+        if (name === "srcdoc") {
+          node.removeAttribute(attrs[i].name);
           continue;
         }
-        if (name === "href") {
+        if (name === "href" || name === "xlink:href") {
           const scheme = String(value).trim().split(":")[0].toLowerCase();
           if (["javascript", "data", "vbscript", "file"].includes(scheme)) {
-            node.removeAttribute(name);
+            node.removeAttribute(attrs[i].name);
           }
         }
-        if (name === "src" || name === "poster") {
+        if (name === "src" || name === "poster" || name === "background") {
           const scheme = String(value).trim().split(":")[0].toLowerCase();
           if (["javascript", "vbscript", "file"].includes(scheme)) {
-            node.removeAttribute(name);
+            node.removeAttribute(attrs[i].name);
           }
         }
       }
@@ -887,7 +877,8 @@
       windowMode: "coupled",
       linkIntercept: true,
       phoneModel: config.phone.defaultModel,
-      phonePosition: null
+      phonePosition: null,
+      customSize: null
     };
   }
   function currentSiteKey() {
@@ -914,7 +905,7 @@
       if (all && typeof all === "object" && all[this.siteKey]) {
         this.site = { ...defaultSite(), ...all[this.siteKey] };
       }
-      if (!config.popup.sizes[this.site.panelSize]) {
+      if (!config.popup.sizes[this.site.panelSize] && this.site.panelSize !== "custom") {
         this.site.panelSize = defaultSite().panelSize;
       }
       if (!config.phone.sizes[this.site.phoneModel]) {
@@ -956,28 +947,6 @@
   var settingsManager = new SettingsManager();
 
   // src/loaders/IframeRenderer.js
-  var IMG_REAL_ATTRS = [
-    // Discuz 系论坛（52pojie/wnflb/chiphell 等）附件图：src 为 1x1 none.gif 占位，
-    // 真实地址放在 zoomfile/file 属性里，点击时才由 JS 换入
-    "zoomfile",
-    "file",
-    "data-src",
-    "data-original",
-    "data-lazy-src",
-    "data-actualsrc",
-    "data-src-real",
-    "data-real-src",
-    "data-url",
-    "data-large",
-    "data-big",
-    "data-hd-src",
-    "data-original-src",
-    "data-echo",
-    "data-lazyload",
-    "data-lazy-load",
-    "data-full",
-    "data-img"
-  ];
   function renderIntoIframe({ html, url, container, sandboxAttrs, head = "", linkIntercept, loadingSelector = "#popup-panel-loading" }) {
     container.querySelector(loadingSelector)?.remove();
     container.classList.add("iframe-direct-load");
@@ -1043,7 +1012,7 @@
       const cur = img.getAttribute("src") || "";
       const isPlaceholderSrc = !cur || /(?:none|placeholder|loading|blank|spacer|1x1|pixel)(?:\.gif|\.png|\.jpg|\.jpeg|\.webp)?$/i.test(cur);
       if (isPlaceholderSrc || img.complete && img.naturalWidth === 0) {
-        for (const attr of IMG_REAL_ATTRS) {
+        for (const attr of REAL_SRC_ATTRS) {
           const value = img.getAttribute(attr);
           if (value && value.trim()) {
             try {
@@ -1079,9 +1048,6 @@
 
   // src/loaders/RequestLoader.js
   var RequestLoader = class {
-    constructor() {
-      this.sandboxAttrs = "allow-forms allow-modals allow-pointer-lock allow-popups allow-popups-to-escape-sandbox allow-presentation allow-same-origin allow-scripts";
-    }
     load({ url, hostname, keepScripts = false, container, onError, onLoad, mobileUA = null, linkIntercept, loadingSelector }) {
       logger.debug(`[RequestLoader] fetch ${url}`);
       const abort = gm.xmlhttpRequest({
@@ -1101,7 +1067,7 @@
               head: result.head,
               url,
               container,
-              sandboxAttrs: this.sandboxAttrs,
+              sandboxAttrs: contentSandboxAttrs(keepScripts),
               linkIntercept,
               loadingSelector
             });
@@ -1197,8 +1163,7 @@
 
   // src/loaders/CacheLoader.js
   var CacheLoader = class {
-    constructor(sandboxAttrs) {
-      this.sandboxAttrs = sandboxAttrs || "allow-forms allow-modals allow-pointer-lock allow-popups allow-popups-to-escape-sandbox allow-presentation allow-same-origin allow-scripts";
+    constructor() {
       this.cache = /* @__PURE__ */ new Map();
       this.inflight = /* @__PURE__ */ new Map();
     }
@@ -1283,7 +1248,7 @@
           head: cached.head,
           url,
           container,
-          sandboxAttrs: this.sandboxAttrs,
+          sandboxAttrs: contentSandboxAttrs(keepScripts),
           linkIntercept,
           loadingSelector
         });
@@ -1299,7 +1264,7 @@
           head: result.head,
           url,
           container,
-          sandboxAttrs: this.sandboxAttrs,
+          sandboxAttrs: contentSandboxAttrs(keepScripts),
           linkIntercept,
           loadingSelector
         });
@@ -1351,13 +1316,13 @@
      */
     prefetch(url) {
       const hostname = this._hostnameOf(url);
-      const keepScripts = this._keepScripts(hostname);
-      return this.loaders.cache.prefetch(url, keepScripts, this._mobileUA());
+      const keepScripts = this.keepScriptsFor(hostname);
+      return this.loaders.cache.prefetch(url, keepScripts, this.mobileUA());
     }
     /**
      * 手机模式下返回对应的移动端 UA，否则 null。
      */
-    _mobileUA() {
+    mobileUA() {
       const s = settingsManager.get();
       if (s.panelSize !== "phone") return null;
       const m = config.phone.sizes[s.phoneModel] || config.phone.sizes[config.phone.defaultModel];
@@ -1370,7 +1335,8 @@
         return "unknown";
       }
     }
-    _keepScripts(hostname) {
+    /** 该站点抓取净化时是否保留 <script>（仅信任站点）。 */
+    keepScriptsFor(hostname) {
       return this.sandbox.policyFor(hostname).scripts === true;
     }
     /**
@@ -1383,8 +1349,8 @@
       const hostname = ctx.hostname || this._hostnameOf(url);
       const mode = this.resolveMode(url, hostname);
       const loader = this.loaders[mode] || this.loaders.request;
-      const keepScripts = ctx.keepScripts !== void 0 ? ctx.keepScripts : this._keepScripts(hostname);
-      const mobileUA = ctx.mobileUA !== void 0 ? ctx.mobileUA : this._mobileUA();
+      const keepScripts = ctx.keepScripts !== void 0 ? ctx.keepScripts : this.keepScriptsFor(hostname);
+      const mobileUA = ctx.mobileUA !== void 0 ? ctx.mobileUA : this.mobileUA();
       const linkIntercept = ctx.linkIntercept !== void 0 ? ctx.linkIntercept : void 0;
       logger.log(`[LoaderManager] mode=${mode} scripts=${keepScripts} ${url}`);
       const abort = loader.load({
@@ -1408,6 +1374,205 @@
     }
   };
   var loaderManager = new LoaderManager();
+
+  // src/utils/panelBehavior.js
+  function clampToViewport(panel, { isFullScreen = false, pad = 8 } = {}) {
+    if (!panel || isFullScreen) return;
+    const rect = panel.getBoundingClientRect();
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    let left = rect.left;
+    let top = rect.top;
+    if (rect.width > vw - pad * 2) {
+      left = pad;
+    } else {
+      if (left < pad) left = pad;
+      else if (left + rect.width > vw - pad) left = vw - pad - rect.width;
+    }
+    if (rect.height > vh - pad * 2) {
+      top = pad;
+    } else {
+      if (top < pad) top = pad;
+      else if (top + rect.height > vh - pad) top = vh - pad - rect.height;
+    }
+    if (left !== rect.left || top !== rect.top) {
+      panel.style.transition = "none";
+      panel.style.left = `${left}px`;
+      panel.style.top = `${top}px`;
+      panel.style.transform = "none";
+      void panel.offsetWidth;
+      panel.style.transition = "";
+    }
+  }
+  function setupDrag({ header, panel, isFullScreen = () => false, onDragEnd }) {
+    let dragging = false;
+    let startX = 0;
+    let startY = 0;
+    let startLeft = 0;
+    let startTop = 0;
+    let lastX = 0;
+    let lastY = 0;
+    let raf = null;
+    const applyMove = () => {
+      raf = null;
+      if (!dragging) return;
+      panel.style.left = `${startLeft + (lastX - startX)}px`;
+      panel.style.top = `${startTop + (lastY - startY)}px`;
+    };
+    header.addEventListener("mousedown", (e) => {
+      if (e.target.closest("button")) return;
+      if (isFullScreen()) return;
+      if (e.button !== 0) return;
+      dragging = true;
+      const rect = panel.getBoundingClientRect();
+      startX = e.clientX;
+      startY = e.clientY;
+      startLeft = rect.left;
+      startTop = rect.top;
+      lastX = e.clientX;
+      lastY = e.clientY;
+      panel.style.transition = "none";
+      panel.style.left = `${rect.left}px`;
+      panel.style.top = `${rect.top}px`;
+      panel.style.transform = "none";
+      panel.classList.add("pv-dragging");
+      document.body.style.cursor = "grabbing";
+      e.preventDefault();
+    });
+    const move = (e) => {
+      if (!dragging) return;
+      lastX = e.clientX;
+      lastY = e.clientY;
+      if (!raf) raf = requestAnimationFrame(applyMove);
+    };
+    const up = () => {
+      if (!dragging) return;
+      dragging = false;
+      if (raf) {
+        cancelAnimationFrame(raf);
+        raf = null;
+      }
+      panel.classList.remove("pv-dragging");
+      document.body.style.cursor = "";
+      panel.style.transition = "";
+      onDragEnd?.();
+    };
+    document.addEventListener("mousemove", move);
+    document.addEventListener("mouseup", up);
+  }
+  var RESIZE_CURSOR = {
+    n: "ns-resize",
+    s: "ns-resize",
+    e: "ew-resize",
+    w: "ew-resize",
+    ne: "nesw-resize",
+    sw: "nesw-resize",
+    nw: "nwse-resize",
+    se: "nwse-resize"
+  };
+  function setupResize({ panel, isFullScreen = () => false, minWidth = 260, minHeight = 200, onResizeEnd }) {
+    const dirs = Object.keys(RESIZE_CURSOR);
+    let state = null;
+    const onDown = (dir) => (e) => {
+      if (e.button !== 0) return;
+      if (isFullScreen()) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const rect = panel.getBoundingClientRect();
+      panel.style.transition = "none";
+      panel.style.left = `${rect.left}px`;
+      panel.style.top = `${rect.top}px`;
+      panel.style.transform = "none";
+      panel.style.setProperty("--popup-width", `${rect.width}px`);
+      panel.style.setProperty("--popup-height", `${rect.height}px`);
+      state = { dir, startX: e.clientX, startY: e.clientY, rect };
+      panel.classList.add("pv-resizing");
+      document.body.style.cursor = RESIZE_CURSOR[dir];
+      document.addEventListener("mousemove", onMove);
+      document.addEventListener("mouseup", onUp);
+    };
+    const onMove = (e) => {
+      if (!state) return;
+      const { dir, startX, startY, rect } = state;
+      const dx = e.clientX - startX;
+      const dy = e.clientY - startY;
+      let { left, top } = rect;
+      let width = rect.width;
+      let height = rect.height;
+      const maxW = window.innerWidth - 16;
+      const maxH = window.innerHeight - 16;
+      if (dir.includes("e")) width = rect.width + dx;
+      if (dir.includes("s")) height = rect.height + dy;
+      if (dir.includes("w")) {
+        width = rect.width - dx;
+        left = rect.left + dx;
+      }
+      if (dir.includes("n")) {
+        height = rect.height - dy;
+        top = rect.top + dy;
+      }
+      if (width < minWidth) {
+        if (dir.includes("w")) left = rect.left + (rect.width - minWidth);
+        width = minWidth;
+      }
+      if (width > maxW) {
+        if (dir.includes("w")) left = rect.left + (rect.width - maxW);
+        width = maxW;
+      }
+      if (height < minHeight) {
+        if (dir.includes("n")) top = rect.top + (rect.height - minHeight);
+        height = minHeight;
+      }
+      if (height > maxH) {
+        if (dir.includes("n")) top = rect.top + (rect.height - maxH);
+        height = maxH;
+      }
+      panel.style.left = `${left}px`;
+      panel.style.top = `${top}px`;
+      panel.style.setProperty("--popup-width", `${width}px`);
+      panel.style.setProperty("--popup-height", `${height}px`);
+    };
+    const onUp = () => {
+      if (!state) return;
+      state = null;
+      panel.classList.remove("pv-resizing");
+      panel.style.transition = "";
+      document.body.style.cursor = "";
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+      onResizeEnd?.(panel.getBoundingClientRect());
+    };
+    dirs.forEach((dir) => {
+      const handle = document.createElement("div");
+      handle.className = `pv-resize pv-resize-${dir}`;
+      handle.addEventListener("mousedown", onDown(dir));
+      panel.appendChild(handle);
+    });
+  }
+  function setupWheelScrollChain({ panel, contentArea, isFullScreen = () => false }) {
+    document.addEventListener(
+      "wheel",
+      (e) => {
+        if (!panel || !panel.classList.contains("visible")) return;
+        if (isFullScreen()) {
+          e.preventDefault();
+          e.stopPropagation();
+        } else {
+          const content = contentArea();
+          if (content && content.contains(e.target)) {
+            const { scrollTop, scrollHeight, clientHeight } = content;
+            const atBottom = scrollTop + clientHeight >= scrollHeight - 1;
+            const canScroll = scrollHeight > clientHeight;
+            if (!canScroll || atBottom) {
+              e.preventDefault();
+              e.stopPropagation();
+            }
+          }
+        }
+      },
+      true
+    );
+  }
 
   // src/ui/Toolbar.js
   function createToolbar(handlers) {
@@ -1485,7 +1650,7 @@
     document.addEventListener("keydown", (e) => {
       if (e.key === "Escape") hideTip();
     });
-    const makeSeg = (order, labels, getKey, setKey, { icons = {}, defaultOf, onChange: onChange2 } = {}) => {
+    const makeSeg = (order, labels, getKey, setKey, { icons = {}, defaultOf, onChange: onChange2, onSet } = {}) => {
       const btns = {};
       const group2 = el("div", { class: "pv-seg" });
       const sync = () => {
@@ -1505,7 +1670,7 @@
             type: "button",
             class: "pv-seg-item",
             onclick: () => {
-              settingsManager.set({ [setKey]: k });
+              settingsManager.set(onSet ? onSet(k) : { [setKey]: k });
               sync();
               onChange2?.();
               persist();
@@ -1522,7 +1687,8 @@
     const sizeSeg = makeSeg(SIZE_ORDER, SIZE_LABELS, () => settingsManager.get().panelSize, "panelSize", {
       icons: { phone: svgIcon("smartphone", { size: 12 }) },
       defaultOf: DEFAULT_SIZE,
-      onChange: syncPhoneModels
+      onChange: syncPhoneModels,
+      onSet: (k) => ({ panelSize: k, customSize: null })
     });
     const themeSeg = makeSeg(THEME_ORDER, THEME_LABELS, () => settingsManager.get().theme || "auto", "theme", {
       defaultOf: DEFAULT_THEME
@@ -1792,7 +1958,7 @@
         document.removeEventListener("touchend", onTouchEnd, true);
         window.removeEventListener("scroll", onRepaint, true);
         window.removeEventListener("resize", onRepaint, true);
-        document.removeEventListener("keydown", onKey);
+        document.removeEventListener("keydown", onKey, true);
         overlay.remove();
         hint.remove();
         confirm.remove();
@@ -1932,7 +2098,10 @@
         finishPick(el2);
       }
       function onKey(e) {
-        if (e.key === "Escape") finish(null);
+        if (e.key === "Escape") {
+          if (typeof e.stopImmediatePropagation === "function") e.stopImmediatePropagation();
+          finish(null);
+        }
       }
       okBtn.addEventListener("click", () => {
         const v = cInput.value.trim();
@@ -1961,7 +2130,7 @@
       document.addEventListener("touchend", onTouchEnd, true);
       window.addEventListener("scroll", onRepaint, true);
       window.addEventListener("resize", onRepaint, true);
-      document.addEventListener("keydown", onKey);
+      document.addEventListener("keydown", onKey, true);
       hint.textContent = "取选：移动鼠标高亮，单击要拦截的链接 · Esc 取消";
     });
   }
@@ -2084,7 +2253,10 @@
       toast("已添加规则");
     }
     document.addEventListener("keydown", (e) => {
-      if (e.key === "Escape" && root.classList.contains("visible")) close();
+      if (e.key === "Escape" && root.classList.contains("visible")) {
+        e.stopImmediatePropagation();
+        close();
+      }
     });
     return { root, backdrop, open, close };
   }
@@ -2279,6 +2451,29 @@ html.pv-forum th.common a.xst:hover {\r
   pointer-events: auto;\r
   transform: translate(-50%, -50%) scale(1);\r
 }\r
+\r
+/* ===== 拖拽 / 缩放反馈 ===== */\r
+#popup-content-panel.pv-dragging,\r
+#popup-content-panel.pv-resizing {\r
+  user-select: none;\r
+  box-shadow:\r
+    0 0 0 1px var(--popup-accent-soft),\r
+    0 0 0 3px var(--popup-focus-ring),\r
+    0 28px 70px -20px rgba(15, 23, 42, 0.4),\r
+    0 10px 28px -14px rgba(15, 23, 42, 0.26);\r
+}\r
+.pv-resize {\r
+  position: absolute;\r
+  z-index: 3;\r
+}\r
+.pv-resize-n { top: 0; left: 10px; right: 10px; height: 6px; cursor: ns-resize; }\r
+.pv-resize-s { bottom: 0; left: 10px; right: 10px; height: 6px; cursor: ns-resize; }\r
+.pv-resize-e { right: 0; top: 10px; bottom: 10px; width: 6px; cursor: ew-resize; }\r
+.pv-resize-w { left: 0; top: 10px; bottom: 10px; width: 6px; cursor: ew-resize; }\r
+.pv-resize-ne { top: 0; right: 0; width: 12px; height: 12px; cursor: nesw-resize; }\r
+.pv-resize-nw { top: 0; left: 0; width: 12px; height: 12px; cursor: nwse-resize; }\r
+.pv-resize-se { bottom: 0; right: 0; width: 12px; height: 12px; cursor: nwse-resize; }\r
+.pv-resize-sw { bottom: 0; left: 0; width: 12px; height: 12px; cursor: nesw-resize; }\r
 \r
 /* ===== 面板头部 ===== */\r
 #popup-panel-header {\r
@@ -3426,6 +3621,7 @@ a.xst::after {\r
         this.handlers.onOpenInWindow?.(url, (link.textContent || "").trim());
       });
       this._setupDrag(header);
+      this._setupResize();
       this._setupKeyboard();
       return this.panel;
     }
@@ -3497,15 +3693,20 @@ a.xst::after {\r
       this.currentPanelSize = nextSize;
       this.applyTheme(s.theme);
       this.contentArea?.classList.toggle("pv-hide-scrollbar", s.scrollbarVisible === false);
-      const size = config.popup.sizes[nextSize] || config.popup.sizes[config.popup.defaultSize];
-      let width = size.width;
-      let height = size.height;
-      if (nextSize === "phone") {
+      let width;
+      let height;
+      if (nextSize === "custom" && s.customSize) {
+        width = `${s.customSize.width}px`;
+        height = `${s.customSize.height}px`;
+      } else if (nextSize === "phone") {
         const m = config.phone.sizes[s.phoneModel] || config.phone.sizes[config.phone.defaultModel];
-        if (m) {
-          width = m.width;
-          height = m.height;
-        }
+        const size = config.popup.sizes[config.popup.defaultSize];
+        width = m ? m.width : size.width;
+        height = m ? m.height : size.height;
+      } else {
+        const size = config.popup.sizes[nextSize] || config.popup.sizes[config.popup.defaultSize];
+        width = size.width;
+        height = size.height;
       }
       this.panel?.style.setProperty("--popup-width", width);
       this.panel?.style.setProperty("--popup-height", height);
@@ -3639,41 +3840,33 @@ a.xst::after {\r
       btn.title = this.isFullScreen ? "恢复 (F)" : "全屏 (F)";
     }
     _setupDrag(header) {
-      let dragging = false;
-      let startX = 0, startY = 0, startLeft = 0, startTop = 0;
-      header.addEventListener("mousedown", (e) => {
-        if (e.target.closest("button")) return;
-        if (this.isFullScreen) return;
-        if (e.button !== 0) return;
-        dragging = true;
-        const rect = this.panel.getBoundingClientRect();
-        startX = e.clientX;
-        startY = e.clientY;
-        startLeft = rect.left;
-        startTop = rect.top;
-        this.panel.style.transition = "none";
-        this.panel.style.left = `${rect.left}px`;
-        this.panel.style.top = `${rect.top}px`;
-        this.panel.style.transform = "none";
-        e.preventDefault();
+      setupDrag({
+        header,
+        panel: this.panel,
+        isFullScreen: () => this.isFullScreen,
+        onDragEnd: () => {
+          this._clampToViewport();
+          if (this.currentPanelSize === "phone") this.savePhonePosition();
+        }
       });
-      const move = (e) => {
-        if (!dragging) return;
-        this.panel.style.left = `${startLeft + (e.clientX - startX)}px`;
-        this.panel.style.top = `${startTop + (e.clientY - startY)}px`;
-      };
-      const up = () => {
-        if (!dragging) return;
-        dragging = false;
-        this.panel.style.transition = "";
-        this._clampToViewport();
-        if (this.currentPanelSize === "phone") this.savePhonePosition();
-      };
-      document.addEventListener("mousemove", move);
-      document.addEventListener("mouseup", up);
       window.addEventListener("resize", () => {
         if (this.panel?.classList.contains("visible")) {
           requestAnimationFrame(() => this._clampToViewport());
+        }
+      });
+    }
+    /** 8 向自由缩放：拖边/角调整窗体大小，释放后持久化为自定义尺寸。 */
+    _setupResize() {
+      setupResize({
+        panel: this.panel,
+        isFullScreen: () => this.isFullScreen,
+        onResizeEnd: (rect) => {
+          const width = Math.round(rect.width);
+          const height = Math.round(rect.height);
+          this.panel.style.setProperty("--popup-width", `${width}px`);
+          this.panel.style.setProperty("--popup-height", `${height}px`);
+          this.currentPanelSize = "custom";
+          settingsManager.set({ panelSize: "custom", customSize: { width, height } });
         }
       });
     }
@@ -3682,33 +3875,7 @@ a.xst::after {\r
      * 避免窗体被压缩出可视区域。
      */
     _clampToViewport() {
-      if (!this.panel || this.isFullScreen) return;
-      const rect = this.panel.getBoundingClientRect();
-      const pad = 8;
-      const vw = window.innerWidth;
-      const vh = window.innerHeight;
-      let left = rect.left;
-      let top = rect.top;
-      if (rect.width > vw - pad * 2) {
-        left = pad;
-      } else {
-        if (left < pad) left = pad;
-        else if (left + rect.width > vw - pad) left = vw - pad - rect.width;
-      }
-      if (rect.height > vh - pad * 2) {
-        top = pad;
-      } else {
-        if (top < pad) top = pad;
-        else if (top + rect.height > vh - pad) top = vh - pad - rect.height;
-      }
-      if (left !== rect.left || top !== rect.top) {
-        this.panel.style.transition = "none";
-        this.panel.style.left = `${left}px`;
-        this.panel.style.top = `${top}px`;
-        this.panel.style.transform = "none";
-        void this.panel.offsetWidth;
-        this.panel.style.transition = "";
-      }
+      clampToViewport(this.panel, { isFullScreen: this.isFullScreen });
     }
     _setupKeyboard() {
       if (this._onKeydownBound) return;
@@ -3724,28 +3891,11 @@ a.xst::after {\r
         }
       };
       document.addEventListener("keydown", this._onKeydownBound);
-      document.addEventListener(
-        "wheel",
-        (e) => {
-          if (!this.panel || !this.panel.classList.contains("visible")) return;
-          if (this.isFullScreen) {
-            e.preventDefault();
-            e.stopPropagation();
-          } else {
-            const content = this.contentArea;
-            if (content && content.contains(e.target)) {
-              const { scrollTop, scrollHeight, clientHeight } = content;
-              const atBottom = scrollTop + clientHeight >= scrollHeight - 1;
-              const canScroll = scrollHeight > clientHeight;
-              if (!canScroll || atBottom) {
-                e.preventDefault();
-                e.stopPropagation();
-              }
-            }
-          }
-        },
-        true
-      );
+      setupWheelScrollChain({
+        panel: this.panel,
+        contentArea: () => this.contentArea,
+        isFullScreen: () => this.isFullScreen
+      });
     }
   };
 
@@ -3974,16 +4124,16 @@ a.xst::after {\r
     match(hostname, pathname) {
       return false;
     }
+    /** 域名精确/子域名匹配：example.com 命中 example.com 与 www.example.com，但不命中 evil-example.com */
+    matchDomain(hostname, domains) {
+      return domains.some((d) => hostname === d || hostname.endsWith("." + d));
+    }
     /** 从点击事件的目标元素中解析出可打开的链接信息 */
     parseClick(event) {
       return null;
     }
-    /** 返回该站点可增强的链接选择器列表 */
-    getEnhanceSelectors() {
-      return [];
-    }
-    /** 对某个 DOM 元素应用视觉增强（添加 popup-trigger 类等） */
-    enhance(element) {
+    /** 对当前页面 DOM 应用视觉增强（添加 popup-trigger 类等） */
+    enhance(doc, hostname, pathname) {
       return false;
     }
     /** 供子类使用的通用 URL 解析辅助 */
@@ -3999,14 +4149,14 @@ a.xst::after {\r
 
   // src/adapters/DiscuzAdapter.js
   var DiscuzAdapter = class extends BaseAdapter {
-    constructor(hostnamePatterns = ["chiphell", "wnflb", "52pojie"]) {
+    constructor(hostnamePatterns = ["chiphell.com", "wnflb2023.com", "52pojie.cn"]) {
       super();
       this.name = "Discuz";
       this.forumStyles = true;
       this.patterns = hostnamePatterns;
     }
     match(hostname) {
-      return this.patterns.some((p) => hostname.includes(p));
+      return this.matchDomain(hostname, this.patterns);
     }
     parseClick(event) {
       const link = event.target.closest?.("a.xst");
@@ -4211,7 +4361,7 @@ a.xst::after {\r
       this.name = "Cili";
     }
     match(hostname) {
-      return hostname.includes("cili.");
+      return this.matchDomain(hostname, ["1cili.com", "9cili.mom"]);
     }
     parseClick(event) {
       const tableRow = event.target.closest?.("tr");
@@ -4264,6 +4414,9 @@ a.xst::after {\r
       "mouseover",
       (e) => {
         if (settingsManager.get().linkIntercept === false) return;
+        const target = e.target;
+        if (!target || !target.closest) return;
+        if (!target.closest("a, [data-topic-url], [data-href], td.suh, .popup-trigger, .xst")) return;
         const hostname = window.location.hostname;
         let candidate = null;
         try {

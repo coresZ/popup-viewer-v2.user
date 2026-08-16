@@ -5,6 +5,7 @@ import { dirname, join } from 'node:path';
 
 const root = dirname(fileURLToPath(import.meta.url));
 const watch = process.argv.includes('--watch');
+const minify = process.argv.includes('--minify');
 const only = process.argv.filter((a) => a.startsWith('--only=')).map((a) => a.slice(7));
 
 const banner = readFileSync(join(root, 'banner.txt'), 'utf-8').trimEnd();
@@ -17,7 +18,7 @@ const options = {
   outfile: join(root, 'dist', 'popup-viewer-v2.user.js'),
   banner: { js: banner + '\n\n' },
   loader: { '.css': 'text' },
-  minify: false,
+  minify,
   charset: 'utf8',
   legalComments: 'none',
   logLevel: 'info'
@@ -29,9 +30,8 @@ const kitOptions = {
   bundle: true,
   format: 'iife',
   outfile: join(root, 'dist', 'popup-viewer-kit.js'),
-  globalName: '__PopupKitModule',
   loader: { '.css': 'text' },
-  minify: false,
+  minify,
   charset: 'utf8',
   legalComments: 'none',
   logLevel: 'info'

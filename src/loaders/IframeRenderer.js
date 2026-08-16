@@ -1,29 +1,7 @@
 import { logger } from '../utils/logger.js';
 import { el } from '../utils/dom.js';
 import { settingsManager } from '../core/SettingsManager.js';
-
-const IMG_REAL_ATTRS = [
-  // Discuz 系论坛（52pojie/wnflb/chiphell 等）附件图：src 为 1x1 none.gif 占位，
-  // 真实地址放在 zoomfile/file 属性里，点击时才由 JS 换入
-  'zoomfile',
-  'file',
-  'data-src',
-  'data-original',
-  'data-lazy-src',
-  'data-actualsrc',
-  'data-src-real',
-  'data-real-src',
-  'data-url',
-  'data-large',
-  'data-big',
-  'data-hd-src',
-  'data-original-src',
-  'data-echo',
-  'data-lazyload',
-  'data-lazy-load',
-  'data-full',
-  'data-img'
-];
+import { REAL_SRC_ATTRS } from '../security/Sanitizer.js';
 
 export function renderIntoIframe({ html, url, container, sandboxAttrs, head = '', linkIntercept, loadingSelector = '#popup-panel-loading' }) {
   container.querySelector(loadingSelector)?.remove();
@@ -112,7 +90,7 @@ function fixImages(iframeDoc) {
     const isPlaceholderSrc =
       !cur || /(?:none|placeholder|loading|blank|spacer|1x1|pixel)(?:\.gif|\.png|\.jpg|\.jpeg|\.webp)?$/i.test(cur);
     if (isPlaceholderSrc || (img.complete && img.naturalWidth === 0)) {
-      for (const attr of IMG_REAL_ATTRS) {
+      for (const attr of REAL_SRC_ATTRS) {
         const value = img.getAttribute(attr);
         if (value && value.trim()) {
           try {

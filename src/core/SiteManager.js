@@ -6,15 +6,10 @@ import { rulesManager } from './RulesManager.js';
 export class SiteManager {
   constructor() {
     this.adapters = [];
-    this.enhancers = [];
   }
   register(adapter) {
     this.adapters.push(adapter);
     return adapter;
-  }
-  registerEnhancer(fn) {
-    this.enhancers.push(fn);
-    return fn;
   }
   activeAdapters(hostname, pathname) {
     return this.adapters.filter((a) => a.match(hostname, pathname));
@@ -78,13 +73,6 @@ export class SiteManager {
         adapter.enhance(document, hostname, pathname);
       } catch (err) {
         logger.error(`[${adapter.name}] enhance error`, err);
-      }
-    }
-    for (const fn of this.enhancers) {
-      try {
-        fn(hostname, pathname);
-      } catch (err) {
-        logger.error('enhancer error', err);
       }
     }
   }

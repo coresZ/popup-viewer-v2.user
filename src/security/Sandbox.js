@@ -44,3 +44,23 @@ export class Sandbox {
 export function createDefaultSandbox(policy) {
   return new Sandbox(policy);
 }
+
+/**
+ * 生成「抓取净化后注入内容」所用 iframe 的 sandbox 属性。
+ * 注入/后处理需要访问 iframe 文档，故始终保留 allow-same-origin；
+ * 但仅当 keepScripts=true（信任站点）时才允许脚本执行，
+ * 否则即使净化有遗漏，也无法运行脚本或访问父页面。
+ */
+export function contentSandboxAttrs(keepScripts = false) {
+  const attrs = [
+    'allow-forms',
+    'allow-modals',
+    'allow-pointer-lock',
+    'allow-popups',
+    'allow-popups-to-escape-sandbox',
+    'allow-presentation',
+    'allow-same-origin'
+  ];
+  if (keepScripts) attrs.push('allow-scripts');
+  return attrs.join(' ');
+}

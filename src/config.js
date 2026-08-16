@@ -1,11 +1,5 @@
 export const config = {
   popup: {
-    width: '50%',
-    height: '75%',
-    maxWidth: '2560px',
-    maxHeight: '1440px',
-    radius: '12px',
-    zIndex: 1e4,
     // 窗体大小预设（可在设置面板切换）
     sizes: {
       small: { width: '40%', height: '60%' },

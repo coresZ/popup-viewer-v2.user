@@ -10,10 +10,7 @@ function configDebug() {
 
 export const logger = {
   log(...args) {
-    console.log(PREFIX, ...args);
-  },
-  info(...args) {
-    console.info(PREFIX, ...args);
+    if (configDebug()) console.log(PREFIX, ...args);
   },
   warn(...args) {
     console.warn(PREFIX, ...args);

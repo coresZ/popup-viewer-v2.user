@@ -42,13 +42,13 @@ export class LoaderManager {
    */
   prefetch(url) {
     const hostname = this._hostnameOf(url);
-    const keepScripts = this._keepScripts(hostname);
-    return this.loaders.cache.prefetch(url, keepScripts, this._mobileUA());
+    const keepScripts = this.keepScriptsFor(hostname);
+    return this.loaders.cache.prefetch(url, keepScripts, this.mobileUA());
   }
   /**
    * 手机模式下返回对应的移动端 UA，否则 null。
    */
-  _mobileUA() {
+  mobileUA() {
     const s = settingsManager.get();
     if (s.panelSize !== 'phone') return null;
     const m = config.phone.sizes[s.phoneModel] || config.phone.sizes[config.phone.defaultModel];
@@ -61,7 +61,8 @@ export class LoaderManager {
       return 'unknown';
     }
   }
-  _keepScripts(hostname) {
+  /** 该站点抓取净化时是否保留 <script>（仅信任站点）。 */
+  keepScriptsFor(hostname) {
     return this.sandbox.policyFor(hostname).scripts === true;
   }
   /**
@@ -74,8 +75,8 @@ export class LoaderManager {
     const hostname = ctx.hostname || this._hostnameOf(url);
     const mode = this.resolveMode(url, hostname);
     const loader = this.loaders[mode] || this.loaders.request;
-    const keepScripts = ctx.keepScripts !== undefined ? ctx.keepScripts : this._keepScripts(hostname);
-    const mobileUA = ctx.mobileUA !== undefined ? ctx.mobileUA : this._mobileUA();
+    const keepScripts = ctx.keepScripts !== undefined ? ctx.keepScripts : this.keepScriptsFor(hostname);
+    const mobileUA = ctx.mobileUA !== undefined ? ctx.mobileUA : this.mobileUA();
     const linkIntercept = ctx.linkIntercept !== undefined ? ctx.linkIntercept : undefined;
     logger.log(`[LoaderManager] mode=${mode} scripts=${keepScripts} ${url}`);
     const abort = loader.load({

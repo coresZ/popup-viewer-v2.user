@@ -1,30 +1,6 @@
-var __PopupKitModule = (() => {
-  var __defProp = Object.defineProperty;
-  var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
-  var __getOwnPropNames = Object.getOwnPropertyNames;
-  var __hasOwnProp = Object.prototype.hasOwnProperty;
-  var __export = (target, all) => {
-    for (var name in all)
-      __defProp(target, name, { get: all[name], enumerable: true });
-  };
-  var __copyProps = (to, from, except, desc) => {
-    if (from && typeof from === "object" || typeof from === "function") {
-      for (let key of __getOwnPropNames(from))
-        if (!__hasOwnProp.call(to, key) && key !== except)
-          __defProp(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable });
-    }
-    return to;
-  };
-  var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
-
-  // src/kit/popupKit.js
-  var popupKit_exports = {};
-  __export(popupKit_exports, {
-    PopupKit: () => kit
-  });
-
+(() => {
   // src/kit/kit.css
-  var kit_default = "/* PopupKit 独立样式：pvk- 前缀，与 popup-viewer-v2 主脚本（popup-/pv-）\r\n   及 page-picker-kit（ppk-）完全隔离，避免同页多脚本 ID/CSS 冲突。\r\n   自包含 loading/error/spinner，不依赖主脚本 Loading.js/ErrorView.js 的样式。 */\r\n@layer pvk-reset {\r\n  #pvk-panel,\r\n  #pvk-panel *,\r\n  #pvk-overlay,\r\n  #pvk-loading,\r\n  #pvk-loading *,\r\n  #pvk-error,\r\n  #pvk-error *,\r\n  .pvk-btn {\r\n    box-sizing: border-box;\r\n    margin: 0;\r\n    padding: 0;\r\n    border: 0;\r\n    outline: 0;\r\n    background: transparent;\r\n    vertical-align: baseline;\r\n    text-decoration: none;\r\n    text-shadow: none;\r\n    font-family: inherit;\r\n    font-size: inherit;\r\n    font-weight: inherit;\r\n    font-style: inherit;\r\n    line-height: inherit;\r\n    letter-spacing: inherit;\r\n    color: inherit;\r\n    text-align: left;\r\n  }\r\n}\r\n\r\n#pvk-panel {\r\n  box-sizing: border-box;\r\n}\r\n\r\n:root {\r\n  --pvk-accent: #2563eb;\r\n  --pvk-accent-hover: #1d4ed8;\r\n  --pvk-accent-soft: rgba(37, 99, 235, 0.1);\r\n  --pvk-danger: #dc2626;\r\n  --pvk-danger-soft: rgba(220, 38, 38, 0.1);\r\n  --pvk-header-bg: #fafbfc;\r\n  --pvk-border: #e4e7ec;\r\n  --pvk-text: #1a2233;\r\n  --pvk-muted: #64748b;\r\n  --pvk-faint: #94a3b8;\r\n  --pvk-bg: #ffffff;\r\n  --pvk-surface: #ffffff;\r\n  --pvk-btn-bg: rgba(15, 23, 42, 0.07);\r\n  --pvk-btn-hover: rgba(15, 23, 42, 0.12);\r\n  --pvk-btn-active: rgba(15, 23, 42, 0.17);\r\n  --pvk-focus-ring: rgba(37, 99, 235, 0.4);\r\n  --pvk-shadow:\r\n    0 0 0 1px rgba(15, 23, 42, 0.04),\r\n    0 24px 60px -18px rgba(15, 23, 42, 0.28),\r\n    0 8px 24px -12px rgba(15, 23, 42, 0.16);\r\n  --pvk-overlay: rgba(15, 23, 42, 0.28);\r\n}\r\n\r\n@media (prefers-color-scheme: dark) {\r\n  :root {\r\n    --pvk-accent: #60a5fa;\r\n    --pvk-accent-hover: #93c5fd;\r\n    --pvk-accent-soft: rgba(96, 165, 250, 0.14);\r\n    --pvk-danger: #f87171;\r\n    --pvk-danger-soft: rgba(248, 113, 113, 0.14);\r\n    --pvk-header-bg: #121a2b;\r\n    --pvk-border: #263247;\r\n    --pvk-text: #e2e8f0;\r\n    --pvk-muted: #94a3b8;\r\n    --pvk-faint: #64748b;\r\n    --pvk-bg: #0f172a;\r\n    --pvk-surface: #151e30;\r\n    --pvk-btn-bg: rgba(148, 163, 184, 0.14);\r\n    --pvk-btn-hover: rgba(148, 163, 184, 0.22);\r\n    --pvk-btn-active: rgba(148, 163, 184, 0.28);\r\n    --pvk-focus-ring: rgba(96, 165, 250, 0.5);\r\n    --pvk-shadow:\r\n      0 0 0 1px rgba(255, 255, 255, 0.04),\r\n      0 28px 70px -20px rgba(0, 0, 0, 0.72),\r\n      0 10px 28px -14px rgba(0, 0, 0, 0.5);\r\n    --pvk-overlay: rgba(0, 0, 0, 0.52);\r\n  }\r\n}\r\n\r\n/* 面板核心 */\r\n#pvk-panel {\r\n  position: fixed;\r\n  z-index: 10000;\r\n  width: 50%;\r\n  height: 75%;\r\n  max-width: min(2560px, calc(100vw - 24px));\r\n  max-height: min(1440px, calc(100vh - 24px));\r\n  max-height: min(1440px, calc(100dvh - 24px));\r\n  top: 50%;\r\n  left: 50%;\r\n  overscroll-behavior: contain;\r\n  transform: translate(-50%, -50%) scale(0.96);\r\n  transform-origin: center;\r\n  background-color: var(--pvk-surface);\r\n  color: var(--pvk-text);\r\n  box-shadow: var(--pvk-shadow);\r\n  border: 1px solid var(--pvk-border);\r\n  border-radius: 12px;\r\n  overflow: hidden;\r\n  display: flex;\r\n  flex-direction: column;\r\n  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',\r\n    'Microsoft YaHei', Roboto, 'Helvetica Neue', Arial, sans-serif;\r\n  opacity: 0;\r\n  pointer-events: none;\r\n  transition: opacity 0.25s ease, transform 0.3s cubic-bezier(0.16, 1, 0.3, 1);\r\n}\r\n#pvk-panel.visible {\r\n  opacity: 1;\r\n  pointer-events: auto;\r\n  transform: translate(-50%, -50%) scale(1);\r\n}\r\n\r\n/* 头部 */\r\n#pvk-header {\r\n  display: flex;\r\n  align-items: center;\r\n  justify-content: space-between;\r\n  gap: 12px;\r\n  padding: 0 10px 0 14px;\r\n  background-color: var(--pvk-header-bg);\r\n  border-bottom: 1px solid var(--pvk-border);\r\n  height: 46px;\r\n  min-height: 46px;\r\n  flex: 0 0 auto;\r\n  cursor: grab;\r\n  user-select: none;\r\n}\r\n#pvk-header:active {\r\n  cursor: grabbing;\r\n}\r\n#pvk-title {\r\n  display: flex;\r\n  align-items: center;\r\n  gap: 9px;\r\n  min-width: 0;\r\n  flex: 1;\r\n}\r\n.pvk-title-mark {\r\n  flex: 0 0 auto;\r\n  width: 26px;\r\n  height: 26px;\r\n  border-radius: 8px;\r\n  background: var(--pvk-accent-soft);\r\n  color: var(--pvk-accent);\r\n  display: flex;\r\n  align-items: center;\r\n  justify-content: center;\r\n}\r\n.pvk-title-mark svg {\r\n  width: 15px;\r\n  height: 15px;\r\n  fill: none;\r\n  stroke: currentColor;\r\n}\r\n.pvk-title-text {\r\n  font-size: 14px;\r\n  font-weight: 600;\r\n  letter-spacing: 0.1px;\r\n  color: var(--pvk-text);\r\n  white-space: nowrap;\r\n  overflow: hidden;\r\n  text-overflow: ellipsis;\r\n}\r\n#pvk-actions {\r\n  display: flex;\r\n  align-items: center;\r\n  gap: 4px;\r\n  flex: 0 0 auto;\r\n}\r\n.pvk-btn {\r\n  width: 32px;\r\n  height: 32px;\r\n  padding: 0;\r\n  border: 1px solid transparent;\r\n  border-radius: 9px;\r\n  background-color: var(--pvk-btn-bg);\r\n  color: var(--pvk-muted);\r\n  cursor: pointer;\r\n  display: flex;\r\n  align-items: center;\r\n  justify-content: center;\r\n  flex: 0 0 auto;\r\n  transition: background-color 0.15s ease, color 0.15s ease, transform 0.1s ease;\r\n}\r\n.pvk-btn svg {\r\n  width: 16px;\r\n  height: 16px;\r\n  fill: none;\r\n  stroke: currentColor;\r\n  pointer-events: none;\r\n}\r\n.pvk-btn:hover {\r\n  background-color: var(--pvk-btn-hover);\r\n  color: var(--pvk-text);\r\n}\r\n.pvk-btn:active {\r\n  transform: scale(0.92);\r\n}\r\n.pvk-btn:focus-visible {\r\n  outline: 2px solid var(--pvk-focus-ring);\r\n  outline-offset: 1px;\r\n}\r\n#pvk-close:hover {\r\n  color: var(--pvk-danger);\r\n  background-color: var(--pvk-danger-soft);\r\n}\r\n#pvk-actions .pvk-btn:hover {\r\n  color: var(--pvk-accent);\r\n  background-color: var(--pvk-accent-soft);\r\n}\r\n\r\n/* 内容区 */\r\n#pvk-content {\r\n  flex: 1;\r\n  overflow-y: auto;\r\n  overscroll-behavior: contain;\r\n  position: relative;\r\n  background-color: var(--pvk-bg);\r\n  padding: 20px;\r\n  box-sizing: border-box;\r\n  scroll-behavior: smooth;\r\n  scrollbar-width: thin;\r\n  scrollbar-color: var(--pvk-faint) transparent;\r\n}\r\n#pvk-content::-webkit-scrollbar {\r\n  width: 8px;\r\n}\r\n#pvk-content::-webkit-scrollbar-thumb {\r\n  background-color: var(--pvk-faint);\r\n  border-radius: 8px;\r\n  border: 2px solid transparent;\r\n  background-clip: padding-box;\r\n}\r\n#pvk-content.iframe-direct-load {\r\n  padding: 0;\r\n}\r\n#pvk-iframe {\r\n  width: 100%;\r\n  height: 100%;\r\n  border: none;\r\n  background-color: #fff;\r\n}\r\n\r\n/* 遮罩 */\r\n#pvk-overlay {\r\n  position: fixed;\r\n  inset: 0;\r\n  z-index: 9998;\r\n  background-color: var(--pvk-overlay);\r\n  opacity: 0;\r\n  pointer-events: none;\r\n  transition: opacity 0.3s ease-in-out;\r\n  backdrop-filter: blur(6px);\r\n  -webkit-backdrop-filter: blur(6px);\r\n}\r\n#pvk-overlay.visible {\r\n  opacity: 1;\r\n  pointer-events: auto;\r\n}\r\n\r\n/* 加载状态 */\r\n#pvk-loading {\r\n  display: flex;\r\n  flex-direction: column;\r\n  align-items: center;\r\n  justify-content: center;\r\n  height: 100%;\r\n  color: var(--pvk-muted);\r\n  padding: 25px;\r\n}\r\n.pvk-spinner {\r\n  width: 38px;\r\n  height: 38px;\r\n  margin-bottom: 20px;\r\n  border: 3px solid var(--pvk-accent-soft);\r\n  border-radius: 50%;\r\n  border-top: 3px solid var(--pvk-accent);\r\n  animation: pvk-spin 0.8s linear infinite;\r\n}\r\n@keyframes pvk-spin {\r\n  0% {\r\n    transform: rotate(0deg);\r\n  }\r\n  100% {\r\n    transform: rotate(360deg);\r\n  }\r\n}\r\n.pvk-loading-hint {\r\n  font-size: 15px;\r\n  font-weight: 500;\r\n  color: var(--pvk-text);\r\n}\r\n.pvk-loading-sub {\r\n  margin-top: 8px;\r\n  font-size: 13px;\r\n  color: var(--pvk-faint);\r\n}\r\n\r\n/* 错误状态 */\r\n#pvk-error {\r\n  padding: 35px;\r\n  color: var(--pvk-text);\r\n  text-align: center;\r\n  display: flex;\r\n  flex-direction: column;\r\n  align-items: center;\r\n  justify-content: center;\r\n  height: 100%;\r\n  box-sizing: border-box;\r\n}\r\n#pvk-error .pvk-error-icon {\r\n  color: var(--pvk-danger);\r\n  margin-bottom: 6px;\r\n}\r\n#pvk-error h3 {\r\n  margin-top: 16px;\r\n  margin-bottom: 10px;\r\n  font-weight: 600;\r\n  font-size: 1.15em;\r\n}\r\n#pvk-error p {\r\n  margin-bottom: 24px;\r\n  color: var(--pvk-muted);\r\n  max-width: 420px;\r\n  line-height: 1.6;\r\n  word-break: break-all;\r\n}\r\n#pvk-error button {\r\n  padding: 10px 20px;\r\n  background: var(--pvk-accent);\r\n  color: #fff;\r\n  border: none;\r\n  border-radius: 8px;\r\n  cursor: pointer;\r\n  font-weight: 500;\r\n  font-size: 14px;\r\n  transition: background 0.15s ease-in-out, transform 0.1s ease-in-out;\r\n}\r\n#pvk-error button:hover {\r\n  background: var(--pvk-accent-hover);\r\n}\r\n#pvk-error button:active {\r\n  transform: scale(0.97);\r\n}\r\n\r\n@media (prefers-reduced-motion: reduce) {\r\n  #pvk-panel,\r\n  #pvk-overlay {\r\n    transition: none;\r\n  }\r\n  .pvk-spinner {\r\n    animation-duration: 1.6s;\r\n  }\r\n}\r\n@media (max-width: 560px), (max-height: 560px) {\r\n  #pvk-panel {\r\n    max-width: calc(100vw - 16px);\r\n    max-height: calc(100vh - 16px);\r\n  }\r\n}\r\n";
+  var kit_default = "/* PopupKit 独立样式：pvk- 前缀，与 popup-viewer-v2 主脚本（popup-/pv-）\r\n   及 page-picker-kit（ppk-）完全隔离，避免同页多脚本 ID/CSS 冲突。\r\n   自包含 loading/error/spinner，不依赖主脚本 Loading.js/ErrorView.js 的样式。 */\r\n@layer pvk-reset {\r\n  #pvk-panel,\r\n  #pvk-panel *,\r\n  #pvk-overlay,\r\n  #pvk-loading,\r\n  #pvk-loading *,\r\n  #pvk-error,\r\n  #pvk-error *,\r\n  .pvk-btn {\r\n    box-sizing: border-box;\r\n    margin: 0;\r\n    padding: 0;\r\n    border: 0;\r\n    outline: 0;\r\n    background: transparent;\r\n    vertical-align: baseline;\r\n    text-decoration: none;\r\n    text-shadow: none;\r\n    font-family: inherit;\r\n    font-size: inherit;\r\n    font-weight: inherit;\r\n    font-style: inherit;\r\n    line-height: inherit;\r\n    letter-spacing: inherit;\r\n    color: inherit;\r\n    text-align: left;\r\n  }\r\n}\r\n\r\n#pvk-panel {\r\n  box-sizing: border-box;\r\n}\r\n\r\n:root {\r\n  --pvk-accent: #2563eb;\r\n  --pvk-accent-hover: #1d4ed8;\r\n  --pvk-accent-soft: rgba(37, 99, 235, 0.1);\r\n  --pvk-danger: #dc2626;\r\n  --pvk-danger-soft: rgba(220, 38, 38, 0.1);\r\n  --pvk-header-bg: #fafbfc;\r\n  --pvk-border: #e4e7ec;\r\n  --pvk-text: #1a2233;\r\n  --pvk-muted: #64748b;\r\n  --pvk-faint: #94a3b8;\r\n  --pvk-bg: #ffffff;\r\n  --pvk-surface: #ffffff;\r\n  --pvk-btn-bg: rgba(15, 23, 42, 0.07);\r\n  --pvk-btn-hover: rgba(15, 23, 42, 0.12);\r\n  --pvk-btn-active: rgba(15, 23, 42, 0.17);\r\n  --pvk-focus-ring: rgba(37, 99, 235, 0.4);\r\n  --pvk-shadow:\r\n    0 0 0 1px rgba(15, 23, 42, 0.04),\r\n    0 24px 60px -18px rgba(15, 23, 42, 0.28),\r\n    0 8px 24px -12px rgba(15, 23, 42, 0.16);\r\n  --pvk-overlay: rgba(15, 23, 42, 0.28);\r\n}\r\n\r\n@media (prefers-color-scheme: dark) {\r\n  :root {\r\n    --pvk-accent: #60a5fa;\r\n    --pvk-accent-hover: #93c5fd;\r\n    --pvk-accent-soft: rgba(96, 165, 250, 0.14);\r\n    --pvk-danger: #f87171;\r\n    --pvk-danger-soft: rgba(248, 113, 113, 0.14);\r\n    --pvk-header-bg: #121a2b;\r\n    --pvk-border: #263247;\r\n    --pvk-text: #e2e8f0;\r\n    --pvk-muted: #94a3b8;\r\n    --pvk-faint: #64748b;\r\n    --pvk-bg: #0f172a;\r\n    --pvk-surface: #151e30;\r\n    --pvk-btn-bg: rgba(148, 163, 184, 0.14);\r\n    --pvk-btn-hover: rgba(148, 163, 184, 0.22);\r\n    --pvk-btn-active: rgba(148, 163, 184, 0.28);\r\n    --pvk-focus-ring: rgba(96, 165, 250, 0.5);\r\n    --pvk-shadow:\r\n      0 0 0 1px rgba(255, 255, 255, 0.04),\r\n      0 28px 70px -20px rgba(0, 0, 0, 0.72),\r\n      0 10px 28px -14px rgba(0, 0, 0, 0.5);\r\n    --pvk-overlay: rgba(0, 0, 0, 0.52);\r\n  }\r\n}\r\n\r\n/* 面板核心 */\r\n#pvk-panel {\r\n  position: fixed;\r\n  z-index: 10000;\r\n  width: 50%;\r\n  height: 75%;\r\n  max-width: min(2560px, calc(100vw - 24px));\r\n  max-height: min(1440px, calc(100vh - 24px));\r\n  max-height: min(1440px, calc(100dvh - 24px));\r\n  top: 50%;\r\n  left: 50%;\r\n  overscroll-behavior: contain;\r\n  transform: translate(-50%, -50%) scale(0.96);\r\n  transform-origin: center;\r\n  background-color: var(--pvk-surface);\r\n  color: var(--pvk-text);\r\n  box-shadow: var(--pvk-shadow);\r\n  border: 1px solid var(--pvk-border);\r\n  border-radius: 12px;\r\n  overflow: hidden;\r\n  display: flex;\r\n  flex-direction: column;\r\n  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',\r\n    'Microsoft YaHei', Roboto, 'Helvetica Neue', Arial, sans-serif;\r\n  opacity: 0;\r\n  pointer-events: none;\r\n  transition: opacity 0.25s ease, transform 0.3s cubic-bezier(0.16, 1, 0.3, 1);\r\n}\r\n#pvk-panel.visible {\r\n  opacity: 1;\r\n  pointer-events: auto;\r\n  transform: translate(-50%, -50%) scale(1);\r\n}\r\n\r\n/* 头部 */\r\n#pvk-header {\r\n  display: flex;\r\n  align-items: center;\r\n  justify-content: space-between;\r\n  gap: 12px;\r\n  padding: 0 10px 0 14px;\r\n  background-color: var(--pvk-header-bg);\r\n  border-bottom: 1px solid var(--pvk-border);\r\n  height: 46px;\r\n  min-height: 46px;\r\n  flex: 0 0 auto;\r\n  cursor: grab;\r\n  user-select: none;\r\n}\r\n#pvk-header:active {\r\n  cursor: grabbing;\r\n}\r\n#pvk-title {\r\n  display: flex;\r\n  align-items: center;\r\n  gap: 9px;\r\n  min-width: 0;\r\n  flex: 1;\r\n}\r\n.pvk-title-mark {\r\n  flex: 0 0 auto;\r\n  width: 26px;\r\n  height: 26px;\r\n  border-radius: 8px;\r\n  background: var(--pvk-accent-soft);\r\n  color: var(--pvk-accent);\r\n  display: flex;\r\n  align-items: center;\r\n  justify-content: center;\r\n}\r\n.pvk-title-mark svg {\r\n  width: 15px;\r\n  height: 15px;\r\n  fill: none;\r\n  stroke: currentColor;\r\n}\r\n.pvk-title-text {\r\n  font-size: 14px;\r\n  font-weight: 600;\r\n  letter-spacing: 0.1px;\r\n  color: var(--pvk-text);\r\n  white-space: nowrap;\r\n  overflow: hidden;\r\n  text-overflow: ellipsis;\r\n}\r\n#pvk-actions {\r\n  display: flex;\r\n  align-items: center;\r\n  gap: 4px;\r\n  flex: 0 0 auto;\r\n}\r\n.pvk-btn {\r\n  width: 32px;\r\n  height: 32px;\r\n  padding: 0;\r\n  border: 1px solid transparent;\r\n  border-radius: 9px;\r\n  background-color: var(--pvk-btn-bg);\r\n  color: var(--pvk-muted);\r\n  cursor: pointer;\r\n  display: flex;\r\n  align-items: center;\r\n  justify-content: center;\r\n  flex: 0 0 auto;\r\n  transition: background-color 0.15s ease, color 0.15s ease, transform 0.1s ease;\r\n}\r\n.pvk-btn svg {\r\n  width: 16px;\r\n  height: 16px;\r\n  fill: none;\r\n  stroke: currentColor;\r\n  pointer-events: none;\r\n}\r\n.pvk-btn:hover {\r\n  background-color: var(--pvk-btn-hover);\r\n  color: var(--pvk-text);\r\n}\r\n.pvk-btn:active {\r\n  transform: scale(0.92);\r\n}\r\n.pvk-btn:focus-visible {\r\n  outline: 2px solid var(--pvk-focus-ring);\r\n  outline-offset: 1px;\r\n}\r\n#pvk-close:hover {\r\n  color: var(--pvk-danger);\r\n  background-color: var(--pvk-danger-soft);\r\n}\r\n#pvk-actions .pvk-btn:hover {\r\n  color: var(--pvk-accent);\r\n  background-color: var(--pvk-accent-soft);\r\n}\r\n\r\n/* 内容区 */\r\n#pvk-content {\r\n  flex: 1;\r\n  overflow-y: auto;\r\n  overscroll-behavior: contain;\r\n  position: relative;\r\n  background-color: var(--pvk-bg);\r\n  padding: 20px;\r\n  box-sizing: border-box;\r\n  scroll-behavior: smooth;\r\n  scrollbar-width: thin;\r\n  scrollbar-color: var(--pvk-faint) transparent;\r\n}\r\n#pvk-content::-webkit-scrollbar {\r\n  width: 8px;\r\n}\r\n#pvk-content::-webkit-scrollbar-thumb {\r\n  background-color: var(--pvk-faint);\r\n  border-radius: 8px;\r\n  border: 2px solid transparent;\r\n  background-clip: padding-box;\r\n}\r\n#pvk-content.iframe-direct-load {\r\n  padding: 0;\r\n}\r\n#pvk-iframe {\r\n  width: 100%;\r\n  height: 100%;\r\n  border: none;\r\n  background-color: #fff;\r\n}\r\n\r\n/* 遮罩 */\r\n#pvk-overlay {\r\n  position: fixed;\r\n  inset: 0;\r\n  z-index: 9998;\r\n  background-color: var(--pvk-overlay);\r\n  opacity: 0;\r\n  pointer-events: none;\r\n  transition: opacity 0.3s ease-in-out;\r\n  backdrop-filter: blur(6px);\r\n  -webkit-backdrop-filter: blur(6px);\r\n}\r\n#pvk-overlay.visible {\r\n  opacity: 1;\r\n  pointer-events: auto;\r\n}\r\n\r\n/* 加载状态 */\r\n#pvk-loading {\r\n  display: flex;\r\n  flex-direction: column;\r\n  align-items: center;\r\n  justify-content: center;\r\n  height: 100%;\r\n  color: var(--pvk-muted);\r\n  padding: 25px;\r\n}\r\n.pvk-spinner {\r\n  width: 38px;\r\n  height: 38px;\r\n  margin-bottom: 20px;\r\n  border: 3px solid var(--pvk-accent-soft);\r\n  border-radius: 50%;\r\n  border-top: 3px solid var(--pvk-accent);\r\n  animation: pvk-spin 0.8s linear infinite;\r\n}\r\n@keyframes pvk-spin {\r\n  0% {\r\n    transform: rotate(0deg);\r\n  }\r\n  100% {\r\n    transform: rotate(360deg);\r\n  }\r\n}\r\n.pvk-loading-hint {\r\n  font-size: 15px;\r\n  font-weight: 500;\r\n  color: var(--pvk-text);\r\n}\r\n.pvk-loading-sub {\r\n  margin-top: 8px;\r\n  font-size: 13px;\r\n  color: var(--pvk-faint);\r\n}\r\n\r\n/* 错误状态 */\r\n#pvk-error {\r\n  padding: 35px;\r\n  color: var(--pvk-text);\r\n  text-align: center;\r\n  display: flex;\r\n  flex-direction: column;\r\n  align-items: center;\r\n  justify-content: center;\r\n  height: 100%;\r\n  box-sizing: border-box;\r\n}\r\n#pvk-error .pvk-error-icon {\r\n  color: var(--pvk-danger);\r\n  margin-bottom: 6px;\r\n}\r\n#pvk-error h3 {\r\n  margin-top: 16px;\r\n  margin-bottom: 10px;\r\n  font-weight: 600;\r\n  font-size: 1.15em;\r\n}\r\n#pvk-error p {\r\n  margin-bottom: 24px;\r\n  color: var(--pvk-muted);\r\n  max-width: 420px;\r\n  line-height: 1.6;\r\n  word-break: break-all;\r\n}\r\n#pvk-error button {\r\n  padding: 10px 20px;\r\n  background: var(--pvk-accent);\r\n  color: #fff;\r\n  border: none;\r\n  border-radius: 8px;\r\n  cursor: pointer;\r\n  font-weight: 500;\r\n  font-size: 14px;\r\n  transition: background 0.15s ease-in-out, transform 0.1s ease-in-out;\r\n}\r\n#pvk-error button:hover {\r\n  background: var(--pvk-accent-hover);\r\n}\r\n#pvk-error button:active {\r\n  transform: scale(0.97);\r\n}\r\n\r\n/* 拖拽反馈（共享 setupDrag 会添加 pv-dragging 类） */\r\n#pvk-panel.pv-dragging {\r\n  user-select: none;\r\n  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.4), 0 28px 70px -20px rgba(0, 0, 0, 0.5);\r\n}\r\n\r\n@media (prefers-reduced-motion: reduce) {\r\n  #pvk-panel,\r\n  #pvk-overlay {\r\n    transition: none;\r\n  }\r\n  .pvk-spinner {\r\n    animation-duration: 1.6s;\r\n  }\r\n}\r\n@media (max-width: 560px), (max-height: 560px) {\r\n  #pvk-panel {\r\n    max-width: calc(100vw - 16px);\r\n    max-height: calc(100vh - 16px);\r\n  }\r\n}\r\n";
 
   // src/utils/gm.js
   var has = (fn) => typeof fn === "function";
@@ -98,12 +74,6 @@ var __PopupKitModule = (() => {
   // src/config.js
   var config = {
     popup: {
-      width: "50%",
-      height: "75%",
-      maxWidth: "2560px",
-      maxHeight: "1440px",
-      radius: "12px",
-      zIndex: 1e4,
       // 窗体大小预设（可在设置面板切换）
       sizes: {
         small: { width: "40%", height: "60%" },
@@ -190,10 +160,7 @@ var __PopupKitModule = (() => {
   }
   var logger = {
     log(...args) {
-      console.log(PREFIX, ...args);
-    },
-    info(...args) {
-      console.info(PREFIX, ...args);
+      if (configDebug()) console.log(PREFIX, ...args);
     },
     warn(...args) {
       console.warn(PREFIX, ...args);
@@ -251,6 +218,19 @@ var __PopupKitModule = (() => {
   };
   function createDefaultSandbox(policy) {
     return new Sandbox(policy);
+  }
+  function contentSandboxAttrs(keepScripts = false) {
+    const attrs = [
+      "allow-forms",
+      "allow-modals",
+      "allow-pointer-lock",
+      "allow-popups",
+      "allow-popups-to-escape-sandbox",
+      "allow-presentation",
+      "allow-same-origin"
+    ];
+    if (keepScripts) attrs.push("allow-scripts");
+    return attrs.join(" ");
   }
 
   // src/utils/dom.js
@@ -379,6 +359,26 @@ var __PopupKitModule = (() => {
   };
 
   // src/security/Sanitizer.js
+  var REAL_SRC_ATTRS = [
+    "zoomfile",
+    "file",
+    "data-src",
+    "data-original",
+    "data-lazy-src",
+    "data-actualsrc",
+    "data-src-real",
+    "data-real-src",
+    "data-url",
+    "data-large",
+    "data-big",
+    "data-hd-src",
+    "data-original-src",
+    "data-echo",
+    "data-lazyload",
+    "data-lazy-load",
+    "data-full",
+    "data-img"
+  ];
   var Sanitizer = class _Sanitizer {
     constructor() {
       this.removedTags = /* @__PURE__ */ new Set([
@@ -418,28 +418,6 @@ var __PopupKitModule = (() => {
      * src 多为占位图（懒加载 JS 被净化后不会执行）。只要找到真实地址就换到 src 并绝对化，
      * 不依赖对「占位图文件名」的精确识别——各站点占位图命名千差万别，正则穷举必然漏。
      */
-    static REAL_SRC_ATTRS = [
-      "data-src",
-      "data-original",
-      "data-lazy-src",
-      "data-actualsrc",
-      "data-src-real",
-      "data-real-src",
-      "data-url",
-      "data-large",
-      "data-big",
-      "data-hd-src",
-      "data-original-src",
-      "data-echo",
-      "data-lazyload",
-      "data-lazy-load",
-      "data-full",
-      "data-img",
-      // Discuz 系论坛（52pojie/wnflb/chiphell 等）附件图：src 为 1x1 none.gif 占位，
-      // 真实地址放在 zoomfile/file 属性里，点击时才由 JS 换入
-      "zoomfile",
-      "file"
-    ];
     static PLACEHOLDER_RE = /^(data:|about:|blob:)/i;
     _resolveLazyImages(doc, baseUrl) {
       doc.querySelectorAll("img").forEach((img) => {
@@ -460,7 +438,7 @@ var __PopupKitModule = (() => {
       });
     }
     _firstRealAttr(img) {
-      for (const attr of _Sanitizer.REAL_SRC_ATTRS) {
+      for (const attr of REAL_SRC_ATTRS) {
         const value = img.getAttribute(attr);
         if (value && value.trim()) return value.trim();
       }
@@ -501,7 +479,7 @@ var __PopupKitModule = (() => {
       return true;
     }
     _clearRealAttrs(img) {
-      for (const attr of _Sanitizer.REAL_SRC_ATTRS) img.removeAttribute(attr);
+      for (const attr of REAL_SRC_ATTRS) img.removeAttribute(attr);
     }
     /**
      * 收集原页面的样式（stylesheet 链接与 head 中的 <style> 块），
@@ -558,26 +536,26 @@ var __PopupKitModule = (() => {
       const attrs = node.attributes;
       if (!attrs || !attrs.length) return;
       for (let i = attrs.length - 1; i >= 0; i--) {
-        const name = attrs[i].name;
+        const name = attrs[i].name.toLowerCase();
         const value = attrs[i].value;
         if (this.dangerousEventAttrs.test(name)) {
-          node.removeAttribute(name);
+          node.removeAttribute(attrs[i].name);
           continue;
         }
-        if (name.toLowerCase() === "srcdoc") {
-          node.removeAttribute(name);
+        if (name === "srcdoc") {
+          node.removeAttribute(attrs[i].name);
           continue;
         }
-        if (name === "href") {
+        if (name === "href" || name === "xlink:href") {
           const scheme = String(value).trim().split(":")[0].toLowerCase();
           if (["javascript", "data", "vbscript", "file"].includes(scheme)) {
-            node.removeAttribute(name);
+            node.removeAttribute(attrs[i].name);
           }
         }
-        if (name === "src" || name === "poster") {
+        if (name === "src" || name === "poster" || name === "background") {
           const scheme = String(value).trim().split(":")[0].toLowerCase();
           if (["javascript", "vbscript", "file"].includes(scheme)) {
-            node.removeAttribute(name);
+            node.removeAttribute(attrs[i].name);
           }
         }
       }
@@ -599,7 +577,8 @@ var __PopupKitModule = (() => {
       windowMode: "coupled",
       linkIntercept: true,
       phoneModel: config.phone.defaultModel,
-      phonePosition: null
+      phonePosition: null,
+      customSize: null
     };
   }
   function currentSiteKey() {
@@ -626,7 +605,7 @@ var __PopupKitModule = (() => {
       if (all && typeof all === "object" && all[this.siteKey]) {
         this.site = { ...defaultSite(), ...all[this.siteKey] };
       }
-      if (!config.popup.sizes[this.site.panelSize]) {
+      if (!config.popup.sizes[this.site.panelSize] && this.site.panelSize !== "custom") {
         this.site.panelSize = defaultSite().panelSize;
       }
       if (!config.phone.sizes[this.site.phoneModel]) {
@@ -668,28 +647,6 @@ var __PopupKitModule = (() => {
   var settingsManager = new SettingsManager();
 
   // src/loaders/IframeRenderer.js
-  var IMG_REAL_ATTRS = [
-    // Discuz 系论坛（52pojie/wnflb/chiphell 等）附件图：src 为 1x1 none.gif 占位，
-    // 真实地址放在 zoomfile/file 属性里，点击时才由 JS 换入
-    "zoomfile",
-    "file",
-    "data-src",
-    "data-original",
-    "data-lazy-src",
-    "data-actualsrc",
-    "data-src-real",
-    "data-real-src",
-    "data-url",
-    "data-large",
-    "data-big",
-    "data-hd-src",
-    "data-original-src",
-    "data-echo",
-    "data-lazyload",
-    "data-lazy-load",
-    "data-full",
-    "data-img"
-  ];
   function renderIntoIframe({ html, url, container, sandboxAttrs, head = "", linkIntercept, loadingSelector = "#popup-panel-loading" }) {
     container.querySelector(loadingSelector)?.remove();
     container.classList.add("iframe-direct-load");
@@ -755,7 +712,7 @@ var __PopupKitModule = (() => {
       const cur = img.getAttribute("src") || "";
       const isPlaceholderSrc = !cur || /(?:none|placeholder|loading|blank|spacer|1x1|pixel)(?:\.gif|\.png|\.jpg|\.jpeg|\.webp)?$/i.test(cur);
       if (isPlaceholderSrc || img.complete && img.naturalWidth === 0) {
-        for (const attr of IMG_REAL_ATTRS) {
+        for (const attr of REAL_SRC_ATTRS) {
           const value = img.getAttribute(attr);
           if (value && value.trim()) {
             try {
@@ -791,9 +748,6 @@ var __PopupKitModule = (() => {
 
   // src/loaders/RequestLoader.js
   var RequestLoader = class {
-    constructor() {
-      this.sandboxAttrs = "allow-forms allow-modals allow-pointer-lock allow-popups allow-popups-to-escape-sandbox allow-presentation allow-same-origin allow-scripts";
-    }
     load({ url, hostname, keepScripts = false, container, onError, onLoad, mobileUA = null, linkIntercept, loadingSelector }) {
       logger.debug(`[RequestLoader] fetch ${url}`);
       const abort = gm.xmlhttpRequest({
@@ -813,7 +767,7 @@ var __PopupKitModule = (() => {
               head: result.head,
               url,
               container,
-              sandboxAttrs: this.sandboxAttrs,
+              sandboxAttrs: contentSandboxAttrs(keepScripts),
               linkIntercept,
               loadingSelector
             });
@@ -909,8 +863,7 @@ var __PopupKitModule = (() => {
 
   // src/loaders/CacheLoader.js
   var CacheLoader = class {
-    constructor(sandboxAttrs) {
-      this.sandboxAttrs = sandboxAttrs || "allow-forms allow-modals allow-pointer-lock allow-popups allow-popups-to-escape-sandbox allow-presentation allow-same-origin allow-scripts";
+    constructor() {
       this.cache = /* @__PURE__ */ new Map();
       this.inflight = /* @__PURE__ */ new Map();
     }
@@ -995,7 +948,7 @@ var __PopupKitModule = (() => {
           head: cached.head,
           url,
           container,
-          sandboxAttrs: this.sandboxAttrs,
+          sandboxAttrs: contentSandboxAttrs(keepScripts),
           linkIntercept,
           loadingSelector
         });
@@ -1011,7 +964,7 @@ var __PopupKitModule = (() => {
           head: result.head,
           url,
           container,
-          sandboxAttrs: this.sandboxAttrs,
+          sandboxAttrs: contentSandboxAttrs(keepScripts),
           linkIntercept,
           loadingSelector
         });
@@ -1063,13 +1016,13 @@ var __PopupKitModule = (() => {
      */
     prefetch(url) {
       const hostname = this._hostnameOf(url);
-      const keepScripts = this._keepScripts(hostname);
-      return this.loaders.cache.prefetch(url, keepScripts, this._mobileUA());
+      const keepScripts = this.keepScriptsFor(hostname);
+      return this.loaders.cache.prefetch(url, keepScripts, this.mobileUA());
     }
     /**
      * 手机模式下返回对应的移动端 UA，否则 null。
      */
-    _mobileUA() {
+    mobileUA() {
       const s = settingsManager.get();
       if (s.panelSize !== "phone") return null;
       const m = config.phone.sizes[s.phoneModel] || config.phone.sizes[config.phone.defaultModel];
@@ -1082,7 +1035,8 @@ var __PopupKitModule = (() => {
         return "unknown";
       }
     }
-    _keepScripts(hostname) {
+    /** 该站点抓取净化时是否保留 <script>（仅信任站点）。 */
+    keepScriptsFor(hostname) {
       return this.sandbox.policyFor(hostname).scripts === true;
     }
     /**
@@ -1095,8 +1049,8 @@ var __PopupKitModule = (() => {
       const hostname = ctx.hostname || this._hostnameOf(url);
       const mode = this.resolveMode(url, hostname);
       const loader = this.loaders[mode] || this.loaders.request;
-      const keepScripts = ctx.keepScripts !== void 0 ? ctx.keepScripts : this._keepScripts(hostname);
-      const mobileUA = ctx.mobileUA !== void 0 ? ctx.mobileUA : this._mobileUA();
+      const keepScripts = ctx.keepScripts !== void 0 ? ctx.keepScripts : this.keepScriptsFor(hostname);
+      const mobileUA = ctx.mobileUA !== void 0 ? ctx.mobileUA : this.mobileUA();
       const linkIntercept = ctx.linkIntercept !== void 0 ? ctx.linkIntercept : void 0;
       logger.log(`[LoaderManager] mode=${mode} scripts=${keepScripts} ${url}`);
       const abort = loader.load({
@@ -1120,6 +1074,116 @@ var __PopupKitModule = (() => {
     }
   };
   var loaderManager = new LoaderManager();
+
+  // src/utils/panelBehavior.js
+  function clampToViewport(panel, { isFullScreen = false, pad = 8 } = {}) {
+    if (!panel || isFullScreen) return;
+    const rect = panel.getBoundingClientRect();
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    let left = rect.left;
+    let top = rect.top;
+    if (rect.width > vw - pad * 2) {
+      left = pad;
+    } else {
+      if (left < pad) left = pad;
+      else if (left + rect.width > vw - pad) left = vw - pad - rect.width;
+    }
+    if (rect.height > vh - pad * 2) {
+      top = pad;
+    } else {
+      if (top < pad) top = pad;
+      else if (top + rect.height > vh - pad) top = vh - pad - rect.height;
+    }
+    if (left !== rect.left || top !== rect.top) {
+      panel.style.transition = "none";
+      panel.style.left = `${left}px`;
+      panel.style.top = `${top}px`;
+      panel.style.transform = "none";
+      void panel.offsetWidth;
+      panel.style.transition = "";
+    }
+  }
+  function setupDrag({ header, panel, isFullScreen = () => false, onDragEnd }) {
+    let dragging = false;
+    let startX = 0;
+    let startY = 0;
+    let startLeft = 0;
+    let startTop = 0;
+    let lastX = 0;
+    let lastY = 0;
+    let raf = null;
+    const applyMove = () => {
+      raf = null;
+      if (!dragging) return;
+      panel.style.left = `${startLeft + (lastX - startX)}px`;
+      panel.style.top = `${startTop + (lastY - startY)}px`;
+    };
+    header.addEventListener("mousedown", (e) => {
+      if (e.target.closest("button")) return;
+      if (isFullScreen()) return;
+      if (e.button !== 0) return;
+      dragging = true;
+      const rect = panel.getBoundingClientRect();
+      startX = e.clientX;
+      startY = e.clientY;
+      startLeft = rect.left;
+      startTop = rect.top;
+      lastX = e.clientX;
+      lastY = e.clientY;
+      panel.style.transition = "none";
+      panel.style.left = `${rect.left}px`;
+      panel.style.top = `${rect.top}px`;
+      panel.style.transform = "none";
+      panel.classList.add("pv-dragging");
+      document.body.style.cursor = "grabbing";
+      e.preventDefault();
+    });
+    const move = (e) => {
+      if (!dragging) return;
+      lastX = e.clientX;
+      lastY = e.clientY;
+      if (!raf) raf = requestAnimationFrame(applyMove);
+    };
+    const up = () => {
+      if (!dragging) return;
+      dragging = false;
+      if (raf) {
+        cancelAnimationFrame(raf);
+        raf = null;
+      }
+      panel.classList.remove("pv-dragging");
+      document.body.style.cursor = "";
+      panel.style.transition = "";
+      onDragEnd?.();
+    };
+    document.addEventListener("mousemove", move);
+    document.addEventListener("mouseup", up);
+  }
+  function setupWheelScrollChain({ panel, contentArea, isFullScreen = () => false }) {
+    document.addEventListener(
+      "wheel",
+      (e) => {
+        if (!panel || !panel.classList.contains("visible")) return;
+        if (isFullScreen()) {
+          e.preventDefault();
+          e.stopPropagation();
+        } else {
+          const content = contentArea();
+          if (content && content.contains(e.target)) {
+            const { scrollTop, scrollHeight, clientHeight } = content;
+            const atBottom = scrollTop + clientHeight >= scrollHeight - 1;
+            const canScroll = scrollHeight > clientHeight;
+            if (!canScroll || atBottom) {
+              e.preventDefault();
+              e.stopPropagation();
+            }
+          }
+        }
+      },
+      true
+    );
+  }
 
   // src/kit/KitPopupPanel.js
   var KitPopupPanel = class {
@@ -1308,74 +1372,22 @@ var __PopupKitModule = (() => {
       this.maximizeBtn.title = this.isFullScreen ? "恢复 (F)" : "全屏 (F)";
     }
     _setupDrag(header) {
-      let dragging = false;
-      let startX = 0;
-      let startY = 0;
-      let startLeft = 0;
-      let startTop = 0;
-      header.addEventListener("mousedown", (e) => {
-        if (e.target.closest("button")) return;
-        if (this.isFullScreen) return;
-        if (e.button !== 0) return;
-        dragging = true;
-        const rect = this.panel.getBoundingClientRect();
-        startX = e.clientX;
-        startY = e.clientY;
-        startLeft = rect.left;
-        startTop = rect.top;
-        this.panel.style.transition = "none";
-        this.panel.style.left = `${rect.left}px`;
-        this.panel.style.top = `${rect.top}px`;
-        this.panel.style.transform = "none";
-        e.preventDefault();
+      setupDrag({
+        header,
+        panel: this.panel,
+        isFullScreen: () => this.isFullScreen,
+        onDragEnd: () => {
+          this._dragged = true;
+          this._clampToViewport();
+        }
       });
-      const move = (e) => {
-        if (!dragging) return;
-        this.panel.style.left = `${startLeft + (e.clientX - startX)}px`;
-        this.panel.style.top = `${startTop + (e.clientY - startY)}px`;
-      };
-      const up = () => {
-        if (!dragging) return;
-        dragging = false;
-        this.panel.style.transition = "";
-        this._dragged = true;
-        this._clampToViewport();
-      };
-      document.addEventListener("mousemove", move);
-      document.addEventListener("mouseup", up);
     }
     /**
      * 把弹窗约束回视口内（DevTools 占位 / 窗口缩放后调用），
      * 避免窗体被压缩出可视区域。
      */
     _clampToViewport() {
-      if (!this.panel || this.isFullScreen) return;
-      const rect = this.panel.getBoundingClientRect();
-      const pad = 8;
-      const vw = window.innerWidth;
-      const vh = window.innerHeight;
-      let left = rect.left;
-      let top = rect.top;
-      if (rect.width > vw - pad * 2) {
-        left = pad;
-      } else {
-        if (left < pad) left = pad;
-        else if (left + rect.width > vw - pad) left = vw - pad - rect.width;
-      }
-      if (rect.height > vh - pad * 2) {
-        top = pad;
-      } else {
-        if (top < pad) top = pad;
-        else if (top + rect.height > vh - pad) top = vh - pad - rect.height;
-      }
-      if (left !== rect.left || top !== rect.top) {
-        this.panel.style.transition = "none";
-        this.panel.style.left = `${left}px`;
-        this.panel.style.top = `${top}px`;
-        this.panel.style.transform = "none";
-        void this.panel.offsetWidth;
-        this.panel.style.transition = "";
-      }
+      clampToViewport(this.panel, { isFullScreen: this.isFullScreen });
     }
     _setupKeyboard() {
       document.addEventListener("keydown", (e) => {
@@ -1394,28 +1406,11 @@ var __PopupKitModule = (() => {
           requestAnimationFrame(() => this._clampToViewport());
         }
       });
-      document.addEventListener(
-        "wheel",
-        (e) => {
-          if (!this.panel || !this.panel.classList.contains("visible")) return;
-          if (this.isFullScreen) {
-            e.preventDefault();
-            e.stopPropagation();
-          } else {
-            const content = this.contentArea;
-            if (content && content.contains(e.target)) {
-              const { scrollTop, scrollHeight, clientHeight } = content;
-              const atBottom = scrollTop + clientHeight >= scrollHeight - 1;
-              const canScroll = scrollHeight > clientHeight;
-              if (!canScroll || atBottom) {
-                e.preventDefault();
-                e.stopPropagation();
-              }
-            }
-          }
-        },
-        true
-      );
+      setupWheelScrollChain({
+        panel: this.panel,
+        contentArea: () => this.contentArea,
+        isFullScreen: () => this.isFullScreen
+      });
     }
     _showLoading(container) {
       container.replaceChildren(
@@ -1491,7 +1486,7 @@ var __PopupKitModule = (() => {
             return loaderManager2.load(url, {
               container,
               hostname,
-              keepScripts: loaderManager2._keepScripts(hostname),
+              keepScripts: loaderManager2.keepScriptsFor(hostname),
               linkIntercept: opts.linkIntercept,
               loadingSelector: "#pvk-loading",
               onError,
@@ -1533,5 +1528,4 @@ var __PopupKitModule = (() => {
   if (typeof window !== "undefined") {
     window.PopupKit = kit;
   }
-  return __toCommonJS(popupKit_exports);
 })();

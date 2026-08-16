@@ -66,7 +66,7 @@ export function createSettingsPanel({ onChange, onManageRules }) {
   });
 
   // ---- 分段控件 ----
-  const makeSeg = (order, labels, getKey, setKey, { icons = {}, defaultOf, onChange } = {}) => {
+  const makeSeg = (order, labels, getKey, setKey, { icons = {}, defaultOf, onChange, onSet } = {}) => {
     const btns = {};
     const group = el('div', { class: 'pv-seg' });
     const sync = () => {
@@ -86,7 +86,7 @@ export function createSettingsPanel({ onChange, onManageRules }) {
           type: 'button',
           class: 'pv-seg-item',
           onclick: () => {
-            settingsManager.set({ [setKey]: k });
+            settingsManager.set(onSet ? onSet(k) : { [setKey]: k });
             sync();
             onChange?.();
             persist();
@@ -104,7 +104,8 @@ export function createSettingsPanel({ onChange, onManageRules }) {
   const sizeSeg = makeSeg(SIZE_ORDER, SIZE_LABELS, () => settingsManager.get().panelSize, 'panelSize', {
     icons: { phone: svgIcon('smartphone', { size: 12 }) },
     defaultOf: DEFAULT_SIZE,
-    onChange: syncPhoneModels
+    onChange: syncPhoneModels,
+    onSet: (k) => ({ panelSize: k, customSize: null })
   });
   const themeSeg = makeSeg(THEME_ORDER, THEME_LABELS, () => settingsManager.get().theme || 'auto', 'theme', {
     defaultOf: DEFAULT_THEME

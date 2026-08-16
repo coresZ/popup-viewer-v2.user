@@ -54,7 +54,7 @@ function createPopupKit() {
           return loaderManager.load(url, {
             container,
             hostname,
-            keepScripts: loaderManager._keepScripts(hostname),
+            keepScripts: loaderManager.keepScriptsFor(hostname),
             linkIntercept: opts.linkIntercept,
             loadingSelector: '#pvk-loading',
             onError,
@@ -97,4 +97,3 @@ const kit = createPopupKit();
 if (typeof window !== 'undefined') {
   window.PopupKit = kit;
 }
-export { kit as PopupKit };

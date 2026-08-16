@@ -6,7 +6,7 @@ const SITE_KEY = 'pv2:siteSettings';
 // 全局设置：跨站点共享
 const GLOBAL_KEYS = ['theme', 'allowInFrame'];
 // 站点设置：按 hostname 分别记录，刷新不失效
-const SITE_KEYS = ['scrollbarVisible', 'panelSize', 'windowMode', 'linkIntercept', 'phoneModel', 'phonePosition'];
+const SITE_KEYS = ['scrollbarVisible', 'panelSize', 'windowMode', 'linkIntercept', 'phoneModel', 'phonePosition', 'customSize'];
 
 function defaultGlobal() {
   return { theme: 'auto', allowInFrame: false };
@@ -18,7 +18,8 @@ function defaultSite() {
     windowMode: 'coupled',
     linkIntercept: true,
     phoneModel: config.phone.defaultModel,
-    phonePosition: null
+    phonePosition: null,
+    customSize: null
   };
 }
 function currentSiteKey() {
@@ -46,7 +47,7 @@ export class SettingsManager {
     if (all && typeof all === 'object' && all[this.siteKey]) {
       this.site = { ...defaultSite(), ...all[this.siteKey] };
     }
-    if (!config.popup.sizes[this.site.panelSize]) {
+    if (!config.popup.sizes[this.site.panelSize] && this.site.panelSize !== 'custom') {
       this.site.panelSize = defaultSite().panelSize;
     }
     if (!config.phone.sizes[this.site.phoneModel]) {
