@@ -7,6 +7,9 @@ import { ParserLoader } from '../loaders/ParserLoader.js';
 import { CacheLoader } from '../loaders/CacheLoader.js';
 import { settingsManager } from './SettingsManager.js';
 
+import { markMod } from '../utils/debugFlag.js';
+markMod('LoaderManager');
+
 export class LoaderManager {
   constructor() {
     this.sandbox = createDefaultSandbox(config.sitePolicy);
@@ -88,7 +91,8 @@ export class LoaderManager {
       loadingSelector: ctx.loadingSelector,
       container: ctx.container,
       onError: ctx.onError,
-      onLoad: ctx.onLoad
+      onLoad: ctx.onLoad,
+      onNavigate: ctx.onNavigate
     });
     return () => {
       try {

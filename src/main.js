@@ -12,6 +12,7 @@ import { DiscuzAdapter } from './adapters/DiscuzAdapter.js';
 import { TgbAdapter } from './adapters/TgbAdapter.js';
 import { LinuxAdapter } from './adapters/LinuxAdapter.js';
 import { CiliAdapter } from './adapters/CiliAdapter.js';
+import { debugMark, showErr } from './utils/debugFlag.js';
 
 const prefetch = new PrefetchManager(loaderManager);
 
@@ -35,8 +36,17 @@ function setupEvents() {
   document.addEventListener(
     'click',
     (e) => {
-      if (settingsManager.get().linkIntercept === false) return;
-      siteManager.handleClick(e);
+      if (settingsManager.get().linkIntercept === false) {
+        debugMark('click: intercept off');
+        return;
+      }
+      try {
+        const handled = siteManager.handleClick(e);
+        debugMark('click: ' + (handled ? 'HANDLED' : 'no-match'));
+      } catch (err) {
+        logger.error('[click] handleClick error', err);
+        showErr('click', err);
+      }
     },
     true
   );
@@ -61,8 +71,14 @@ function setupEvents() {
     true
   );
   eventBus.on('open-page', ({ url, title }) => {
-    storageManager.addHistory({ url, title });
-    popupManager.open({ url, title });
+    try {
+      debugMark('open-page: ' + url);
+      storageManager.addHistory({ url, title });
+      popupManager.open({ url, title });
+    } catch (err) {
+      logger.error('[open-page] open error', err);
+      showErr('open-page', err);
+    }
   });
   eventBus.on('settings-changed', (settings) => {
     if (settings.windowMode === 'float') {
@@ -101,10 +117,28 @@ function isInIframe() {
   }
 }
 
+// 判断当前文档是否为脚本自己的弹窗 iframe（同源时 frameElement 指向 iframe 元素，
+// 导航后依然有效；另兼容写入内容的 iframe 上打的标记）
+function isOwnPopupIframe() {
+  try {
+    if (window.__PV2_OWN_IFRAME__) return true;
+    const fe = window.frameElement;
+    return !!(fe && fe.id === 'popup-panel-iframe');
+  } catch {
+    return false;
+  }
+}
+
 function init() {
+  // 自己的弹窗 iframe：即使开启「在 iframe 中运行」也不重复注入（防弹窗套弹窗）
+  if (isOwnPopupIframe()) {
+    debugMark('skipped: own iframe');
+    return;
+  }
   settingsManager.load();
   // 未开启「在 iframe 中运行」时，iframe 内跳过初始化（运行时等价 @noframes）
   if (isInIframe() && !settingsManager.get().allowInFrame) {
+    debugMark('skipped: iframe');
     return;
   }
   popupManager.popup.applyTheme(settingsManager.get().theme);
@@ -114,11 +148,33 @@ function init() {
   applyForumMarker();
   setupEvents();
   setupObserver();
+  debugMark('init ok');
   logger.log('Popup Viewer V2 已启用');
 }
 
-if (document.readyState === 'loading') {
-  document.addEventListener('DOMContentLoaded', init);
-} else {
-  init();
+function safeInit() {
+  if (window.__PV2_INIT__) return; // 防重复（正常事件 + 超时兜底可能先后触发）
+  window.__PV2_INIT__ = true;
+  try {
+    init();
+  } catch (err) {
+    logger.error('[main] init error', err);
+    debugMark('init error: ' + (err && err.message ? err.message : err));
+  }
 }
+
+debugMark('main-body ok');
+
+function bootstrap() {
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', safeInit);
+    // 兜底：部分沙箱环境（如 iOS Userscripts）DOMContentLoaded 可能不触发，
+    // 1.5 秒后未初始化则强制执行
+    setTimeout(() => {
+      if (!window.__PV2_INIT__) safeInit();
+    }, 1500);
+  } else {
+    safeInit();
+  }
+}
+bootstrap();

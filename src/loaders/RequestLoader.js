@@ -6,7 +6,7 @@ import { contentSandboxAttrs } from '../security/Sandbox.js';
 import { renderIntoIframe } from './IframeRenderer.js';
 
 export class RequestLoader {
-  load({ url, hostname, keepScripts = false, container, onError, onLoad, mobileUA = null, linkIntercept, loadingSelector }) {
+  load({ url, hostname, keepScripts = false, container, onError, onLoad, mobileUA = null, linkIntercept, loadingSelector, onNavigate }) {
     logger.debug(`[RequestLoader] fetch ${url}`);
     const abort = gm.xmlhttpRequest({
       method: 'GET',
@@ -27,7 +27,8 @@ export class RequestLoader {
             container,
             sandboxAttrs: contentSandboxAttrs(keepScripts),
             linkIntercept,
-            loadingSelector
+            loadingSelector,
+            onNavigate
           });
           onLoad?.();
         } catch (error) {

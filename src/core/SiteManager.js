@@ -3,6 +3,9 @@ import { urlResolver } from '../security/UrlResolver.js';
 import { eventBus } from './EventBus.js';
 import { rulesManager } from './RulesManager.js';
 
+import { markMod } from '../utils/debugFlag.js';
+markMod('SiteManager');
+
 export class SiteManager {
   constructor() {
     this.adapters = [];

@@ -78,7 +78,7 @@ export class CacheLoader {
     });
     return { promise, abort };
   }
-  load({ url, keepScripts = false, container, onError, onLoad, mobileUA = null, linkIntercept, loadingSelector }) {
+  load({ url, keepScripts = false, container, onError, onLoad, mobileUA = null, linkIntercept, loadingSelector, onNavigate }) {
     logger.debug(`[CacheLoader] ${url}`);
     const cached = this._readCache(url);
     if (cached != null) {
@@ -90,7 +90,8 @@ export class CacheLoader {
         container,
         sandboxAttrs: contentSandboxAttrs(keepScripts),
         linkIntercept,
-        loadingSelector
+        loadingSelector,
+        onNavigate
       });
       onLoad?.();
       return () => {
@@ -107,7 +108,8 @@ export class CacheLoader {
           container,
           sandboxAttrs: contentSandboxAttrs(keepScripts),
           linkIntercept,
-          loadingSelector
+          loadingSelector,
+          onNavigate
         });
         onLoad?.();
       })

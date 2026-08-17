@@ -1,3 +1,6 @@
+import { markMod } from '../utils/debugFlag.js';
+markMod('EventBus');
+
 export class EventBus {
   constructor() {
     this._handlers = new Map();

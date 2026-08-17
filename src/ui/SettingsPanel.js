@@ -1,9 +1,10 @@
 import { el, svgIcon } from '../utils/dom.js';
 import { config } from '../config.js';
+import { gm } from '../utils/gm.js';
 import { settingsManager } from '../core/SettingsManager.js';
 import { eventBus } from '../core/EventBus.js';
 
-export function createSettingsPanel({ onChange, onManageRules }) {
+export function createSettingsPanel({ onChange, onManageRules, onClose }) {
   const SIZE_ORDER = ['small', 'medium', 'large', 'phone'];
   const SIZE_LABELS = { small: '小', medium: '中', large: '大', phone: '手机' };
   const THEME_ORDER = ['auto', 'light', 'dark'];
@@ -116,6 +117,12 @@ export function createSettingsPanel({ onChange, onManageRules }) {
     () => settingsManager.get().windowMode || 'coupled',
     'windowMode'
   );
+  const handednessSeg = makeSeg(
+    ['right', 'left'],
+    { right: '右手', left: '左手' },
+    () => settingsManager.get().handedness || 'right',
+    'handedness'
+  );
   const phoneModelSeg = makeSeg(
     PHONE_ORDER,
     PHONE_LABELS,
@@ -144,6 +151,14 @@ export function createSettingsPanel({ onChange, onManageRules }) {
   });
   const scrollSwitchWrap = el('label', { class: 'pv-switch' }, scrollSwitch, el('span', { class: 'pv-switch-track' }));
 
+  const lockSwitch = el('input', { type: 'checkbox', id: 'pv-settings-lock' });
+  lockSwitch.checked = settingsManager.get().locked === true;
+  lockSwitch.addEventListener('change', () => {
+    settingsManager.set({ locked: lockSwitch.checked });
+    persist();
+  });
+  const lockSwitchWrap = el('label', { class: 'pv-switch' }, lockSwitch, el('span', { class: 'pv-switch-track' }));
+
   const linkInterceptSwitch = el('input', { type: 'checkbox', id: 'pv-settings-link-intercept' });
   linkInterceptSwitch.checked = settingsManager.get().linkIntercept !== false;
   linkInterceptSwitch.addEventListener('change', () => {
@@ -161,20 +176,50 @@ export function createSettingsPanel({ onChange, onManageRules }) {
   });
   const allowInFrameWrap = el('label', { class: 'pv-switch' }, allowInFrameSwitch, el('span', { class: 'pv-switch-track' }));
 
+  // 移动端四角缩放把手开关
+  const mobileResizeSwitch = el('input', { type: 'checkbox', id: 'pv-settings-mobile-resize' });
+  mobileResizeSwitch.checked = settingsManager.get().mobileResize !== false;
+  mobileResizeSwitch.addEventListener('change', () => {
+    settingsManager.set({ mobileResize: mobileResizeSwitch.checked });
+    persist();
+  });
+  const mobileResizeSwitchWrap = el('label', { class: 'pv-switch' }, mobileResizeSwitch, el('span', { class: 'pv-switch-track' }));
+
+  // 调试标记开关：独立存储键 pv2:debug（调试层在设置加载前就要读取，不走站点设置）
+  const debugSwitch = el('input', { type: 'checkbox', id: 'pv-settings-debug' });
+  debugSwitch.checked = gm.getValue('pv2:debug', false) === true;
+  debugSwitch.addEventListener('change', () => {
+    gm.setValue('pv2:debug', debugSwitch.checked);
+  });
+  const debugSwitchWrap = el('label', { class: 'pv-switch' }, debugSwitch, el('span', { class: 'pv-switch-track' }));
+
   const resetBtn = el('button', { type: 'button', class: 'pv-settings-reset', text: '恢复默认' });
   resetBtn.addEventListener('click', () => {
     settingsManager.reset();
     scrollSwitch.checked = settingsManager.get().scrollbarVisible !== false;
+    lockSwitch.checked = settingsManager.get().locked === true;
     linkInterceptSwitch.checked = settingsManager.get().linkIntercept !== false;
     allowInFrameSwitch.checked = settingsManager.get().allowInFrame === true;
+    mobileResizeSwitch.checked = settingsManager.get().mobileResize !== false;
     sizeSeg.sync();
     themeSeg.sync();
     windowModeSeg.sync();
+    handednessSeg.sync();
     phoneModelSeg.sync();
     syncPhoneModels();
     persist();
   });
   const manageRulesBtn = el('button', { type: 'button', class: 'pv-settings-reset', text: '管理', onclick: () => onManageRules?.() });
+
+  // ---- 弹窗头：标题 + 关闭按钮（小屏上弹窗可能盖住 ⚙ 锚点，必须有独立关闭入口） ----
+  const closeBtn = el('button', { type: 'button', class: 'pv-settings-close', title: '关闭设置', onclick: () => onClose?.() });
+  closeBtn.appendChild(svgIcon('close', { size: 14 }));
+  const head = el(
+    'div',
+    { class: 'pv-settings-head' },
+    el('span', { class: 'pv-settings-title', text: '设置' }),
+    closeBtn
+  );
 
   // ---- 布局 ----
   const group = (title) => el('div', { class: 'pv-settings-group' }, el('div', { class: 'pv-settings-group-title', text: title }));
@@ -213,20 +258,52 @@ export function createSettingsPanel({ onChange, onManageRules }) {
     phoneModelsWrap
   );
 
-  return el(
-    'div',
-    { id: 'popup-settings-popover' },
+  // ---- 通用 / 移动端 标签 ----
+  const commonTab = el('button', { type: 'button', class: 'pv-settings-tab active', text: '通用' });
+  const mobileTab = el('button', { type: 'button', class: 'pv-settings-tab', text: '移动端' });
+  const tabs = el('div', { class: 'pv-settings-tabs' }, commonTab, mobileTab);
+  const commonPane = el('div', { class: 'pv-settings-pane active' });
+  const mobilePane = el('div', { class: 'pv-settings-pane' });
+  const switchTab = (which) => {
+    const isCommon = which === 'common';
+    commonTab.classList.toggle('active', isCommon);
+    mobileTab.classList.toggle('active', !isCommon);
+    commonPane.classList.toggle('active', isCommon);
+    mobilePane.classList.toggle('active', !isCommon);
+  };
+  commonTab.addEventListener('click', () => switchTab('common'));
+  mobileTab.addEventListener('click', () => switchTab('mobile'));
+
+  // 通用页：全部通用设置
+  commonPane.append(
     group('窗体行为'),
-    rowBlock('窗体滚动条', '显示或隐藏窗体内的滚动条', scrollSwitchWrap),
     colBlock('窗体驻留方式', '弹窗遮罩与页面交互', windowModeSeg.group, '跟随页面：弹窗带遮罩；独立悬浮：无遮罩、页面可交互，点击链接仍在弹窗内打开内容'),
     sizeBlock,
+    rowBlock('窗体滚动条', '显示或隐藏窗体内的滚动条', scrollSwitchWrap),
+    rowBlock('锁定窗体', '锁定后窗体不可拖动、不可缩放', lockSwitchWrap),
     group('交互控制'),
     rowBlock('页面链接拦截', '开启后页面链接在弹窗内打开', linkInterceptSwitchWrap, '开启：页面链接点击在弹窗内打开；关闭：页面链接原页面打开，窗体内容里的链接在窗体内部打开（禁止新标签页），窗体自动切换为独立悬浮'),
     rowBlock('链接规则', '拦截本站指定链接并在弹窗打开', manageRulesBtn, '规则按当前站点生效；点「取选」直接在页面上点一下链接即可生成，无需写选择器'),
     group('外观'),
     colBlock('外观主题', '跟随系统或手动指定', themeSeg.group),
     group('高级'),
-    rowBlock('在 iframe 中运行', '默认关闭（等同 @noframes）', allowInFrameWrap, '风险：开启后脚本会在页面内所有 iframe 中运行（含广告、嵌入内容等），可能增加页面开销、出现多个悬浮按钮，或与嵌入页面产生样式冲突；仅在确有需要时开启'),
+    rowBlock('在 iframe 中运行', '默认关闭（等同 @noframes）', allowInFrameWrap, '风险：开启后脚本会在页面内所有 iframe 中运行（含广告、嵌入内容等），可能增加页面开销、出现多个悬浮按钮，或与嵌入页面产生样式冲突；仅在确有需要时开启。脚本自己的弹窗 iframe 始终跳过，不会套娃'),
+    rowBlock('调试标记', '在页面左上角/右侧显示脚本运行状态与错误标记（下次刷新生效），仅排查问题时开启', debugSwitchWrap, '开启后每次刷新页面会显示：紫色 boot 版本、右侧模块加载序号、橙色初始化状态、红色错误信息；排查完请关闭')
+  );
+  // 移动端页：仅移动端专属设置（移动端特殊处理）
+  mobilePane.append(
+    group('移动端专属'),
+    rowBlock('四角缩放把手', '触屏下窗体四角显示缩放把手，可自由调整窗体大小', mobileResizeSwitchWrap),
+    colBlock('惯用手', '左手：工具栏镜像，关闭按钮移到左上角（移动端单手使用）', handednessSeg.group)
+  );
+
+  return el(
+    'div',
+    { id: 'popup-settings-popover' },
+    head,
+    tabs,
+    commonPane,
+    mobilePane,
     el('div', { class: 'pv-settings-footer' }, resetBtn)
   );
 }

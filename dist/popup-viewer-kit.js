@@ -1,9 +1,20 @@
 (() => {
+  var __defProp = Object.defineProperty;
+  var __defNormalProp = (obj, key, value) => key in obj ? __defProp(obj, key, { enumerable: true, configurable: true, writable: true, value }) : obj[key] = value;
+  var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "symbol" ? key + "" : key, value);
+
   // src/kit/kit.css
-  var kit_default = "/* PopupKit 独立样式：pvk- 前缀，与 popup-viewer-v2 主脚本（popup-/pv-）\r\n   及 page-picker-kit（ppk-）完全隔离，避免同页多脚本 ID/CSS 冲突。\r\n   自包含 loading/error/spinner，不依赖主脚本 Loading.js/ErrorView.js 的样式。 */\r\n@layer pvk-reset {\r\n  #pvk-panel,\r\n  #pvk-panel *,\r\n  #pvk-overlay,\r\n  #pvk-loading,\r\n  #pvk-loading *,\r\n  #pvk-error,\r\n  #pvk-error *,\r\n  .pvk-btn {\r\n    box-sizing: border-box;\r\n    margin: 0;\r\n    padding: 0;\r\n    border: 0;\r\n    outline: 0;\r\n    background: transparent;\r\n    vertical-align: baseline;\r\n    text-decoration: none;\r\n    text-shadow: none;\r\n    font-family: inherit;\r\n    font-size: inherit;\r\n    font-weight: inherit;\r\n    font-style: inherit;\r\n    line-height: inherit;\r\n    letter-spacing: inherit;\r\n    color: inherit;\r\n    text-align: left;\r\n  }\r\n}\r\n\r\n#pvk-panel {\r\n  box-sizing: border-box;\r\n}\r\n\r\n:root {\r\n  --pvk-accent: #2563eb;\r\n  --pvk-accent-hover: #1d4ed8;\r\n  --pvk-accent-soft: rgba(37, 99, 235, 0.1);\r\n  --pvk-danger: #dc2626;\r\n  --pvk-danger-soft: rgba(220, 38, 38, 0.1);\r\n  --pvk-header-bg: #fafbfc;\r\n  --pvk-border: #e4e7ec;\r\n  --pvk-text: #1a2233;\r\n  --pvk-muted: #64748b;\r\n  --pvk-faint: #94a3b8;\r\n  --pvk-bg: #ffffff;\r\n  --pvk-surface: #ffffff;\r\n  --pvk-btn-bg: rgba(15, 23, 42, 0.07);\r\n  --pvk-btn-hover: rgba(15, 23, 42, 0.12);\r\n  --pvk-btn-active: rgba(15, 23, 42, 0.17);\r\n  --pvk-focus-ring: rgba(37, 99, 235, 0.4);\r\n  --pvk-shadow:\r\n    0 0 0 1px rgba(15, 23, 42, 0.04),\r\n    0 24px 60px -18px rgba(15, 23, 42, 0.28),\r\n    0 8px 24px -12px rgba(15, 23, 42, 0.16);\r\n  --pvk-overlay: rgba(15, 23, 42, 0.28);\r\n}\r\n\r\n@media (prefers-color-scheme: dark) {\r\n  :root {\r\n    --pvk-accent: #60a5fa;\r\n    --pvk-accent-hover: #93c5fd;\r\n    --pvk-accent-soft: rgba(96, 165, 250, 0.14);\r\n    --pvk-danger: #f87171;\r\n    --pvk-danger-soft: rgba(248, 113, 113, 0.14);\r\n    --pvk-header-bg: #121a2b;\r\n    --pvk-border: #263247;\r\n    --pvk-text: #e2e8f0;\r\n    --pvk-muted: #94a3b8;\r\n    --pvk-faint: #64748b;\r\n    --pvk-bg: #0f172a;\r\n    --pvk-surface: #151e30;\r\n    --pvk-btn-bg: rgba(148, 163, 184, 0.14);\r\n    --pvk-btn-hover: rgba(148, 163, 184, 0.22);\r\n    --pvk-btn-active: rgba(148, 163, 184, 0.28);\r\n    --pvk-focus-ring: rgba(96, 165, 250, 0.5);\r\n    --pvk-shadow:\r\n      0 0 0 1px rgba(255, 255, 255, 0.04),\r\n      0 28px 70px -20px rgba(0, 0, 0, 0.72),\r\n      0 10px 28px -14px rgba(0, 0, 0, 0.5);\r\n    --pvk-overlay: rgba(0, 0, 0, 0.52);\r\n  }\r\n}\r\n\r\n/* 面板核心 */\r\n#pvk-panel {\r\n  position: fixed;\r\n  z-index: 10000;\r\n  width: 50%;\r\n  height: 75%;\r\n  max-width: min(2560px, calc(100vw - 24px));\r\n  max-height: min(1440px, calc(100vh - 24px));\r\n  max-height: min(1440px, calc(100dvh - 24px));\r\n  top: 50%;\r\n  left: 50%;\r\n  overscroll-behavior: contain;\r\n  transform: translate(-50%, -50%) scale(0.96);\r\n  transform-origin: center;\r\n  background-color: var(--pvk-surface);\r\n  color: var(--pvk-text);\r\n  box-shadow: var(--pvk-shadow);\r\n  border: 1px solid var(--pvk-border);\r\n  border-radius: 12px;\r\n  overflow: hidden;\r\n  display: flex;\r\n  flex-direction: column;\r\n  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',\r\n    'Microsoft YaHei', Roboto, 'Helvetica Neue', Arial, sans-serif;\r\n  opacity: 0;\r\n  pointer-events: none;\r\n  transition: opacity 0.25s ease, transform 0.3s cubic-bezier(0.16, 1, 0.3, 1);\r\n}\r\n#pvk-panel.visible {\r\n  opacity: 1;\r\n  pointer-events: auto;\r\n  transform: translate(-50%, -50%) scale(1);\r\n}\r\n\r\n/* 头部 */\r\n#pvk-header {\r\n  display: flex;\r\n  align-items: center;\r\n  justify-content: space-between;\r\n  gap: 12px;\r\n  padding: 0 10px 0 14px;\r\n  background-color: var(--pvk-header-bg);\r\n  border-bottom: 1px solid var(--pvk-border);\r\n  height: 46px;\r\n  min-height: 46px;\r\n  flex: 0 0 auto;\r\n  cursor: grab;\r\n  user-select: none;\r\n}\r\n#pvk-header:active {\r\n  cursor: grabbing;\r\n}\r\n#pvk-title {\r\n  display: flex;\r\n  align-items: center;\r\n  gap: 9px;\r\n  min-width: 0;\r\n  flex: 1;\r\n}\r\n.pvk-title-mark {\r\n  flex: 0 0 auto;\r\n  width: 26px;\r\n  height: 26px;\r\n  border-radius: 8px;\r\n  background: var(--pvk-accent-soft);\r\n  color: var(--pvk-accent);\r\n  display: flex;\r\n  align-items: center;\r\n  justify-content: center;\r\n}\r\n.pvk-title-mark svg {\r\n  width: 15px;\r\n  height: 15px;\r\n  fill: none;\r\n  stroke: currentColor;\r\n}\r\n.pvk-title-text {\r\n  font-size: 14px;\r\n  font-weight: 600;\r\n  letter-spacing: 0.1px;\r\n  color: var(--pvk-text);\r\n  white-space: nowrap;\r\n  overflow: hidden;\r\n  text-overflow: ellipsis;\r\n}\r\n#pvk-actions {\r\n  display: flex;\r\n  align-items: center;\r\n  gap: 4px;\r\n  flex: 0 0 auto;\r\n}\r\n.pvk-btn {\r\n  width: 32px;\r\n  height: 32px;\r\n  padding: 0;\r\n  border: 1px solid transparent;\r\n  border-radius: 9px;\r\n  background-color: var(--pvk-btn-bg);\r\n  color: var(--pvk-muted);\r\n  cursor: pointer;\r\n  display: flex;\r\n  align-items: center;\r\n  justify-content: center;\r\n  flex: 0 0 auto;\r\n  transition: background-color 0.15s ease, color 0.15s ease, transform 0.1s ease;\r\n}\r\n.pvk-btn svg {\r\n  width: 16px;\r\n  height: 16px;\r\n  fill: none;\r\n  stroke: currentColor;\r\n  pointer-events: none;\r\n}\r\n.pvk-btn:hover {\r\n  background-color: var(--pvk-btn-hover);\r\n  color: var(--pvk-text);\r\n}\r\n.pvk-btn:active {\r\n  transform: scale(0.92);\r\n}\r\n.pvk-btn:focus-visible {\r\n  outline: 2px solid var(--pvk-focus-ring);\r\n  outline-offset: 1px;\r\n}\r\n#pvk-close:hover {\r\n  color: var(--pvk-danger);\r\n  background-color: var(--pvk-danger-soft);\r\n}\r\n#pvk-actions .pvk-btn:hover {\r\n  color: var(--pvk-accent);\r\n  background-color: var(--pvk-accent-soft);\r\n}\r\n\r\n/* 内容区 */\r\n#pvk-content {\r\n  flex: 1;\r\n  overflow-y: auto;\r\n  overscroll-behavior: contain;\r\n  position: relative;\r\n  background-color: var(--pvk-bg);\r\n  padding: 20px;\r\n  box-sizing: border-box;\r\n  scroll-behavior: smooth;\r\n  scrollbar-width: thin;\r\n  scrollbar-color: var(--pvk-faint) transparent;\r\n}\r\n#pvk-content::-webkit-scrollbar {\r\n  width: 8px;\r\n}\r\n#pvk-content::-webkit-scrollbar-thumb {\r\n  background-color: var(--pvk-faint);\r\n  border-radius: 8px;\r\n  border: 2px solid transparent;\r\n  background-clip: padding-box;\r\n}\r\n#pvk-content.iframe-direct-load {\r\n  padding: 0;\r\n}\r\n#pvk-iframe {\r\n  width: 100%;\r\n  height: 100%;\r\n  border: none;\r\n  background-color: #fff;\r\n}\r\n\r\n/* 遮罩 */\r\n#pvk-overlay {\r\n  position: fixed;\r\n  inset: 0;\r\n  z-index: 9998;\r\n  background-color: var(--pvk-overlay);\r\n  opacity: 0;\r\n  pointer-events: none;\r\n  transition: opacity 0.3s ease-in-out;\r\n  backdrop-filter: blur(6px);\r\n  -webkit-backdrop-filter: blur(6px);\r\n}\r\n#pvk-overlay.visible {\r\n  opacity: 1;\r\n  pointer-events: auto;\r\n}\r\n\r\n/* 加载状态 */\r\n#pvk-loading {\r\n  display: flex;\r\n  flex-direction: column;\r\n  align-items: center;\r\n  justify-content: center;\r\n  height: 100%;\r\n  color: var(--pvk-muted);\r\n  padding: 25px;\r\n}\r\n.pvk-spinner {\r\n  width: 38px;\r\n  height: 38px;\r\n  margin-bottom: 20px;\r\n  border: 3px solid var(--pvk-accent-soft);\r\n  border-radius: 50%;\r\n  border-top: 3px solid var(--pvk-accent);\r\n  animation: pvk-spin 0.8s linear infinite;\r\n}\r\n@keyframes pvk-spin {\r\n  0% {\r\n    transform: rotate(0deg);\r\n  }\r\n  100% {\r\n    transform: rotate(360deg);\r\n  }\r\n}\r\n.pvk-loading-hint {\r\n  font-size: 15px;\r\n  font-weight: 500;\r\n  color: var(--pvk-text);\r\n}\r\n.pvk-loading-sub {\r\n  margin-top: 8px;\r\n  font-size: 13px;\r\n  color: var(--pvk-faint);\r\n}\r\n\r\n/* 错误状态 */\r\n#pvk-error {\r\n  padding: 35px;\r\n  color: var(--pvk-text);\r\n  text-align: center;\r\n  display: flex;\r\n  flex-direction: column;\r\n  align-items: center;\r\n  justify-content: center;\r\n  height: 100%;\r\n  box-sizing: border-box;\r\n}\r\n#pvk-error .pvk-error-icon {\r\n  color: var(--pvk-danger);\r\n  margin-bottom: 6px;\r\n}\r\n#pvk-error h3 {\r\n  margin-top: 16px;\r\n  margin-bottom: 10px;\r\n  font-weight: 600;\r\n  font-size: 1.15em;\r\n}\r\n#pvk-error p {\r\n  margin-bottom: 24px;\r\n  color: var(--pvk-muted);\r\n  max-width: 420px;\r\n  line-height: 1.6;\r\n  word-break: break-all;\r\n}\r\n#pvk-error button {\r\n  padding: 10px 20px;\r\n  background: var(--pvk-accent);\r\n  color: #fff;\r\n  border: none;\r\n  border-radius: 8px;\r\n  cursor: pointer;\r\n  font-weight: 500;\r\n  font-size: 14px;\r\n  transition: background 0.15s ease-in-out, transform 0.1s ease-in-out;\r\n}\r\n#pvk-error button:hover {\r\n  background: var(--pvk-accent-hover);\r\n}\r\n#pvk-error button:active {\r\n  transform: scale(0.97);\r\n}\r\n\r\n/* 拖拽反馈（共享 setupDrag 会添加 pv-dragging 类） */\r\n#pvk-panel.pv-dragging {\r\n  user-select: none;\r\n  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.4), 0 28px 70px -20px rgba(0, 0, 0, 0.5);\r\n}\r\n\r\n@media (prefers-reduced-motion: reduce) {\r\n  #pvk-panel,\r\n  #pvk-overlay {\r\n    transition: none;\r\n  }\r\n  .pvk-spinner {\r\n    animation-duration: 1.6s;\r\n  }\r\n}\r\n@media (max-width: 560px), (max-height: 560px) {\r\n  #pvk-panel {\r\n    max-width: calc(100vw - 16px);\r\n    max-height: calc(100vh - 16px);\r\n  }\r\n}\r\n";
+  var kit_default = "/* PopupKit 独立样式：pvk- 前缀，与 popup-viewer-v2 主脚本（popup-/pv-）\r\n   及 page-picker-kit（ppk-）完全隔离，避免同页多脚本 ID/CSS 冲突。\r\n   自包含 loading/error/spinner，不依赖主脚本 Loading.js/ErrorView.js 的样式。 */\r\n@layer pvk-reset {\r\n  #pvk-panel,\r\n  #pvk-panel *,\r\n  #pvk-overlay,\r\n  #pvk-loading,\r\n  #pvk-loading *,\r\n  #pvk-error,\r\n  #pvk-error *,\r\n  .pvk-btn {\r\n    box-sizing: border-box;\r\n    margin: 0;\r\n    padding: 0;\r\n    border: 0;\r\n    outline: 0;\r\n    background: transparent;\r\n    vertical-align: baseline;\r\n    text-decoration: none;\r\n    text-shadow: none;\r\n    font-family: inherit;\r\n    font-size: inherit;\r\n    font-weight: inherit;\r\n    font-style: inherit;\r\n    line-height: inherit;\r\n    letter-spacing: inherit;\r\n    color: inherit;\r\n    text-align: left;\r\n  }\r\n}\r\n\r\n#pvk-panel {\r\n  box-sizing: border-box;\r\n}\r\n\r\n:root {\r\n  --pvk-accent: #2563eb;\r\n  --pvk-accent-hover: #1d4ed8;\r\n  --pvk-accent-soft: rgba(37, 99, 235, 0.1);\r\n  --pvk-danger: #dc2626;\r\n  --pvk-danger-soft: rgba(220, 38, 38, 0.1);\r\n  --pvk-header-bg: #fafbfc;\r\n  --pvk-border: #e4e7ec;\r\n  --pvk-text: #1a2233;\r\n  --pvk-muted: #64748b;\r\n  --pvk-faint: #94a3b8;\r\n  --pvk-bg: #ffffff;\r\n  --pvk-surface: #ffffff;\r\n  --pvk-btn-bg: rgba(15, 23, 42, 0.07);\r\n  --pvk-btn-hover: rgba(15, 23, 42, 0.12);\r\n  --pvk-btn-active: rgba(15, 23, 42, 0.17);\r\n  --pvk-focus-ring: rgba(37, 99, 235, 0.4);\r\n  --pvk-shadow:\r\n    0 0 0 1px rgba(15, 23, 42, 0.04),\r\n    0 24px 60px -18px rgba(15, 23, 42, 0.28),\r\n    0 8px 24px -12px rgba(15, 23, 42, 0.16);\r\n  --pvk-overlay: rgba(15, 23, 42, 0.28);\r\n}\r\n\r\n@media (prefers-color-scheme: dark) {\r\n  :root {\r\n    --pvk-accent: #60a5fa;\r\n    --pvk-accent-hover: #93c5fd;\r\n    --pvk-accent-soft: rgba(96, 165, 250, 0.14);\r\n    --pvk-danger: #f87171;\r\n    --pvk-danger-soft: rgba(248, 113, 113, 0.14);\r\n    --pvk-header-bg: #121a2b;\r\n    --pvk-border: #263247;\r\n    --pvk-text: #e2e8f0;\r\n    --pvk-muted: #94a3b8;\r\n    --pvk-faint: #64748b;\r\n    --pvk-bg: #0f172a;\r\n    --pvk-surface: #151e30;\r\n    --pvk-btn-bg: rgba(148, 163, 184, 0.14);\r\n    --pvk-btn-hover: rgba(148, 163, 184, 0.22);\r\n    --pvk-btn-active: rgba(148, 163, 184, 0.28);\r\n    --pvk-focus-ring: rgba(96, 165, 250, 0.5);\r\n    --pvk-shadow:\r\n      0 0 0 1px rgba(255, 255, 255, 0.04),\r\n      0 28px 70px -20px rgba(0, 0, 0, 0.72),\r\n      0 10px 28px -14px rgba(0, 0, 0, 0.5);\r\n    --pvk-overlay: rgba(0, 0, 0, 0.52);\r\n  }\r\n}\r\n\r\n/* 面板核心 */\r\n#pvk-panel {\r\n  position: fixed;\r\n  z-index: 10000;\r\n  width: 50%;\r\n  height: 75%;\r\n  max-width: min(2560px, calc(100vw - 24px));\r\n  max-height: min(1440px, calc(100vh - 24px));\r\n  max-height: min(1440px, calc(100dvh - 24px));\r\n  top: 50%;\r\n  left: 50%;\r\n  overscroll-behavior: contain;\r\n  transform: translate(-50%, -50%) scale(0.96);\r\n  transform-origin: center;\r\n  background-color: var(--pvk-surface);\r\n  color: var(--pvk-text);\r\n  box-shadow: var(--pvk-shadow);\r\n  border: 1px solid var(--pvk-border);\r\n  border-radius: 12px;\r\n  overflow: hidden;\r\n  display: flex;\r\n  flex-direction: column;\r\n  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',\r\n    'Microsoft YaHei', Roboto, 'Helvetica Neue', Arial, sans-serif;\r\n  opacity: 0;\r\n  pointer-events: none;\r\n  transition: opacity 0.25s ease, transform 0.3s cubic-bezier(0.16, 1, 0.3, 1);\r\n}\r\n#pvk-panel.visible {\r\n  opacity: 1;\r\n  pointer-events: auto;\r\n  transform: translate(-50%, -50%) scale(1);\r\n}\r\n\r\n/* 头部 */\r\n#pvk-header {\r\n  display: flex;\r\n  align-items: center;\r\n  justify-content: space-between;\r\n  gap: 12px;\r\n  padding: 0 10px 0 14px;\r\n  background-color: var(--pvk-header-bg);\r\n  border-bottom: 1px solid var(--pvk-border);\r\n  height: 46px;\r\n  min-height: 46px;\r\n  flex: 0 0 auto;\r\n  cursor: grab;\r\n  user-select: none;\r\n  touch-action: none;\r\n}\r\n#pvk-header:active {\r\n  cursor: grabbing;\r\n}\r\n#pvk-title {\r\n  display: flex;\r\n  align-items: center;\r\n  gap: 9px;\r\n  min-width: 0;\r\n  flex: 1;\r\n}\r\n.pvk-title-mark {\r\n  flex: 0 0 auto;\r\n  width: 26px;\r\n  height: 26px;\r\n  border-radius: 8px;\r\n  background: var(--pvk-accent-soft);\r\n  color: var(--pvk-accent);\r\n  display: flex;\r\n  align-items: center;\r\n  justify-content: center;\r\n}\r\n.pvk-title-mark svg {\r\n  width: 15px;\r\n  height: 15px;\r\n  fill: none;\r\n  stroke: currentColor;\r\n}\r\n.pvk-title-text {\r\n  font-size: 14px;\r\n  font-weight: 600;\r\n  letter-spacing: 0.1px;\r\n  color: var(--pvk-text);\r\n  white-space: nowrap;\r\n  overflow: hidden;\r\n  text-overflow: ellipsis;\r\n}\r\n#pvk-actions {\r\n  display: flex;\r\n  align-items: center;\r\n  gap: 4px;\r\n  flex: 0 0 auto;\r\n}\r\n.pvk-btn {\r\n  width: 32px;\r\n  height: 32px;\r\n  padding: 0;\r\n  border: 1px solid transparent;\r\n  border-radius: 9px;\r\n  background-color: var(--pvk-btn-bg);\r\n  color: var(--pvk-muted);\r\n  cursor: pointer;\r\n  display: flex;\r\n  align-items: center;\r\n  justify-content: center;\r\n  flex: 0 0 auto;\r\n  transition: background-color 0.15s ease, color 0.15s ease, transform 0.1s ease;\r\n}\r\n.pvk-btn svg {\r\n  width: 16px;\r\n  height: 16px;\r\n  fill: none;\r\n  stroke: currentColor;\r\n  pointer-events: none;\r\n}\r\n.pvk-btn:hover {\r\n  background-color: var(--pvk-btn-hover);\r\n  color: var(--pvk-text);\r\n}\r\n.pvk-btn:active {\r\n  transform: scale(0.92);\r\n}\r\n.pvk-btn:focus-visible {\r\n  outline: 2px solid var(--pvk-focus-ring);\r\n  outline-offset: 1px;\r\n}\r\n#pvk-close:hover {\r\n  color: var(--pvk-danger);\r\n  background-color: var(--pvk-danger-soft);\r\n}\r\n#pvk-actions .pvk-btn:hover {\r\n  color: var(--pvk-accent);\r\n  background-color: var(--pvk-accent-soft);\r\n}\r\n\r\n/* 内容区 */\r\n#pvk-content {\r\n  flex: 1;\r\n  overflow-y: auto;\r\n  overscroll-behavior: contain;\r\n  position: relative;\r\n  background-color: var(--pvk-bg);\r\n  padding: 20px;\r\n  box-sizing: border-box;\r\n  scroll-behavior: smooth;\r\n  scrollbar-width: thin;\r\n  scrollbar-color: var(--pvk-faint) transparent;\r\n}\r\n#pvk-content::-webkit-scrollbar {\r\n  width: 8px;\r\n}\r\n#pvk-content::-webkit-scrollbar-thumb {\r\n  background-color: var(--pvk-faint);\r\n  border-radius: 8px;\r\n  border: 2px solid transparent;\r\n  background-clip: padding-box;\r\n}\r\n#pvk-content.iframe-direct-load {\r\n  padding: 0;\r\n}\r\n#pvk-iframe {\r\n  width: 100%;\r\n  height: 100%;\r\n  border: none;\r\n  background-color: #fff;\r\n}\r\n\r\n/* 遮罩 */\r\n#pvk-overlay {\r\n  position: fixed;\r\n  inset: 0;\r\n  z-index: 9998;\r\n  background-color: var(--pvk-overlay);\r\n  opacity: 0;\r\n  pointer-events: none;\r\n  transition: opacity 0.3s ease-in-out;\r\n  backdrop-filter: blur(6px);\r\n  -webkit-backdrop-filter: blur(6px);\r\n}\r\n#pvk-overlay.visible {\r\n  opacity: 1;\r\n  pointer-events: auto;\r\n}\r\n\r\n/* 加载状态 */\r\n#pvk-loading {\r\n  display: flex;\r\n  flex-direction: column;\r\n  align-items: center;\r\n  justify-content: center;\r\n  height: 100%;\r\n  color: var(--pvk-muted);\r\n  padding: 25px;\r\n}\r\n.pvk-spinner {\r\n  width: 38px;\r\n  height: 38px;\r\n  margin-bottom: 20px;\r\n  border: 3px solid var(--pvk-accent-soft);\r\n  border-radius: 50%;\r\n  border-top: 3px solid var(--pvk-accent);\r\n  animation: pvk-spin 0.8s linear infinite;\r\n}\r\n@keyframes pvk-spin {\r\n  0% {\r\n    transform: rotate(0deg);\r\n  }\r\n  100% {\r\n    transform: rotate(360deg);\r\n  }\r\n}\r\n.pvk-loading-hint {\r\n  font-size: 15px;\r\n  font-weight: 500;\r\n  color: var(--pvk-text);\r\n}\r\n.pvk-loading-sub {\r\n  margin-top: 8px;\r\n  font-size: 13px;\r\n  color: var(--pvk-faint);\r\n}\r\n\r\n/* 错误状态 */\r\n#pvk-error {\r\n  padding: 35px;\r\n  color: var(--pvk-text);\r\n  text-align: center;\r\n  display: flex;\r\n  flex-direction: column;\r\n  align-items: center;\r\n  justify-content: center;\r\n  height: 100%;\r\n  box-sizing: border-box;\r\n}\r\n#pvk-error .pvk-error-icon {\r\n  color: var(--pvk-danger);\r\n  margin-bottom: 6px;\r\n}\r\n#pvk-error h3 {\r\n  margin-top: 16px;\r\n  margin-bottom: 10px;\r\n  font-weight: 600;\r\n  font-size: 1.15em;\r\n}\r\n#pvk-error p {\r\n  margin-bottom: 24px;\r\n  color: var(--pvk-muted);\r\n  max-width: 420px;\r\n  line-height: 1.6;\r\n  word-break: break-all;\r\n}\r\n#pvk-error button {\r\n  padding: 10px 20px;\r\n  background: var(--pvk-accent);\r\n  color: #fff;\r\n  border: none;\r\n  border-radius: 8px;\r\n  cursor: pointer;\r\n  font-weight: 500;\r\n  font-size: 14px;\r\n  transition: background 0.15s ease-in-out, transform 0.1s ease-in-out;\r\n}\r\n#pvk-error button:hover {\r\n  background: var(--pvk-accent-hover);\r\n}\r\n#pvk-error button:active {\r\n  transform: scale(0.97);\r\n}\r\n\r\n/* 拖拽反馈（共享 setupDrag 会添加 pv-dragging 类） */\r\n#pvk-panel.pv-dragging {\r\n  user-select: none;\r\n  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.4), 0 28px 70px -20px rgba(0, 0, 0, 0.5);\r\n}\r\n\r\n@media (prefers-reduced-motion: reduce) {\r\n  #pvk-panel,\r\n  #pvk-overlay {\r\n    transition: none;\r\n  }\r\n  .pvk-spinner {\r\n    animation-duration: 1.6s;\r\n  }\r\n}\r\n@media (max-width: 560px), (max-height: 560px) {\r\n  #pvk-panel {\r\n    max-width: calc(100vw - 16px);\r\n    max-height: calc(100vh - 16px);\r\n  }\r\n}\r\n\r\n/* 触屏适配：加大按钮触控目标；小屏触屏铺近全屏 */\r\n@media (pointer: coarse) {\r\n  .pvk-btn {\r\n    min-width: 44px;\r\n    min-height: 44px;\r\n  }\r\n}\r\n@media (pointer: coarse) and (max-width: 560px), (pointer: coarse) and (max-height: 560px) {\r\n  #pvk-panel {\r\n    width: calc(100vw - 12px);\r\n    height: calc(100vh - 12px);\r\n    height: calc(100dvh - 12px);\r\n  }\r\n}\r\n";
 
   // src/utils/gm.js
-  var has = (fn) => typeof fn === "function";
+  function gmApi(name) {
+    try {
+      const fn = globalThis[name];
+      return typeof fn === "function" ? fn : null;
+    } catch {
+      return null;
+    }
+  }
   function injectStyle(css) {
     const style = document.createElement("style");
     style.type = "text/css";
@@ -27,43 +38,69 @@
   }
   var gm = {
     addStyle(css) {
-      if (has(GM_addStyle)) {
+      const fn = gmApi("GM_addStyle");
+      if (fn) {
         try {
-          return GM_addStyle(css);
-        } catch {
+          return fn(css);
+        } catch (err) {
+          console.warn("[PopupViewer] GM_addStyle failed, fallback to <style>", err);
         }
       }
-      return injectStyle(css);
+      try {
+        return injectStyle(css);
+      } catch (err) {
+        console.warn("[PopupViewer] injectStyle failed", err);
+        return null;
+      }
     },
     xmlhttpRequest(options) {
-      if (has(GM_xmlhttpRequest)) {
-        return GM_xmlhttpRequest({
+      const fn = gmApi("GM_xmlhttpRequest");
+      if (fn) {
+        return fn({
           timeout: options.timeout || 15e3,
           ...options
         });
       }
-      return fetch(options.url, { method: options.method || "GET" }).then(
-        async (res) => options.onload?.({
+      const controller = typeof AbortController !== "undefined" ? new AbortController() : null;
+      const timer = controller ? setTimeout(() => controller.abort(), options.timeout || 15e3) : null;
+      const clearTimer = () => {
+        if (timer) clearTimeout(timer);
+      };
+      const promise = fetch(options.url, {
+        method: options.method || "GET",
+        signal: controller ? controller.signal : void 0
+      }).then(async (res) => {
+        var _a;
+        clearTimer();
+        (_a = options.onload) == null ? void 0 : _a.call(options, {
           status: res.status,
           statusText: res.statusText,
           responseText: await res.text(),
           finalUrl: res.url
-        })
-      ).catch((err) => options.onerror?.(err));
+        });
+      }).catch((err) => {
+        var _a;
+        clearTimer();
+        (_a = options.onerror) == null ? void 0 : _a.call(options, err);
+      });
+      if (controller) promise.abort = () => controller.abort();
+      return promise;
     },
     getValue(key, fallback) {
-      if (has(GM_getValue)) {
+      const fn = gmApi("GM_getValue");
+      if (fn) {
         try {
-          return GM_getValue(key, fallback);
+          return fn(key, fallback);
         } catch {
         }
       }
       return localGet(key, fallback);
     },
     setValue(key, value) {
-      if (has(GM_setValue)) {
+      const fn = gmApi("GM_setValue");
+      if (fn) {
         try {
-          return GM_setValue(key, value);
+          return fn(key, value);
         } catch {
         }
       }
@@ -258,6 +295,15 @@
     minimize: {
       path: '<polyline points="4 14 10 14 10 20"></polyline><polyline points="20 10 14 10 14 4"></polyline><line x1="14" y1="10" x2="21" y2="3"></line><line x1="3" y1="21" x2="10" y2="14"></line>'
     },
+    arrowLeft: {
+      path: '<line x1="19" y1="12" x2="5" y2="12"></line><polyline points="12 19 5 12 12 5"></polyline>'
+    },
+    arrowRight: {
+      path: '<line x1="5" y1="12" x2="19" y2="12"></line><polyline points="12 5 19 12 12 19"></polyline>'
+    },
+    resize: {
+      path: '<polyline points="7 17 17 7"></polyline><line x1="10" y1="17" x2="17" y2="17"></line><line x1="17" y1="10" x2="17" y2="17"></line>'
+    },
     settings: {
       path: '<circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>'
     }
@@ -314,51 +360,133 @@
     return node;
   }
 
-  // src/loaders/IframeLoader.js
-  var IframeLoader = class {
-    constructor(sandbox) {
-      this.sandbox = sandbox;
-    }
-    load({ url, hostname, container, onError, onLoad, mobileUA = null, loadingSelector = "#popup-panel-loading" }) {
-      logger.debug(`[IframeLoader] direct load ${url}`);
-      if (mobileUA) {
-        logger.debug("[IframeLoader] 直接 iframe 无法设置移动端 UA：" + url);
+  // src/utils/debugFlag.js
+  var _cached = null;
+  function debugEnabled() {
+    if (_cached !== null) return _cached;
+    _cached = false;
+    try {
+      if (/(^|[?&#])pv2_debug([&#]|$)/.test(location.search + "#" + location.hash)) {
+        _cached = true;
+      } else {
+        let raw = null;
+        try {
+          const fn = globalThis["GM_getValue"];
+          if (typeof fn === "function") raw = fn("pv2:debug", null);
+        } catch (e) {
+        }
+        if (raw === null || raw === void 0) {
+          try {
+            raw = localStorage.getItem("popup-viewer:pv2:debug");
+          } catch (e2) {
+          }
+        }
+        _cached = raw === true || raw === "true" || raw === "1";
       }
-      const iframe = el("iframe", {
-        id: "popup-panel-iframe",
-        sandbox: this.sandbox.buildSandboxAttrs(hostname)
-      });
-      iframe.style.cssText = "width:100%;height:100%;border:none;background:#fff;";
-      let settled = false;
-      const finish = (fn, ...args) => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        fn(...args);
-      };
-      const timer = setTimeout(() => {
-        logger.warn(`[IframeLoader] timeout loading ${url}`);
-        onError(`加载 ${url} 超时或被阻止，请尝试在新标签页打开。`);
-      }, config.loader.timeout);
-      iframe.addEventListener("load", () => {
-        if (settled) return;
-        container.querySelector(loadingSelector)?.remove();
-        container.classList.add("iframe-direct-load");
-        finish(onLoad);
-      });
-      iframe.addEventListener("error", () => finish(onError, `加载 ${url} 失败。`));
-      container.querySelector(loadingSelector)?.remove();
-      container.appendChild(iframe);
-      iframe.src = url;
-      return () => {
-        clearTimeout(timer);
-        iframe.src = "about:blank";
-        iframe.remove();
-      };
+    } catch (e) {
+    }
+    return _cached;
+  }
+  var modSeq = 0;
+  function markMod(name) {
+    if (!debugEnabled()) return;
+    try {
+      modSeq++;
+      const d = document.createElement("div");
+      d.textContent = modSeq + ". " + name;
+      d.style.cssText = "position:fixed;top:" + (12 + (modSeq - 1) * 22) + "px;right:12px;z-index:2147483647;background:#334155;color:#fff;padding:2px 8px;font-size:11px;border-radius:4px;font-family:sans-serif";
+      (document.body || document.documentElement).appendChild(d);
+    } catch (e) {
+    }
+  }
+
+  // src/core/SettingsManager.js
+  var KEY = "pv2:settings";
+  var SITE_KEY = "pv2:siteSettings";
+  var GLOBAL_KEYS = ["theme", "allowInFrame", "handedness", "mobileResize"];
+  function defaultGlobal() {
+    return { theme: "auto", allowInFrame: false, handedness: "right", mobileResize: true };
+  }
+  function defaultSite() {
+    return {
+      scrollbarVisible: config.popup.scrollbarVisible,
+      panelSize: config.popup.defaultSize,
+      windowMode: "coupled",
+      linkIntercept: true,
+      phoneModel: config.phone.defaultModel,
+      phonePosition: null,
+      customSize: null,
+      locked: false
+    };
+  }
+  function currentSiteKey() {
+    try {
+      return window.location.hostname || "unknown";
+    } catch {
+      return "unknown";
+    }
+  }
+  markMod("SettingsManager");
+  var SettingsManager = class {
+    constructor() {
+      this.global = defaultGlobal();
+      this.site = defaultSite();
+      this.siteKey = "unknown";
+      this._loaded = false;
+    }
+    load() {
+      if (this._loaded) return this.get();
+      this._loaded = true;
+      this.siteKey = currentSiteKey();
+      const g = gm.getValue(KEY, null);
+      if (g && typeof g === "object") this.global = { ...defaultGlobal(), ...g };
+      const all = gm.getValue(SITE_KEY, null);
+      if (all && typeof all === "object" && all[this.siteKey]) {
+        this.site = { ...defaultSite(), ...all[this.siteKey] };
+      }
+      if (!config.popup.sizes[this.site.panelSize] && this.site.panelSize !== "custom") {
+        this.site.panelSize = defaultSite().panelSize;
+      }
+      if (!config.phone.sizes[this.site.phoneModel]) {
+        this.site.phoneModel = defaultSite().phoneModel;
+      }
+      this._applyInvariants();
+      return this.get();
+    }
+    /** 当前生效设置 = 全局 + 当前站点设置。 */
+    get() {
+      return { ...this.global, ...this.site };
+    }
+    set(partial) {
+      for (const [key, value] of Object.entries(partial)) {
+        if (GLOBAL_KEYS.includes(key)) this.global[key] = value;
+        else this.site[key] = value;
+      }
+      this._applyInvariants();
+      this._persist();
+      return this.get();
+    }
+    reset() {
+      this.global = defaultGlobal();
+      this.site = defaultSite();
+      this._applyInvariants();
+      this._persist();
+      return this.get();
+    }
+    _applyInvariants() {
+      if (this.site.linkIntercept === false) this.site.windowMode = "float";
+    }
+    _persist() {
+      gm.setValue(KEY, this.global);
+      const all = gm.getValue(SITE_KEY, null) || {};
+      all[this.siteKey] = this.site;
+      gm.setValue(SITE_KEY, all);
     }
   };
+  var settingsManager = new SettingsManager();
 
   // src/security/Sanitizer.js
+  markMod("Sanitizer");
   var REAL_SRC_ATTRS = [
     "zoomfile",
     "file",
@@ -379,7 +507,7 @@
     "data-full",
     "data-img"
   ];
-  var Sanitizer = class _Sanitizer {
+  var _Sanitizer = class _Sanitizer {
     constructor() {
       this.removedTags = /* @__PURE__ */ new Set([
         "script",
@@ -413,12 +541,6 @@
       this._resolveLazyImages(doc, baseUrl);
       return { head, body: doc.body ? doc.body.innerHTML : "" };
     }
-    /**
-     * 解析懒加载图片：真实地址常放在 data-original/data-src/data-srcset 等各类 data 属性里，
-     * src 多为占位图（懒加载 JS 被净化后不会执行）。只要找到真实地址就换到 src 并绝对化，
-     * 不依赖对「占位图文件名」的精确识别——各站点占位图命名千差万别，正则穷举必然漏。
-     */
-    static PLACEHOLDER_RE = /^(data:|about:|blob:)/i;
     _resolveLazyImages(doc, baseUrl) {
       doc.querySelectorAll("img").forEach((img) => {
         const real = this._firstRealAttr(img);
@@ -514,6 +636,7 @@
       return parts.join("");
     }
     _purge(doc, { keepScripts = false } = {}) {
+      var _a;
       const walker = doc.createTreeWalker(doc, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_COMMENT);
       const toRemove = [];
       while (walker.nextNode()) {
@@ -530,7 +653,7 @@
         }
         this._sanitizeAttrs(node);
       }
-      for (const node of toRemove) node.parentNode?.removeChild(node);
+      for (const node of toRemove) (_a = node.parentNode) == null ? void 0 : _a.removeChild(node);
     }
     _sanitizeAttrs(node) {
       const attrs = node.attributes;
@@ -561,99 +684,44 @@
       }
     }
   };
+  /**
+   * 解析懒加载图片：真实地址常放在 data-original/data-src/data-srcset 等各类 data 属性里，
+   * src 多为占位图（懒加载 JS 被净化后不会执行）。只要找到真实地址就换到 src 并绝对化，
+   * 不依赖对「占位图文件名」的精确识别——各站点占位图命名千差万别，正则穷举必然漏。
+   */
+  __publicField(_Sanitizer, "PLACEHOLDER_RE", /^(data:|about:|blob:)/i);
+  var Sanitizer = _Sanitizer;
   var sanitizer = new Sanitizer();
 
-  // src/core/SettingsManager.js
-  var KEY = "pv2:settings";
-  var SITE_KEY = "pv2:siteSettings";
-  var GLOBAL_KEYS = ["theme", "allowInFrame"];
-  function defaultGlobal() {
-    return { theme: "auto", allowInFrame: false };
-  }
-  function defaultSite() {
-    return {
-      scrollbarVisible: config.popup.scrollbarVisible,
-      panelSize: config.popup.defaultSize,
-      windowMode: "coupled",
-      linkIntercept: true,
-      phoneModel: config.phone.defaultModel,
-      phonePosition: null,
-      customSize: null
-    };
-  }
-  function currentSiteKey() {
-    try {
-      return window.location.hostname || "unknown";
-    } catch {
-      return "unknown";
-    }
-  }
-  var SettingsManager = class {
-    constructor() {
-      this.global = defaultGlobal();
-      this.site = defaultSite();
-      this.siteKey = "unknown";
-      this._loaded = false;
-    }
-    load() {
-      if (this._loaded) return this.get();
-      this._loaded = true;
-      this.siteKey = currentSiteKey();
-      const g = gm.getValue(KEY, null);
-      if (g && typeof g === "object") this.global = { ...defaultGlobal(), ...g };
-      const all = gm.getValue(SITE_KEY, null);
-      if (all && typeof all === "object" && all[this.siteKey]) {
-        this.site = { ...defaultSite(), ...all[this.siteKey] };
-      }
-      if (!config.popup.sizes[this.site.panelSize] && this.site.panelSize !== "custom") {
-        this.site.panelSize = defaultSite().panelSize;
-      }
-      if (!config.phone.sizes[this.site.phoneModel]) {
-        this.site.phoneModel = defaultSite().phoneModel;
-      }
-      this._applyInvariants();
-      return this.get();
-    }
-    /** 当前生效设置 = 全局 + 当前站点设置。 */
-    get() {
-      return { ...this.global, ...this.site };
-    }
-    set(partial) {
-      for (const [key, value] of Object.entries(partial)) {
-        if (GLOBAL_KEYS.includes(key)) this.global[key] = value;
-        else this.site[key] = value;
-      }
-      this._applyInvariants();
-      this._persist();
-      return this.get();
-    }
-    reset() {
-      this.global = defaultGlobal();
-      this.site = defaultSite();
-      this._applyInvariants();
-      this._persist();
-      return this.get();
-    }
-    _applyInvariants() {
-      if (this.site.linkIntercept === false) this.site.windowMode = "float";
-    }
-    _persist() {
-      gm.setValue(KEY, this.global);
-      const all = gm.getValue(SITE_KEY, null) || {};
-      all[this.siteKey] = this.site;
-      gm.setValue(SITE_KEY, all);
-    }
-  };
-  var settingsManager = new SettingsManager();
-
   // src/loaders/IframeRenderer.js
-  function renderIntoIframe({ html, url, container, sandboxAttrs, head = "", linkIntercept, loadingSelector = "#popup-panel-loading" }) {
-    container.querySelector(loadingSelector)?.remove();
+  function readIframeLocation(iframe) {
+    try {
+      const win = iframe.contentWindow;
+      if (!win || !win.location || !win.location.href) return null;
+      const href = win.location.href;
+      if (!href || href === "about:blank") return null;
+      let title = "";
+      try {
+        title = iframe.contentDocument && iframe.contentDocument.title || "";
+      } catch (e) {
+      }
+      return { url: href, title };
+    } catch (e) {
+      return null;
+    }
+  }
+  function renderIntoIframe({ html, url, container, sandboxAttrs, head = "", linkIntercept, loadingSelector = "#popup-panel-loading", onNavigate }) {
+    var _a;
+    (_a = container.querySelector(loadingSelector)) == null ? void 0 : _a.remove();
     container.classList.add("iframe-direct-load");
     const iframe = el("iframe", {
       id: "popup-panel-iframe",
       sandbox: sandboxAttrs
     });
+    try {
+      iframe.contentWindow.__PV2_OWN_IFRAME__ = true;
+    } catch {
+    }
     iframe.style.cssText = "width:100%;height:100%;border:none;background:#fff;";
     container.appendChild(iframe);
     const iframeDoc = iframe.contentWindow.document;
@@ -663,14 +731,27 @@
     const runFixes = () => {
       if (!iframe.isConnected || !iframe.contentWindow) return;
       try {
-        fixLinks(iframeDoc, linkIntercept);
-        injectReadStyle(iframeDoc);
-        fixImages(iframeDoc);
+        const doc = iframe.contentDocument;
+        if (!doc) return;
+        fixLinks(doc, linkIntercept);
+        injectReadStyle(doc);
+        fixImages(doc);
       } catch (err) {
         logger.error("[renderIntoIframe] manipulate error", err);
       }
     };
-    iframe.addEventListener("load", runFixes);
+    let firstLoad = true;
+    iframe.addEventListener("load", () => {
+      runFixes();
+      if (firstLoad) {
+        firstLoad = false;
+        return;
+      }
+      if (onNavigate) {
+        const loc = readIframeLocation(iframe);
+        if (loc) onNavigate(loc.url, loc.title);
+      }
+    });
     if (iframeDoc.readyState === "complete") iframe.dispatchEvent(new Event("load"));
     [1500, 3500].forEach((delay) => setTimeout(runFixes, delay));
     return iframe;
@@ -746,9 +827,85 @@
     });
   }
 
+  // src/loaders/IframeLoader.js
+  var IframeLoader = class {
+    constructor(sandbox) {
+      this.sandbox = sandbox;
+    }
+    load({ url, hostname, container, onError, onLoad, mobileUA = null, loadingSelector = "#popup-panel-loading", onNavigate }) {
+      var _a;
+      logger.debug(`[IframeLoader] direct load ${url}`);
+      if (mobileUA) {
+        logger.debug("[IframeLoader] 直接 iframe 无法设置移动端 UA：" + url);
+      }
+      const iframe = el("iframe", {
+        id: "popup-panel-iframe",
+        sandbox: this.sandbox.buildSandboxAttrs(hostname)
+      });
+      try {
+        iframe.contentWindow.__PV2_OWN_IFRAME__ = true;
+      } catch {
+      }
+      iframe.style.cssText = "width:100%;height:100%;border:none;background:#fff;";
+      let settled = false;
+      let firstLoad = true;
+      let lastUrl = url;
+      const finish = (fn, ...args) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        fn(...args);
+      };
+      const timer = setTimeout(() => {
+        logger.warn(`[IframeLoader] timeout loading ${url}`);
+        onError(`加载 ${url} 超时或被阻止，请尝试在新标签页打开。`);
+      }, config.loader.timeout);
+      const pollTimer = setInterval(() => {
+        if (!iframe.isConnected) {
+          clearInterval(pollTimer);
+          return;
+        }
+        const loc = readIframeLocation(iframe);
+        if (loc && loc.url !== lastUrl) {
+          lastUrl = loc.url;
+          onNavigate == null ? void 0 : onNavigate(loc.url, loc.title);
+        }
+      }, 800);
+      iframe.addEventListener("load", () => {
+        var _a2;
+        if (firstLoad) {
+          firstLoad = false;
+          const loc2 = readIframeLocation(iframe);
+          if (loc2) lastUrl = loc2.url;
+          if (!settled) {
+            (_a2 = container.querySelector(loadingSelector)) == null ? void 0 : _a2.remove();
+            container.classList.add("iframe-direct-load");
+            finish(onLoad);
+          }
+          return;
+        }
+        const loc = readIframeLocation(iframe);
+        if (loc && loc.url !== lastUrl) {
+          lastUrl = loc.url;
+          onNavigate == null ? void 0 : onNavigate(loc.url, loc.title);
+        }
+      });
+      iframe.addEventListener("error", () => finish(onError, `加载 ${url} 失败。`));
+      (_a = container.querySelector(loadingSelector)) == null ? void 0 : _a.remove();
+      container.appendChild(iframe);
+      iframe.src = url;
+      return () => {
+        clearTimeout(timer);
+        clearInterval(pollTimer);
+        iframe.src = "about:blank";
+        iframe.remove();
+      };
+    }
+  };
+
   // src/loaders/RequestLoader.js
   var RequestLoader = class {
-    load({ url, hostname, keepScripts = false, container, onError, onLoad, mobileUA = null, linkIntercept, loadingSelector }) {
+    load({ url, hostname, keepScripts = false, container, onError, onLoad, mobileUA = null, linkIntercept, loadingSelector, onNavigate }) {
       logger.debug(`[RequestLoader] fetch ${url}`);
       const abort = gm.xmlhttpRequest({
         method: "GET",
@@ -769,9 +926,10 @@
               container,
               sandboxAttrs: contentSandboxAttrs(keepScripts),
               linkIntercept,
-              loadingSelector
+              loadingSelector,
+              onNavigate
             });
-            onLoad?.();
+            onLoad == null ? void 0 : onLoad();
           } catch (error) {
             logger.error("[RequestLoader] process content error", error);
             onError("内容解析失败: " + error.message);
@@ -783,12 +941,13 @@
         }
       });
       return () => {
+        var _a;
         try {
-          abort?.abort?.();
+          (_a = abort == null ? void 0 : abort.abort) == null ? void 0 : _a.call(abort);
         } catch {
         }
         const iframe = container.querySelector("#popup-panel-iframe");
-        iframe?.remove();
+        iframe == null ? void 0 : iframe.remove();
       };
     }
   };
@@ -818,7 +977,7 @@
             const wrap = doc.body;
             while (wrap.firstChild) body.appendChild(wrap.firstChild);
             container.classList.remove("iframe-direct-load");
-            onLoad?.();
+            onLoad == null ? void 0 : onLoad();
           } catch (error) {
             logger.error("[ParserLoader] parse error", error);
             onError("内容解析失败: " + error.message);
@@ -830,8 +989,9 @@
         }
       });
       return () => {
+        var _a;
         try {
-          abort?.abort?.();
+          (_a = abort == null ? void 0 : abort.abort) == null ? void 0 : _a.call(abort);
         } catch {
         }
       };
@@ -930,15 +1090,16 @@
           }
         });
         abort = () => {
+          var _a;
           try {
-            req?.abort?.();
+            (_a = req == null ? void 0 : req.abort) == null ? void 0 : _a.call(req);
           } catch {
           }
         };
       });
       return { promise, abort };
     }
-    load({ url, keepScripts = false, container, onError, onLoad, mobileUA = null, linkIntercept, loadingSelector }) {
+    load({ url, keepScripts = false, container, onError, onLoad, mobileUA = null, linkIntercept, loadingSelector, onNavigate }) {
       logger.debug(`[CacheLoader] ${url}`);
       const cached = this._readCache(url);
       if (cached != null) {
@@ -950,11 +1111,13 @@
           container,
           sandboxAttrs: contentSandboxAttrs(keepScripts),
           linkIntercept,
-          loadingSelector
+          loadingSelector,
+          onNavigate
         });
-        onLoad?.();
+        onLoad == null ? void 0 : onLoad();
         return () => {
-          container.querySelector("#popup-panel-iframe")?.remove();
+          var _a;
+          (_a = container.querySelector("#popup-panel-iframe")) == null ? void 0 : _a.remove();
         };
       }
       const { promise, abort } = this.prefetch(url, keepScripts, mobileUA);
@@ -966,21 +1129,24 @@
           container,
           sandboxAttrs: contentSandboxAttrs(keepScripts),
           linkIntercept,
-          loadingSelector
+          loadingSelector,
+          onNavigate
         });
-        onLoad?.();
-      }).catch((error) => onError?.(error.message));
+        onLoad == null ? void 0 : onLoad();
+      }).catch((error) => onError == null ? void 0 : onError(error.message));
       return () => {
+        var _a;
         try {
-          abort?.();
+          abort == null ? void 0 : abort();
         } catch {
         }
-        container.querySelector("#popup-panel-iframe")?.remove();
+        (_a = container.querySelector("#popup-panel-iframe")) == null ? void 0 : _a.remove();
       };
     }
   };
 
   // src/core/LoaderManager.js
+  markMod("LoaderManager");
   var LoaderManager = class {
     constructor() {
       this.sandbox = createDefaultSandbox(config.sitePolicy);
@@ -1062,11 +1228,12 @@
         loadingSelector: ctx.loadingSelector,
         container: ctx.container,
         onError: ctx.onError,
-        onLoad: ctx.onLoad
+        onLoad: ctx.onLoad,
+        onNavigate: ctx.onNavigate
       });
       return () => {
         try {
-          abort?.();
+          abort == null ? void 0 : abort();
         } catch (err) {
           logger.warn("[LoaderManager] abort error", err);
         }
@@ -1104,8 +1271,14 @@
       panel.style.transition = "";
     }
   }
-  function setupDrag({ header, panel, isFullScreen = () => false, onDragEnd }) {
+  var POINTER_EVENTS = typeof PointerEvent !== "undefined";
+  function setupDrag({ header, panel, isFullScreen = () => false, locked = () => false, onDragEnd }) {
+    const DOWN = POINTER_EVENTS ? "pointerdown" : "mousedown";
+    const MOVE = POINTER_EVENTS ? "pointermove" : "mousemove";
+    const UP = POINTER_EVENTS ? "pointerup" : "mouseup";
     let dragging = false;
+    let dragLocked = false;
+    let pointerId = null;
     let startX = 0;
     let startY = 0;
     let startLeft = 0;
@@ -1115,38 +1288,13 @@
     let raf = null;
     const applyMove = () => {
       raf = null;
-      if (!dragging) return;
+      if (!dragging || dragLocked) return;
       panel.style.left = `${startLeft + (lastX - startX)}px`;
       panel.style.top = `${startTop + (lastY - startY)}px`;
     };
-    header.addEventListener("mousedown", (e) => {
-      if (e.target.closest("button")) return;
-      if (isFullScreen()) return;
-      if (e.button !== 0) return;
-      dragging = true;
-      const rect = panel.getBoundingClientRect();
-      startX = e.clientX;
-      startY = e.clientY;
-      startLeft = rect.left;
-      startTop = rect.top;
-      lastX = e.clientX;
-      lastY = e.clientY;
-      panel.style.transition = "none";
-      panel.style.left = `${rect.left}px`;
-      panel.style.top = `${rect.top}px`;
-      panel.style.transform = "none";
-      panel.classList.add("pv-dragging");
-      document.body.style.cursor = "grabbing";
-      e.preventDefault();
-    });
-    const move = (e) => {
+    const finish = (commit) => {
       if (!dragging) return;
-      lastX = e.clientX;
-      lastY = e.clientY;
-      if (!raf) raf = requestAnimationFrame(applyMove);
-    };
-    const up = () => {
-      if (!dragging) return;
+      const info = { locked: dragLocked };
       dragging = false;
       if (raf) {
         cancelAnimationFrame(raf);
@@ -1155,10 +1303,54 @@
       panel.classList.remove("pv-dragging");
       document.body.style.cursor = "";
       panel.style.transition = "";
-      onDragEnd?.();
+      if (POINTER_EVENTS && pointerId != null) {
+        try {
+          header.releasePointerCapture(pointerId);
+        } catch {
+        }
+        pointerId = null;
+      }
+      if (commit) onDragEnd == null ? void 0 : onDragEnd(info);
     };
-    document.addEventListener("mousemove", move);
-    document.addEventListener("mouseup", up);
+    header.addEventListener(DOWN, (e) => {
+      if (e.target.closest("button")) return;
+      if (isFullScreen()) return;
+      if (e.button !== 0) return;
+      dragging = true;
+      dragLocked = locked();
+      const rect = panel.getBoundingClientRect();
+      startX = e.clientX;
+      startY = e.clientY;
+      startLeft = rect.left;
+      startTop = rect.top;
+      lastX = e.clientX;
+      lastY = e.clientY;
+      if (!dragLocked) {
+        panel.style.transition = "none";
+        panel.style.left = `${rect.left}px`;
+        panel.style.top = `${rect.top}px`;
+        panel.style.transform = "none";
+        panel.classList.add("pv-dragging");
+        document.body.style.cursor = "grabbing";
+      }
+      if (POINTER_EVENTS) {
+        pointerId = e.pointerId;
+        try {
+          header.setPointerCapture(e.pointerId);
+        } catch {
+        }
+      }
+      e.preventDefault();
+    });
+    const move = (e) => {
+      if (!dragging) return;
+      lastX = e.clientX;
+      lastY = e.clientY;
+      if (!raf) raf = requestAnimationFrame(applyMove);
+    };
+    document.addEventListener(MOVE, move);
+    document.addEventListener(UP, () => finish(true));
+    if (POINTER_EVENTS) document.addEventListener("pointercancel", () => finish(false));
   }
   function setupWheelScrollChain({ panel, contentArea, isFullScreen = () => false }) {
     document.addEventListener(
@@ -1265,14 +1457,16 @@
         this.panel.style.transform = "";
       }
       requestAnimationFrame(() => {
+        var _a;
         this.panel.classList.add("visible");
         this.overlay.classList.add("visible");
-        this._onOpen?.(opts);
+        (_a = this._onOpen) == null ? void 0 : _a.call(this, opts);
       });
       this._load(opts);
     }
     _load(opts) {
-      this._abort?.();
+      var _a;
+      (_a = this._abort) == null ? void 0 : _a.call(this);
       this._abort = null;
       const content = this.getContentArea();
       content.classList.remove("iframe-direct-load");
@@ -1290,20 +1484,22 @@
       this._abort = abort || null;
     }
     refresh() {
+      var _a, _b;
       if (!this.currentUrl || !this._lastOpen) return;
       const prev = this._lastOpen;
-      this._abort?.();
+      (_a = this._abort) == null ? void 0 : _a.call(this);
       this._abort = null;
       const content = this.getContentArea();
       content.classList.remove("iframe-direct-load");
       content.innerHTML = "";
       this._showLoading(content);
-      this._onRefresh?.(this.currentUrl);
+      (_b = this._onRefresh) == null ? void 0 : _b.call(this, this.currentUrl);
       this._load(prev);
     }
     close() {
+      var _a, _b;
       if (!this.panel) return;
-      this._abort?.();
+      (_a = this._abort) == null ? void 0 : _a.call(this);
       this._abort = null;
       this.panel.classList.remove("visible");
       this.overlay.classList.remove("visible");
@@ -1312,7 +1508,7 @@
         if (this.contentArea) this.contentArea.innerHTML = "";
         this.currentUrl = "";
       }, 350);
-      this._onClose?.({ url });
+      (_b = this._onClose) == null ? void 0 : _b.call(this, { url });
     }
     getContentArea() {
       this.ensure();
@@ -1453,10 +1649,12 @@
     const panel = new KitPopupPanel();
     panel.setHandlers({
       onOpen: (opts) => {
-        kit2._onOpen?.({ url: opts.url, title: opts.title });
+        var _a;
+        (_a = kit2._onOpen) == null ? void 0 : _a.call(kit2, { url: opts.url, title: opts.title });
       },
       onClose: (info) => {
-        kit2._onClose?.(info);
+        var _a;
+        (_a = kit2._onClose) == null ? void 0 : _a.call(kit2, info);
       }
     });
     function hostnameOf(url) {

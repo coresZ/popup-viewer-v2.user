@@ -132,6 +132,7 @@
   flex: 0 0 auto;
   cursor: grab;
   user-select: none;
+  touch-action: none;
 }
 #pvk-header:active {
   cursor: grabbing;
@@ -370,5 +371,20 @@
   #pvk-panel {
     max-width: calc(100vw - 16px);
     max-height: calc(100vh - 16px);
+  }
+}
+
+/* 触屏适配：加大按钮触控目标；小屏触屏铺近全屏 */
+@media (pointer: coarse) {
+  .pvk-btn {
+    min-width: 44px;
+    min-height: 44px;
+  }
+}
+@media (pointer: coarse) and (max-width: 560px), (pointer: coarse) and (max-height: 560px) {
+  #pvk-panel {
+    width: calc(100vw - 12px);
+    height: calc(100vh - 12px);
+    height: calc(100dvh - 12px);
   }
 }

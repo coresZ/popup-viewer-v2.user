@@ -9,6 +9,7 @@ const minify = process.argv.includes('--minify');
 const only = process.argv.filter((a) => a.startsWith('--only=')).map((a) => a.slice(7));
 
 const banner = readFileSync(join(root, 'banner.txt'), 'utf-8').trimEnd();
+const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf-8'));
 
 /** @type {import('esbuild').BuildOptions} */
 const options = {
@@ -18,6 +19,12 @@ const options = {
   outfile: join(root, 'dist', 'popup-viewer-v2.user.js'),
   banner: { js: banner + '\n\n' },
   loader: { '.css': 'text' },
+  // 临时：注入引导标记用于 iOS 诊断（定位后移除）
+  inject: [join(root, 'src', 'bootMarker.js')],
+  // 临时：boot 标记显示构建版本（诊断用）
+  define: { __PV2_VER__: JSON.stringify(pkg.version) },
+  // 转译到 ES2019（可选链/类静态字段等向下兼容），兼容旧版 Safari/iOS 脚本管理器
+  target: 'es2019',
   minify,
   charset: 'utf8',
   legalComments: 'none',
@@ -31,6 +38,7 @@ const kitOptions = {
   format: 'iife',
   outfile: join(root, 'dist', 'popup-viewer-kit.js'),
   loader: { '.css': 'text' },
+  target: 'es2019',
   minify,
   charset: 'utf8',
   legalComments: 'none',

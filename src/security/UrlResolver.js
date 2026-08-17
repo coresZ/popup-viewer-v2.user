@@ -1,3 +1,6 @@
+import { markMod } from '../utils/debugFlag.js';
+markMod('UrlResolver');
+
 export class UrlResolver {
   constructor(base = window.location.href) {
     this.base = base;

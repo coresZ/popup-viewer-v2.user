@@ -201,6 +201,66 @@ html.pv-forum th.common a.xst:hover {
 .pv-resize {
   position: absolute;
   z-index: 3;
+  touch-action: none;
+}
+/* 锁定窗体：不可拖动/缩放（视觉反馈：手柄隐藏、标题栏取消拖拽光标） */
+#popup-content-panel.pv-locked #popup-panel-header {
+  cursor: default;
+}
+#popup-content-panel.pv-locked #popup-panel-header:active {
+  cursor: default;
+}
+#popup-content-panel.pv-locked .pv-resize,
+#popup-content-panel.pv-locked .pv-resize-knob {
+  display: none;
+}
+/* 触屏大角把手：四角常驻可见的缩放抓手（桌面默认隐藏，coarse 触屏显示） */
+.pv-resize-knob {
+  display: none;
+  position: absolute;
+  z-index: 4;
+  touch-action: none;
+}
+@media (pointer: coarse) {
+  .pv-resize-knob {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 36px;
+    height: 36px;
+    border-radius: 10px;
+    border: 1px solid var(--popup-border);
+    background-color: var(--popup-surface);
+    color: var(--popup-muted);
+    box-shadow: 0 2px 8px -2px rgba(15, 23, 42, 0.25);
+    transition: color 0.15s ease, transform 0.1s ease, box-shadow 0.15s ease;
+  }
+  .pv-resize-knob:active {
+    transform: scale(0.92);
+    box-shadow: 0 4px 12px -2px rgba(15, 23, 42, 0.3);
+  }
+  .pv-resize-knob svg {
+    width: 18px;
+    height: 18px;
+    fill: none;
+    stroke: currentColor;
+    pointer-events: none;
+  }
+  /* 位置避开标题栏（54px）与底部栏（38px），不与工具栏/页脚按钮重叠 */
+  .pv-resize-knob-ne { top: 62px; right: 8px; }
+  .pv-resize-knob-nw { top: 62px; left: 8px; }
+  .pv-resize-knob-se { bottom: 46px; right: 8px; }
+  .pv-resize-knob-sw { bottom: 46px; left: 8px; }
+  /* 图标指向本角方向：se=↘(0°) ne=↗(-90°) nw=↖(180°) sw=↙(90°) */
+  .pv-resize-knob-ne svg { transform: rotate(-90deg); }
+  .pv-resize-knob-nw svg { transform: rotate(180deg); }
+  .pv-resize-knob-sw svg { transform: rotate(90deg); }
+}
+/* 移动端设置关闭「四角缩放把手」时隐藏（触屏） */
+@media (pointer: coarse) {
+  #popup-content-panel.pv-no-mobile-resize .pv-resize-knob {
+    display: none;
+  }
 }
 .pv-resize-n { top: 0; left: 10px; right: 10px; height: 6px; cursor: ns-resize; }
 .pv-resize-s { bottom: 0; left: 10px; right: 10px; height: 6px; cursor: ns-resize; }
@@ -225,6 +285,7 @@ html.pv-forum th.common a.xst:hover {
   box-sizing: border-box;
   cursor: grab;
   user-select: none;
+  touch-action: none;
 }
 #popup-panel-header:active {
   cursor: grabbing;
@@ -377,7 +438,9 @@ html.pv-forum th.common a.xst:hover {
   position: fixed;
   width: 280px;
   z-index: 10002;
-  max-height: calc(100vh - 32px);
+  /* 桌面固定限高，避免内容增多后忽大忽小；内部滚动 */
+  max-height: min(560px, calc(100vh - 32px));
+  max-height: min(560px, calc(100dvh - 32px));
   overflow-y: auto;
   background-color: var(--popup-surface);
   color: var(--popup-text);
@@ -398,6 +461,107 @@ html.pv-forum th.common a.xst:hover {
   opacity: 1;
   pointer-events: auto;
   transform: translateY(0);
+}
+/* 设置面板：隐藏滚动条（保留滚动） */
+#popup-settings-popover {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+#popup-settings-popover::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
+}
+/* 弹窗头：标题 + 关闭按钮（小屏上弹窗可能盖住 ⚙ 锚点，独立关闭入口） */
+.pv-settings-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 6px 10px;
+  border-bottom: 1px solid var(--popup-border);
+}
+/* 通用 / 移动端 标签：与 .pv-seg 分段控件同风格（胶囊按钮） */
+.pv-settings-tabs {
+  display: flex;
+  gap: 6px;
+  padding: 2px 6px 10px;
+  position: sticky;
+  top: 0;
+  background-color: var(--popup-surface);
+  z-index: 1;
+}
+.pv-settings-tab {
+  flex: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  border: 1px solid var(--popup-border);
+  background: transparent;
+  color: var(--popup-muted);
+  font-size: 12px;
+  padding: 5px 8px;
+  border-radius: 999px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+.pv-settings-tab:hover {
+  color: var(--popup-text);
+  border-color: var(--popup-muted);
+}
+.pv-settings-tab.active {
+  background-color: var(--popup-accent-soft);
+  border-color: var(--popup-accent);
+  color: var(--popup-accent);
+  font-weight: 600;
+}
+.pv-settings-tab:focus-visible {
+  outline: 2px solid var(--popup-focus-ring);
+  outline-offset: 1px;
+}
+.pv-settings-pane {
+  display: none;
+}
+.pv-settings-pane.active {
+  display: block;
+}
+.pv-settings-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--popup-text);
+}
+.pv-settings-close {
+  appearance: none;
+  -webkit-appearance: none;
+  margin: 0;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background-color: var(--popup-btn-bg);
+  color: var(--popup-muted);
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  box-sizing: border-box;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background-color 0.15s ease, color 0.15s ease, transform 0.1s ease;
+}
+.pv-settings-close:hover {
+  background-color: var(--popup-btn-hover);
+  color: var(--popup-text);
+}
+.pv-settings-close:active {
+  transform: scale(0.92);
+}
+.pv-settings-close svg {
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  pointer-events: none;
 }
 .pv-settings-group {
   margin-top: 10px;
@@ -977,7 +1141,8 @@ html.pv-forum th.common a.xst:hover {
 #pv-float-settings {
   position: fixed;
   right: 20px;
-  bottom: 20px;
+  /* 抬高到 iPhone 刘海屏 home 指示条安全区之上，避免被遮住/误触 */
+  bottom: calc(20px + env(safe-area-inset-bottom, 0px));
   z-index: 10001;
   width: 42px;
   height: 42px;
@@ -1132,14 +1297,10 @@ html.pv-forum th.common a.xst:hover {
 #popup-panel-footer.empty {
   display: none;
 }
-#popup-panel-footer-url {
-  flex: 1;
-  min-width: 0;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  direction: rtl;
-  text-align: left;
+.pv-footer-nav {
+  display: flex;
+  align-items: center;
+  gap: 4px;
 }
 #popup-panel-footer .popup-panel-btn {
   width: 28px;
@@ -1149,6 +1310,16 @@ html.pv-forum th.common a.xst:hover {
 #popup-panel-footer .popup-panel-btn svg {
   width: 14px;
   height: 14px;
+}
+#popup-panel-footer .popup-panel-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+  background-color: transparent;
+  color: var(--popup-faint);
+}
+#popup-panel-footer .popup-panel-btn:disabled:hover {
+  background-color: transparent;
+  color: var(--popup-faint);
 }
 
 /* ===== 链接视觉提示 ===== */
@@ -1256,5 +1427,44 @@ a.xst::after {
   #popup-content-panel {
     max-width: calc(100vw - 16px);
     max-height: calc(100vh - 16px);
+  }
+}
+
+/* ===== 触屏适配（pointer: coarse） ===== */
+@media (pointer: coarse) {
+  /* 加大触控目标到 44px 标准（页脚按钮除外：页脚高 38px，保持小尺寸防溢出） */
+  #popup-content-panel .popup-panel-btn {
+    width: 44px;
+    height: 44px;
+  }
+  #popup-panel-footer .popup-panel-btn {
+    width: 30px;
+    height: 30px;
+  }
+  #pv-float-settings {
+    width: 48px;
+    height: 48px;
+  }
+  /* 缩放手柄加宽，便于手指抓取 */
+  .pv-resize-n,
+  .pv-resize-s {
+    height: 12px;
+  }
+  .pv-resize-e,
+  .pv-resize-w {
+    width: 12px;
+  }
+  .pv-resize-ne,
+  .pv-resize-nw,
+  .pv-resize-se,
+  .pv-resize-sw {
+    width: 22px;
+    height: 22px;
+  }
+}
+/* 小屏触屏（手机）：隐藏隐形细条（缩放走四角大把手）；近全屏默认值由 JS 写入变量，保证可自由缩放 */
+@media (pointer: coarse) and (max-width: 560px), (pointer: coarse) and (max-height: 560px) {
+  .pv-resize {
+    display: none;
   }
 }

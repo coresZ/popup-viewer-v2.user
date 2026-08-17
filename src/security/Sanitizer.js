@@ -1,3 +1,6 @@
+import { markMod } from '../utils/debugFlag.js';
+markMod('Sanitizer');
+
 // 懒加载图片真实地址属性：Discuz 系 zoomfile/file 最权威（占位图 none.gif），
 // 其次各站通用 data-* 懒加载属性。净化阶段与渲染兜底阶段共用，避免两处漂移。
 export const REAL_SRC_ATTRS = [

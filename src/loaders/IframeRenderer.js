@@ -3,13 +3,37 @@ import { el } from '../utils/dom.js';
 import { settingsManager } from '../core/SettingsManager.js';
 import { REAL_SRC_ATTRS } from '../security/Sanitizer.js';
 
-export function renderIntoIframe({ html, url, container, sandboxAttrs, head = '', linkIntercept, loadingSelector = '#popup-panel-loading' }) {
+/**
+ * 读取 iframe 当前地址与标题（仅同源可读；跨域/空白页返回 null）。
+ * 用于追踪弹窗内 iframe 的自主跳转（前进/后退历史）。
+ */
+export function readIframeLocation(iframe) {
+  try {
+    const win = iframe.contentWindow;
+    if (!win || !win.location || !win.location.href) return null;
+    const href = win.location.href;
+    if (!href || href === 'about:blank') return null;
+    let title = '';
+    try {
+      title = (iframe.contentDocument && iframe.contentDocument.title) || '';
+    } catch (e) {}
+    return { url: href, title };
+  } catch (e) {
+    return null;
+  }
+}
+
+export function renderIntoIframe({ html, url, container, sandboxAttrs, head = '', linkIntercept, loadingSelector = '#popup-panel-loading', onNavigate }) {
   container.querySelector(loadingSelector)?.remove();
   container.classList.add('iframe-direct-load');
   const iframe = el('iframe', {
     id: 'popup-panel-iframe',
     sandbox: sandboxAttrs
   });
+  // 标记自己的弹窗 iframe：即使开启「在 iframe 中运行」，也不在其中重复注入脚本
+  try {
+    iframe.contentWindow.__PV2_OWN_IFRAME__ = true;
+  } catch {}
   iframe.style.cssText = 'width:100%;height:100%;border:none;background:#fff;';
   container.appendChild(iframe);
   const iframeDoc = iframe.contentWindow.document;
@@ -19,14 +43,29 @@ export function renderIntoIframe({ html, url, container, sandboxAttrs, head = ''
   const runFixes = () => {
     if (!iframe.isConnected || !iframe.contentWindow) return;
     try {
-      fixLinks(iframeDoc, linkIntercept);
-      injectReadStyle(iframeDoc);
-      fixImages(iframeDoc);
+      // 用实时 document（iframe 内部跳转后是新文档，同样需要链接修复/样式/图片兜底）
+      const doc = iframe.contentDocument;
+      if (!doc) return;
+      fixLinks(doc, linkIntercept);
+      injectReadStyle(doc);
+      fixImages(doc);
     } catch (err) {
       logger.error('[renderIntoIframe] manipulate error', err);
     }
   };
-  iframe.addEventListener('load', runFixes);
+  // 首次 load = 初始内容渲染；之后每次 load = iframe 内部自主跳转，上报给历史
+  let firstLoad = true;
+  iframe.addEventListener('load', () => {
+    runFixes();
+    if (firstLoad) {
+      firstLoad = false;
+      return;
+    }
+    if (onNavigate) {
+      const loc = readIframeLocation(iframe);
+      if (loc) onNavigate(loc.url, loc.title);
+    }
+  });
   if (iframeDoc.readyState === 'complete') iframe.dispatchEvent(new Event('load'));
   // 图片可能晚于 load 事件失败/未触发加载，延迟再做两轮恢复
   [1500, 3500].forEach((delay) => setTimeout(runFixes, delay));

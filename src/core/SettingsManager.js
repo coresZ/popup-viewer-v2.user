@@ -4,12 +4,11 @@ import { gm } from '../utils/gm.js';
 const KEY = 'pv2:settings';
 const SITE_KEY = 'pv2:siteSettings';
 // 全局设置：跨站点共享
-const GLOBAL_KEYS = ['theme', 'allowInFrame'];
-// 站点设置：按 hostname 分别记录，刷新不失效
-const SITE_KEYS = ['scrollbarVisible', 'panelSize', 'windowMode', 'linkIntercept', 'phoneModel', 'phonePosition', 'customSize'];
+const GLOBAL_KEYS = ['theme', 'allowInFrame', 'handedness', 'mobileResize'];
+// 说明：set() 按「GLOBAL_KEYS 命中→全局，其余→当前站点」分流，站点键无需单独维护列表
 
 function defaultGlobal() {
-  return { theme: 'auto', allowInFrame: false };
+  return { theme: 'auto', allowInFrame: false, handedness: 'right', mobileResize: true };
 }
 function defaultSite() {
   return {
@@ -19,7 +18,8 @@ function defaultSite() {
     linkIntercept: true,
     phoneModel: config.phone.defaultModel,
     phonePosition: null,
-    customSize: null
+    customSize: null,
+    locked: false
   };
 }
 function currentSiteKey() {
@@ -29,6 +29,9 @@ function currentSiteKey() {
     return 'unknown';
   }
 }
+
+import { markMod } from '../utils/debugFlag.js';
+markMod('SettingsManager');
 
 export class SettingsManager {
   constructor() {

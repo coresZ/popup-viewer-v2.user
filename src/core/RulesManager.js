@@ -2,6 +2,9 @@ import { gm } from '../utils/gm.js';
 
 const KEY = 'pv2:rules';
 
+import { markMod } from '../utils/debugFlag.js';
+markMod('RulesManager');
+
 export class RulesManager {
   constructor() {
     this.rules = {};
