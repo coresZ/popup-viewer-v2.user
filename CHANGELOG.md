@@ -1,5 +1,11 @@
 # Changelog
 
+## [2.0.41] - 2026-08-16
+
+### Fixed
+
+- **弹窗内右键搜索被拦截**：直连 iframe 的 sandbox 缺少 `allow-popups-to-escape-sandbox`，弹窗内右键「在 Google 搜索」等新标签页操作被拒——`buildSandboxAttrs` 已补充该标记
+
 ## [2.0.40] - 2026-08-16
 
 > 2.0.8～2.0.40 为同一批未发布改动，合并记录于此。

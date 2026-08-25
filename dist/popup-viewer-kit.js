@@ -239,6 +239,9 @@
         "allow-modals",
         "allow-pointer-lock",
         "allow-popups",
+        // 允许弹窗/新标签页逃逸沙箱：右键「用 Google 搜索」等需在新标签页打开，
+        // 否则会被加载进弹窗 iframe 内，被目标站 X-Frame-Options 拒绝
+        "allow-popups-to-escape-sandbox",
         "allow-presentation"
       ];
       if (p.scripts) {

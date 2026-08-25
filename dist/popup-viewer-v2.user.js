@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name          页内弹窗打开新帖
 // @namespace     http://tampermonkey.net/
-// @version       2.0.40
+// @version       2.0.41
 // @description   点击论坛帖子链接，在弹窗中加载内容 (插件化架构 V2)
 // @author        cores
 // @include       *://*/*
@@ -47,7 +47,7 @@
     if (!DEBUG) return;
     try {
       var d = document.createElement("div");
-      d.textContent = "[PV2] boot v" + (true ? "2.0.40" : "?");
+      d.textContent = "[PV2] boot v" + (true ? "2.0.41" : "?");
       d.style.cssText = "position:fixed;top:12px;left:12px;z-index:2147483647;background:#7c3aed;color:#fff;padding:6px 12px;font-size:12px;border-radius:6px;font-family:sans-serif";
       (document.body || document.documentElement).appendChild(d);
     } catch (e) {
@@ -676,6 +676,9 @@
         "allow-modals",
         "allow-pointer-lock",
         "allow-popups",
+        // 允许弹窗/新标签页逃逸沙箱：右键「用 Google 搜索」等需在新标签页打开，
+        // 否则会被加载进弹窗 iframe 内，被目标站 X-Frame-Options 拒绝
+        "allow-popups-to-escape-sandbox",
         "allow-presentation"
       ];
       if (p.scripts) {

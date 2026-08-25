@@ -1,6 +1,6 @@
 {
   "name": "popup-viewer-v2",
-  "version": "2.0.40",
+  "version": "2.0.41",
   "private": true,
   "description": "页内弹窗打开新帖 (Popup Viewer V2) - 插件化油猴脚本",
   "type": "module",
