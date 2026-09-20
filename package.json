@@ -1,6 +1,6 @@
 {
   "name": "popup-viewer-v2",
-  "version": "2.0.41",
+  "version": "2.1.0",
   "private": true,
   "description": "页内弹窗打开新帖 (Popup Viewer V2) - 插件化油猴脚本",
   "type": "module",
@@ -12,7 +12,8 @@
     "g:status": "node tools/git-tools.mjs status",
     "g:commit": "node tools/git-tools.mjs commit",
     "g:push": "node tools/git-tools.mjs push",
-    "g:publish": "node tools/git-tools.mjs publish"
+    "g:publish": "node tools/git-tools.mjs publish",
+    "test": "node tests/xModel.test.mjs"
   },
   "devDependencies": {
     "esbuild": "^0.28.0"

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name          页内弹窗打开新帖
 // @namespace     http://tampermonkey.net/
-// @version       2.0.41
+// @version       2.1.0
 // @description   点击论坛帖子链接，在弹窗中加载内容 (插件化架构 V2)
 // @author        cores
 // @include       *://*/*
@@ -9,6 +9,7 @@
 // @grant         GM_addStyle
 // @grant         GM_getValue
 // @grant         GM_setValue
+// @grant         unsafeWindow
 // @connect       *
 // @run-at        document-idle
 // @license       MIT
@@ -47,7 +48,7 @@
     if (!DEBUG) return;
     try {
       var d = document.createElement("div");
-      d.textContent = "[PV2] boot v" + (true ? "2.0.41" : "?");
+      d.textContent = "[PV2] boot v" + (true ? "2.1.0" : "?");
       d.style.cssText = "position:fixed;top:12px;left:12px;z-index:2147483647;background:#7c3aed;color:#fff;padding:6px 12px;font-size:12px;border-radius:6px;font-family:sans-serif";
       (document.body || document.documentElement).appendChild(d);
     } catch (e) {
@@ -151,8 +152,13 @@
     // 站点加载策略:
     //   iframe: true  → 使用 iframe 直接加载（页面自带脚本与登录态）
     //   scripts: true → 请求模式下保留目标页 <script> 以正常渲染（仅限信任站点）
+    //   xThread: true → 走 X 专用 GraphQL 原生渲染（见 docs/plan-x-graphql.md）
     sitePolicy: {
       "linux.do": { iframe: true, scripts: true },
+      // X：内容由客户端 React 渲染，抓取净化拿不到帖子（评论为空）；iframe 又被 X 的框架策略
+      // 全站拒绝——含同源，裸 iframe 实测同样白屏。故改为用当前登录会话读内部 GraphQL 自渲染。
+      "x.com": { xThread: true },
+      "twitter.com": { xThread: true },
       "1cili.com": { iframe: false, scripts: true },
       "s.9cili.mom": { iframe: false, scripts: true },
       unknown: { iframe: false, scripts: false }
@@ -378,6 +384,18 @@
     (document.head || document.documentElement).appendChild(style);
     return style;
   }
+  function adoptStyle(css) {
+    try {
+      if (typeof CSSStyleSheet !== "function" || !("adoptedStyleSheets" in document)) return null;
+      const sheet = new CSSStyleSheet();
+      sheet.replaceSync(css);
+      document.adoptedStyleSheets = [...document.adoptedStyleSheets, sheet];
+      return sheet;
+    } catch (err) {
+      console.warn("[PopupViewer] adoptedStyleSheets failed", err);
+      return null;
+    }
+  }
   function localGet(key, fallback) {
     try {
       const raw = localStorage.getItem("popup-viewer:" + key);
@@ -394,20 +412,24 @@
   }
   var gm = {
     addStyle(css) {
+      let node = null;
       const fn = gmApi("GM_addStyle");
       if (fn) {
         try {
-          return fn(css);
+          node = fn(css);
         } catch (err) {
           console.warn("[PopupViewer] GM_addStyle failed, fallback to <style>", err);
         }
       }
-      try {
-        return injectStyle(css);
-      } catch (err) {
-        console.warn("[PopupViewer] injectStyle failed", err);
-        return null;
+      if (!node) {
+        try {
+          node = injectStyle(css);
+        } catch (err) {
+          console.warn("[PopupViewer] injectStyle failed", err);
+        }
       }
+      adoptStyle(css);
+      return node;
     },
     xmlhttpRequest(options) {
       const fn = gmApi("GM_xmlhttpRequest");
@@ -798,6 +820,32 @@
   function clear(node) {
     while (node.firstChild) node.removeChild(node.firstChild);
     return node;
+  }
+  function hijacksFixed(node) {
+    if (!node) return false;
+    try {
+      const cs = getComputedStyle(node);
+      if (cs.transform && cs.transform !== "none") return true;
+      if (cs.filter && cs.filter !== "none") return true;
+      if (cs.perspective && cs.perspective !== "none") return true;
+      if (cs.willChange && cs.willChange.includes("transform")) return true;
+      if (cs.contain && /paint|layout|strict|content/.test(cs.contain)) return true;
+    } catch (err) {
+      return false;
+    }
+    return false;
+  }
+  function pickMountPoint() {
+    const body = document.body;
+    const html = document.documentElement;
+    if (body && !hijacksFixed(body)) return body;
+    if (html && !hijacksFixed(html)) return html;
+    return body || html;
+  }
+  function mountUi(node) {
+    const parent = pickMountPoint();
+    if (parent) parent.appendChild(node);
+    return parent;
   }
 
   // src/core/SettingsManager.js
@@ -1240,7 +1288,9 @@
       }
       const iframe = el("iframe", {
         id: "popup-panel-iframe",
-        sandbox: this.sandbox.buildSandboxAttrs(hostname)
+        sandbox: this.sandbox.buildSandboxAttrs(hostname),
+        allow: "clipboard-read; clipboard-write; fullscreen; picture-in-picture",
+        referrerpolicy: "strict-origin-when-cross-origin"
       });
       try {
         iframe.contentWindow.__PV2_OWN_IFRAME__ = true;
@@ -1558,10 +1608,19 @@
       };
     }
     /**
+     * 注册额外的加载方式。主脚本按需注册（如 X 的 GraphQL 加载器），
+     * 避免这些实现被静态打进 PopupKit 库产物。
+     */
+    register(mode, loader) {
+      this.loaders[mode] = loader;
+      return loader;
+    }
+    /**
      * 解析应使用的加载方式。
      */
     resolveMode(url, hostname) {
       const policy = this.sandbox.policyFor(hostname);
+      if (policy.xThread) return "xthread";
       if (policy.iframe) return "iframe";
       const mode = config.loader.defaultMode;
       if (mode === "iframe") return "iframe";
@@ -4132,6 +4191,893 @@ a.xst::after {\r
     display: none;\r
   }\r
 }\r
+\r
+/* ===== X 皮肤（GraphQL 原生渲染）：令牌来自 xTheme.js 读取的 X 实时样式 =====\r
+   注意：X 的全局 CSS 是「无层级」的，@layer 挡不住它（层级优先级低于无层级规则），\r
+   因此这里全部用无层级 + 高特异性（#popup-content-area / #popup-content-panel 前缀）书写。 */\r
+#popup-content-panel.pv-x-skin,\r
+#popup-content-panel.pv-x-skin #popup-panel-header,\r
+#popup-content-panel.pv-x-skin #popup-panel-footer {\r
+  background-color: var(--pv-x-bg, #fff);\r
+  color: var(--pv-x-fg, #0f1419);\r
+  border-color: var(--pv-x-border, #eff3f4);\r
+}\r
+#popup-content-panel.pv-x-skin #popup-panel-title,\r
+#popup-content-panel.pv-x-skin #popup-panel-footer {\r
+  color: var(--pv-x-muted, #536471);\r
+}\r
+#popup-content-area.pv-x-reader-mode {\r
+  /* 两栏各自独立滚动，互不绑定 */\r
+  display: flex;\r
+  padding: 0;\r
+  overflow: hidden;\r
+  overscroll-behavior: contain;\r
+  background-color: var(--pv-x-bg, #fff);\r
+  color: var(--pv-x-fg, #0f1419);\r
+  font-family: var(--pv-x-font, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif);\r
+}\r
+/* 加载中：绝对定位的居中层，避免 loading 视图被 flex/滚动容器挤到一侧 */\r
+.pv-x-loading-layer {\r
+  position: absolute;\r
+  inset: 0;\r
+  display: flex;\r
+  align-items: center;\r
+  justify-content: center;\r
+}\r
+.pv-x-reader {\r
+  position: relative;\r
+  flex: 1;\r
+  min-width: 0;\r
+  min-height: 0;\r
+  display: grid;\r
+  grid-template-columns: minmax(0, 1.04fr) minmax(0, 0.96fr);\r
+}\r
+.pv-x-reader.pv-x-single {\r
+  grid-template-columns: minmax(0, 1fr);\r
+  grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);\r
+}\r
+.pv-x-pane {\r
+  min-width: 0;\r
+  min-height: 0;\r
+}\r
+/* 左栏：独立滚动，滚动条隐藏 */\r
+.pv-x-pane-post {\r
+  overflow-y: auto;\r
+  overscroll-behavior: contain;\r
+  scrollbar-width: none;\r
+  -ms-overflow-style: none;\r
+}\r
+.pv-x-pane-post::-webkit-scrollbar {\r
+  display: none;\r
+}\r
+/* 右栏：工具行与回复框固定，只有评论列表滚动 */\r
+.pv-x-pane-replies {\r
+  display: flex;\r
+  flex-direction: column;\r
+  overflow: hidden;\r
+}\r
+.pv-x-reply-list {\r
+  flex: 1;\r
+  min-height: 0;\r
+  overflow-y: auto;\r
+  overscroll-behavior: contain;\r
+  scrollbar-width: none;\r
+  -ms-overflow-style: none;\r
+}\r
+.pv-x-reply-list::-webkit-scrollbar {\r
+  display: none;\r
+}\r
+.pv-x-pane-post {\r
+  border-right: 1px solid var(--pv-x-border, #eff3f4);\r
+}\r
+.pv-x-reader.pv-x-single .pv-x-pane-post {\r
+  border-right: none;\r
+  border-bottom: 1px solid var(--pv-x-border, #eff3f4);\r
+}\r
+.pv-x-reply-tools {\r
+  display: flex;\r
+  align-items: center;\r
+  justify-content: space-between;\r
+  gap: 12px;\r
+  padding: 10px 16px;\r
+  background-color: var(--pv-x-bg, #fff);\r
+  border-bottom: 1px solid var(--pv-x-border, #eff3f4);\r
+  font-size: 13px;\r
+  color: var(--pv-x-muted, #536471);\r
+}\r
+.pv-x-open {\r
+  color: var(--pv-x-accent, #1d9bf0);\r
+  white-space: nowrap;\r
+}\r
+/* 昵称/头像/媒体不显示下划线（与 X 一致；宿主页面的 a{text-decoration} 也会被这里压掉） */\r
+.pv-x-name,\r
+.pv-x-avatar,\r
+.pv-x-media-item,\r
+.pv-x-open,\r
+.pv-x-video-open {\r
+  text-decoration: none;\r
+}\r
+.pv-x-open:hover {\r
+  text-decoration: underline;\r
+}\r
+.pv-x-post {\r
+  display: grid;\r
+  grid-template-columns: 40px minmax(0, 1fr);\r
+  gap: 12px;\r
+  padding: 12px 16px;\r
+  border-bottom: 1px solid var(--pv-x-border, #eff3f4);\r
+}\r
+.pv-x-post:hover {\r
+  background-color: var(--pv-x-hover, rgba(0, 0, 0, 0.03));\r
+}\r
+.pv-x-avatar-col {\r
+  display: flex;\r
+  flex-direction: column;\r
+  align-items: center;\r
+  min-width: 0;\r
+}\r
+.pv-x-avatar {\r
+  display: block;\r
+  width: 40px;\r
+  height: 40px;\r
+  flex: none;\r
+  border-radius: 50%;\r
+  overflow: hidden;\r
+  background-color: var(--pv-x-soft, #f7f9f9);\r
+}\r
+.pv-x-avatar img {\r
+  display: block;\r
+  width: 100%;\r
+  height: 100%;\r
+  object-fit: cover;\r
+  border: 0;\r
+}\r
+.pv-x-thread-line {\r
+  flex: 1;\r
+  width: 2px;\r
+  min-height: 8px;\r
+  margin-top: 4px;\r
+  background-color: var(--pv-x-border, #eff3f4);\r
+}\r
+.pv-x-main {\r
+  min-width: 0;\r
+}\r
+.pv-x-head {\r
+  display: flex;\r
+  align-items: center;\r
+  gap: 4px;\r
+  min-width: 0;\r
+  font-size: 15px;\r
+  line-height: 20px;\r
+}\r
+.pv-x-name {\r
+  font-weight: 700;\r
+  color: var(--pv-x-fg, #0f1419);\r
+  white-space: nowrap;\r
+  overflow: hidden;\r
+  text-overflow: ellipsis;\r
+}\r
+.pv-x-badge {\r
+  width: 18px;\r
+  height: 18px;\r
+  flex: none;\r
+  color: var(--pv-x-accent, #1d9bf0);\r
+}\r
+.pv-x-badge svg {\r
+  display: block;\r
+  width: 18px;\r
+  height: 18px;\r
+  fill: currentColor;\r
+}\r
+.pv-x-handle,\r
+.pv-x-time,\r
+.pv-x-dot {\r
+  color: var(--pv-x-muted, #536471);\r
+  white-space: nowrap;\r
+}\r
+.pv-x-text {\r
+  margin-top: 2px;\r
+  font-size: 15px;\r
+  line-height: 20px;\r
+  white-space: pre-wrap;\r
+  overflow-wrap: anywhere;\r
+}\r
+.pv-x-actions {\r
+  display: flex;\r
+  align-items: center;\r
+  gap: 22px;\r
+  margin-top: 10px;\r
+  color: var(--pv-x-muted, #536471);\r
+  font-size: 13px;\r
+}\r
+.pv-x-action {\r
+  display: inline-flex;\r
+  align-items: center;\r
+  gap: 6px;\r
+  /* 按钮复位：X 的全局 CSS 会重置 button，这里显式写全 */\r
+  appearance: none;\r
+  -webkit-appearance: none;\r
+  margin: 0;\r
+  padding: 0;\r
+  border: 0;\r
+  background: none;\r
+  font: inherit;\r
+  color: inherit;\r
+  cursor: pointer;\r
+}\r
+.pv-x-action svg {\r
+  display: block;\r
+  width: 18px;\r
+  height: 18px;\r
+  flex: none;\r
+  fill: currentColor;\r
+}\r
+.pv-x-action-views {\r
+  cursor: default;\r
+}\r
+.pv-x-action[data-action]:hover {\r
+  color: var(--pv-x-accent, #1d9bf0);\r
+}\r
+.pv-x-action-like:hover,\r
+.pv-x-action-like[data-active='true'] {\r
+  color: var(--pv-x-like, #f91880);\r
+}\r
+.pv-x-action-repost:hover,\r
+.pv-x-action-repost[data-active='true'] {\r
+  color: var(--pv-x-repost, #00ba7c);\r
+}\r
+.pv-x-action-bookmark[data-active='true'] {\r
+  color: var(--pv-x-accent, #1d9bf0);\r
+}\r
+.pv-x-action[data-active='true'] .pv-x-count {\r
+  font-weight: 600;\r
+}\r
+.pv-x-avatar-sm {\r
+  width: 32px;\r
+  height: 32px;\r
+  flex: none;\r
+}\r
+.pv-x-post-compact .pv-x-text {\r
+  font-size: 14px;\r
+  line-height: 19px;\r
+}\r
+.pv-x-post-compact .pv-x-actions {\r
+  gap: 18px;\r
+  margin-top: 6px;\r
+  font-size: 12px;\r
+}\r
+/* 右栏工具行：评论数 + 排序 */\r
+.pv-x-tools-left {\r
+  display: flex;\r
+  align-items: center;\r
+  gap: 10px;\r
+  min-width: 0;\r
+}\r
+.pv-x-sort {\r
+  display: inline-flex;\r
+  gap: 4px;\r
+}\r
+.pv-x-sort-btn {\r
+  appearance: none;\r
+  margin: 0;\r
+  padding: 2px 8px;\r
+  border: 1px solid transparent;\r
+  border-radius: 999px;\r
+  background: none;\r
+  font: inherit;\r
+  font-size: 12px;\r
+  color: var(--pv-x-muted, #536471);\r
+  cursor: pointer;\r
+}\r
+.pv-x-sort-btn:hover {\r
+  background-color: var(--pv-x-hover, rgba(0, 0, 0, 0.03));\r
+}\r
+.pv-x-sort-btn[aria-pressed='true'] {\r
+  color: var(--pv-x-accent, #1d9bf0);\r
+  border-color: var(--pv-x-accent, #1d9bf0);\r
+}\r
+/* 纯文字回复框 */\r
+.pv-x-composer {\r
+  display: grid;\r
+  grid-template-columns: 32px minmax(0, 1fr);\r
+  gap: 10px;\r
+  padding: 12px 16px;\r
+  border-bottom: 1px solid var(--pv-x-border, #eff3f4);\r
+}\r
+.pv-x-composer-body {\r
+  min-width: 0;\r
+}\r
+/* 回复目标提示（点评论的「回复」时出现，可取消） */\r
+.pv-x-composer-target {\r
+  display: flex;\r
+  align-items: center;\r
+  gap: 8px;\r
+  margin-bottom: 2px;\r
+  font-size: 13px;\r
+}\r
+.pv-x-composer-target[hidden] {\r
+  display: none;\r
+}\r
+.pv-x-composer-target-label {\r
+  color: var(--pv-x-accent, #1d9bf0);\r
+}\r
+.pv-x-composer-target-clear {\r
+  appearance: none;\r
+  -webkit-appearance: none;\r
+  margin: 0;\r
+  padding: 0 4px;\r
+  border: 0;\r
+  background: none;\r
+  color: var(--pv-x-muted, #536471);\r
+  font: inherit;\r
+  font-size: 13px;\r
+  cursor: pointer;\r
+}\r
+.pv-x-composer-target-clear:hover {\r
+  color: var(--pv-x-fg, #0f1419);\r
+}\r
+/* 正在回复的那条：高亮，避免「点了回复却不知道回到哪」 */\r
+article.pv-x-post[data-reply-target='true'] {\r
+  background-color: var(--pv-x-hover, rgba(0, 0, 0, 0.03));\r
+  box-shadow: inset 3px 0 0 var(--pv-x-accent, #1d9bf0);\r
+}\r
+.pv-x-composer-input {\r
+  display: block;\r
+  width: 100%;\r
+  box-sizing: border-box;\r
+  padding: 8px 0;\r
+  border: 0;\r
+  background: none;\r
+  color: var(--pv-x-fg, #0f1419);\r
+  font: inherit;\r
+  font-size: 15px;\r
+  line-height: 20px;\r
+  resize: none;\r
+  overflow-y: auto;\r
+}\r
+.pv-x-composer-input:focus {\r
+  outline: none;\r
+}\r
+.pv-x-composer-input::placeholder {\r
+  color: var(--pv-x-muted, #536471);\r
+}\r
+.pv-x-composer-foot {\r
+  display: flex;\r
+  align-items: center;\r
+  justify-content: flex-end;\r
+  gap: 10px;\r
+  min-height: 28px;\r
+}\r
+.pv-x-composer-hint {\r
+  color: var(--pv-x-muted, #536471);\r
+  font-size: 12px;\r
+  text-align: right;\r
+}\r
+.pv-x-composer-submit {\r
+  appearance: none;\r
+  margin: 0;\r
+  padding: 6px 16px;\r
+  border: 0;\r
+  border-radius: 999px;\r
+  background-color: var(--pv-x-accent, #1d9bf0);\r
+  color: #fff;\r
+  font: inherit;\r
+  font-size: 14px;\r
+  font-weight: 600;\r
+  cursor: pointer;\r
+}\r
+.pv-x-composer-submit:disabled {\r
+  opacity: 0.5;\r
+  cursor: default;\r
+}\r
+/* 滚动到底自动加载 */\r
+.pv-x-load-sentinel {\r
+  display: flex;\r
+  justify-content: center;\r
+  padding: 14px;\r
+}\r
+.pv-x-loading {\r
+  color: var(--pv-x-muted, #536471);\r
+  font-size: 13px;\r
+}\r
+/* 翻译行 */\r
+.pv-x-translation-row {\r
+  display: flex;\r
+  align-items: center;\r
+  gap: 8px;\r
+  margin-top: 4px;\r
+  color: var(--pv-x-muted, #536471);\r
+  font-size: 13px;\r
+  line-height: 18px;\r
+}\r
+.pv-x-translation-link {\r
+  appearance: none;\r
+  -webkit-appearance: none;\r
+  margin: 0;\r
+  padding: 0;\r
+  border: 0;\r
+  background: none;\r
+  color: var(--pv-x-accent, #1d9bf0);\r
+  font: inherit;\r
+  font-size: 13px;\r
+  cursor: pointer;\r
+}\r
+.pv-x-translation-link:hover {\r
+  text-decoration: underline;\r
+}\r
+/* 图片放大浮层（覆盖阅读器区域） */\r
+.pv-x-lightbox {\r
+  position: absolute;\r
+  inset: 0;\r
+  z-index: 5;\r
+  display: flex;\r
+  align-items: center;\r
+  justify-content: center;\r
+  background-color: rgba(0, 0, 0, 0.86);\r
+}\r
+.pv-x-lightbox-img {\r
+  display: block;\r
+  max-width: 100%;\r
+  max-height: 100%;\r
+  object-fit: contain;\r
+}\r
+.pv-x-lightbox-bar {\r
+  position: absolute;\r
+  top: 0;\r
+  right: 0;\r
+  display: flex;\r
+  align-items: center;\r
+  gap: 12px;\r
+  padding: 10px 12px;\r
+}\r
+.pv-x-lightbox-counter,\r
+.pv-x-lightbox-open {\r
+  color: #fff;\r
+  font-size: 13px;\r
+  text-decoration: none;\r
+}\r
+.pv-x-lightbox-counter {\r
+  opacity: 0.8;\r
+}\r
+.pv-x-lightbox-open {\r
+  opacity: 0.85;\r
+}\r
+.pv-x-lightbox-open:hover {\r
+  opacity: 1;\r
+  text-decoration: underline;\r
+}\r
+.pv-x-lightbox-close,\r
+.pv-x-lightbox-nav {\r
+  appearance: none;\r
+  -webkit-appearance: none;\r
+  display: flex;\r
+  align-items: center;\r
+  justify-content: center;\r
+  width: 32px;\r
+  height: 32px;\r
+  padding: 0;\r
+  border: 0;\r
+  border-radius: 50%;\r
+  background-color: rgba(255, 255, 255, 0.14);\r
+  color: #fff;\r
+  font-size: 15px;\r
+  line-height: 1;\r
+  cursor: pointer;\r
+}\r
+.pv-x-lightbox-close:hover,\r
+.pv-x-lightbox-nav:hover {\r
+  background-color: rgba(255, 255, 255, 0.24);\r
+}\r
+.pv-x-lightbox-nav {\r
+  position: absolute;\r
+  top: 50%;\r
+  transform: translateY(-50%);\r
+  width: 40px;\r
+  height: 40px;\r
+  font-size: 24px;\r
+}\r
+.pv-x-lightbox-prev {\r
+  left: 12px;\r
+}\r
+.pv-x-lightbox-next {\r
+  right: 12px;\r
+}\r
+/* 作者资料卡（悬停出现，与 X 一致） */\r
+.pv-x-profile-trigger {\r
+  cursor: pointer;\r
+}\r
+.pv-x-profile-card {\r
+  /* 相对 .pv-x-reader 绝对定位：面板带 transform，fixed 的包含块会变成面板而非视口 */\r
+  position: absolute;\r
+  z-index: 6;\r
+  width: 300px;\r
+  padding: 16px;\r
+  box-sizing: border-box;\r
+  border-radius: 16px;\r
+  background-color: var(--pv-x-bg, #fff);\r
+  color: var(--pv-x-fg, #0f1419);\r
+  box-shadow: 0 0 0 1px var(--pv-x-border, #eff3f4), 0 12px 32px rgba(0, 0, 0, 0.18);\r
+  font-size: 15px;\r
+  line-height: 20px;\r
+}\r
+.pv-x-profile-top {\r
+  display: flex;\r
+  align-items: flex-start;\r
+  justify-content: space-between;\r
+  gap: 12px;\r
+  min-height: 64px;\r
+}\r
+.pv-x-profile-avatar {\r
+  display: block;\r
+  width: 64px;\r
+  height: 64px;\r
+  border-radius: 50%;\r
+  overflow: hidden;\r
+  background-color: var(--pv-x-soft, #f7f9f9);\r
+  text-decoration: none;\r
+}\r
+.pv-x-profile-avatar img {\r
+  display: block;\r
+  width: 100%;\r
+  height: 100%;\r
+  object-fit: cover;\r
+  border: 0;\r
+}\r
+.pv-x-profile-follow {\r
+  appearance: none;\r
+  -webkit-appearance: none;\r
+  margin: 0;\r
+  padding: 7px 16px;\r
+  border: 1px solid var(--pv-x-fg, #0f1419);\r
+  border-radius: 999px;\r
+  background-color: var(--pv-x-fg, #0f1419);\r
+  color: var(--pv-x-bg, #fff);\r
+  font: inherit;\r
+  font-size: 14px;\r
+  font-weight: 700;\r
+  cursor: pointer;\r
+}\r
+.pv-x-profile-follow[data-following='true'] {\r
+  background-color: transparent;\r
+  color: var(--pv-x-fg, #0f1419);\r
+}\r
+.pv-x-profile-follow-hover {\r
+  display: none;\r
+}\r
+.pv-x-profile-follow[data-following='true']:hover {\r
+  border-color: #f4212e;\r
+  background-color: rgba(244, 33, 46, 0.1);\r
+  color: #f4212e;\r
+}\r
+.pv-x-profile-follow[data-following='true']:hover .pv-x-profile-follow-default {\r
+  display: none;\r
+}\r
+.pv-x-profile-follow[data-following='true']:hover .pv-x-profile-follow-hover {\r
+  display: inline;\r
+}\r
+.pv-x-profile-follow:disabled {\r
+  opacity: 0.6;\r
+  cursor: default;\r
+}\r
+.pv-x-profile-name {\r
+  display: flex;\r
+  align-items: center;\r
+  gap: 4px;\r
+  margin-top: 10px;\r
+  color: var(--pv-x-fg, #0f1419);\r
+  font-size: 17px;\r
+  font-weight: 700;\r
+  text-decoration: none;\r
+}\r
+.pv-x-profile-name strong {\r
+  font-weight: 700;\r
+}\r
+.pv-x-profile-handle {\r
+  display: block;\r
+  color: var(--pv-x-muted, #536471);\r
+  font-size: 15px;\r
+  text-decoration: none;\r
+}\r
+.pv-x-profile-follows-you {\r
+  display: inline-block;\r
+  margin-top: 6px;\r
+  padding: 1px 6px;\r
+  border-radius: 4px;\r
+  background-color: var(--pv-x-soft, #f7f9f9);\r
+  color: var(--pv-x-muted, #536471);\r
+  font-size: 12px;\r
+}\r
+.pv-x-profile-bio {\r
+  margin: 10px 0 0;\r
+  font-size: 15px;\r
+  line-height: 20px;\r
+  overflow-wrap: anywhere;\r
+}\r
+.pv-x-profile-stats {\r
+  display: flex;\r
+  gap: 16px;\r
+  margin-top: 10px;\r
+  font-size: 14px;\r
+}\r
+.pv-x-profile-stats a {\r
+  color: var(--pv-x-muted, #536471);\r
+  text-decoration: none;\r
+}\r
+.pv-x-profile-stats strong {\r
+  color: var(--pv-x-fg, #0f1419);\r
+  font-weight: 700;\r
+}\r
+.pv-x-profile-summary {\r
+  display: block;\r
+  margin-top: 12px;\r
+  color: var(--pv-x-muted, #536471);\r
+  font-size: 14px;\r
+  text-decoration: none;\r
+}\r
+.pv-x-profile-summary:hover {\r
+  text-decoration: underline;\r
+}\r
+/* X 长文（Article）：封面 + 标题 + 正文排版 */\r
+.pv-x-article {\r
+  margin-top: 10px;\r
+}\r
+.pv-x-article-cover {\r
+  overflow: hidden;\r
+  border: 1px solid var(--pv-x-border, #eff3f4);\r
+  border-radius: 16px;\r
+}\r
+.pv-x-article-cover img {\r
+  display: block;\r
+  width: 100%;\r
+  max-height: 320px;\r
+  object-fit: cover;\r
+  border: 0;\r
+}\r
+.pv-x-article-heading {\r
+  margin-top: 12px;\r
+}\r
+.pv-x-article-title {\r
+  margin: 0 0 6px;\r
+  font-size: 20px;\r
+  line-height: 26px;\r
+  font-weight: 800;\r
+  color: var(--pv-x-fg, #0f1419);\r
+}\r
+.pv-x-article-open {\r
+  color: var(--pv-x-accent, #1d9bf0);\r
+  font-size: 13px;\r
+  text-decoration: none;\r
+}\r
+.pv-x-article-open:hover {\r
+  text-decoration: underline;\r
+}\r
+.pv-x-article-content {\r
+  margin-top: 10px;\r
+}\r
+.pv-x-article-p {\r
+  margin: 0 0 12px;\r
+  font-size: 15px;\r
+  line-height: 20px;\r
+  overflow-wrap: anywhere;\r
+}\r
+.pv-x-article-h2,\r
+.pv-x-article-h3,\r
+.pv-x-article-h4 {\r
+  margin: 18px 0 8px;\r
+  color: var(--pv-x-fg, #0f1419);\r
+  font-weight: 800;\r
+}\r
+.pv-x-article-h2 {\r
+  font-size: 18px;\r
+  line-height: 24px;\r
+}\r
+.pv-x-article-h3 {\r
+  font-size: 17px;\r
+  line-height: 22px;\r
+}\r
+.pv-x-article-h4 {\r
+  font-size: 16px;\r
+  line-height: 21px;\r
+}\r
+.pv-x-article-quote {\r
+  margin: 0 0 12px;\r
+  padding: 2px 0 2px 12px;\r
+  border-left: 3px solid var(--pv-x-border, #eff3f4);\r
+  color: var(--pv-x-muted, #536471);\r
+  font-size: 15px;\r
+  line-height: 20px;\r
+}\r
+.pv-x-article-list {\r
+  margin: 0 0 12px;\r
+  padding-left: 22px;\r
+  font-size: 15px;\r
+  line-height: 20px;\r
+}\r
+.pv-x-article-list li {\r
+  margin-bottom: 4px;\r
+}\r
+.pv-x-article-figure {\r
+  margin: 12px 0;\r
+}\r
+.pv-x-article-figure img {\r
+  display: block;\r
+  width: 100%;\r
+  border: 1px solid var(--pv-x-border, #eff3f4);\r
+  border-radius: 16px;\r
+}\r
+/* 评论里的长文：紧凑卡片 */\r
+.pv-x-article-card {\r
+  display: block;\r
+  margin-top: 8px;\r
+  overflow: hidden;\r
+  border: 1px solid var(--pv-x-border, #eff3f4);\r
+  border-radius: 16px;\r
+  text-decoration: none;\r
+}\r
+.pv-x-article-card-cover {\r
+  display: block;\r
+  width: 100%;\r
+  max-height: 200px;\r
+  object-fit: cover;\r
+}\r
+.pv-x-article-card-body {\r
+  display: block;\r
+  padding: 10px 12px;\r
+}\r
+.pv-x-article-card-domain {\r
+  display: block;\r
+  color: var(--pv-x-muted, #536471);\r
+  font-size: 13px;\r
+}\r
+.pv-x-article-card-title {\r
+  display: block;\r
+  margin-top: 2px;\r
+  color: var(--pv-x-fg, #0f1419);\r
+  font-size: 15px;\r
+  line-height: 20px;\r
+}\r
+.pv-x-article-card-desc {\r
+  display: block;\r
+  margin-top: 2px;\r
+  color: var(--pv-x-muted, #536471);\r
+  font-size: 14px;\r
+  line-height: 19px;\r
+}\r
+/* 轻提示 */\r
+.pv-x-toast {\r
+  position: absolute;\r
+  left: 50%;\r
+  bottom: 16px;\r
+  transform: translateX(-50%);\r
+  max-width: 80%;\r
+  padding: 8px 14px;\r
+  border-radius: 8px;\r
+  background-color: var(--pv-x-fg, #0f1419);\r
+  color: var(--pv-x-bg, #fff);\r
+  font-size: 13px;\r
+  opacity: 0;\r
+  pointer-events: none;\r
+  transition: opacity 0.18s ease;\r
+  z-index: 2;\r
+}\r
+.pv-x-toast[data-visible='true'] {\r
+  opacity: 1;\r
+}\r
+.pv-x-reply {\r
+  display: grid;\r
+  grid-template-columns: 40px minmax(0, 1fr);\r
+  gap: 12px;\r
+  padding: 10px 16px 10px calc(16px + var(--pv-x-depth, 0) * 18px);\r
+  border-bottom: 1px solid var(--pv-x-border, #eff3f4);\r
+}\r
+.pv-x-reply:hover {\r
+  background-color: var(--pv-x-hover, rgba(0, 0, 0, 0.03));\r
+}\r
+.pv-x-reply .pv-x-avatar,\r
+.pv-x-reply .pv-x-thread-line {\r
+  opacity: 0.92;\r
+}\r
+/* 媒体：1-4 宫格，X 的 16px 圆角 + 1px 描边 */\r
+.pv-x-media {\r
+  display: grid;\r
+  gap: 2px;\r
+  margin-top: 10px;\r
+  max-width: 100%;\r
+  border: 1px solid var(--pv-x-border, #eff3f4);\r
+  border-radius: 16px;\r
+  overflow: hidden;\r
+}\r
+.pv-x-media-1,\r
+.pv-x-media-2,\r
+.pv-x-media-3,\r
+.pv-x-media-4 {\r
+  grid-template-columns: repeat(2, minmax(0, 1fr));\r
+}\r
+.pv-x-media-1 {\r
+  grid-template-columns: minmax(0, 1fr);\r
+}\r
+.pv-x-media-3 .pv-x-media-item:first-child {\r
+  grid-row: span 2;\r
+}\r
+.pv-x-media-item {\r
+  display: block;\r
+  position: relative;\r
+  min-width: 0;\r
+  overflow: hidden;\r
+  /* 图片项是 <button>：显式复位，避免宿主 button 样式渗入 */\r
+  appearance: none;\r
+  -webkit-appearance: none;\r
+  margin: 0;\r
+  padding: 0;\r
+  border: 0;\r
+  font: inherit;\r
+  background-color: var(--pv-x-soft, #f7f9f9);\r
+  cursor: zoom-in;\r
+}\r
+.pv-x-media-item img {\r
+  display: block;\r
+  width: 100%;\r
+  height: 100%;\r
+  max-height: 420px;\r
+  object-fit: cover;\r
+  border: 0;\r
+}\r
+.pv-x-media-1 .pv-x-media-item img {\r
+  max-height: 460px;\r
+  object-fit: contain;\r
+}\r
+.pv-x-media-video {\r
+  display: flex;\r
+  flex-direction: column;\r
+}\r
+.pv-x-video {\r
+  display: block;\r
+  width: 100%;\r
+  max-height: 460px;\r
+  background-color: #000;\r
+}\r
+.pv-x-video-poster {\r
+  display: block;\r
+  width: 100%;\r
+  max-height: 460px;\r
+  object-fit: contain;\r
+  border: 0;\r
+}\r
+.pv-x-video-open {\r
+  display: block;\r
+  padding: 8px 12px;\r
+  background-color: var(--pv-x-bg, #fff);\r
+  color: var(--pv-x-accent, #1d9bf0);\r
+  font-size: 13px;\r
+  text-decoration: none;\r
+}\r
+.pv-x-empty {\r
+  padding: 24px 16px;\r
+  color: var(--pv-x-muted, #536471);\r
+  font-size: 14px;\r
+  text-align: center;\r
+}\r
+.pv-x-more {\r
+  display: block;\r
+  width: calc(100% - 32px);\r
+  margin: 12px 16px 16px;\r
+  padding: 10px;\r
+  border: 1px solid var(--pv-x-border, #eff3f4);\r
+  border-radius: 999px;\r
+  background-color: transparent;\r
+  color: var(--pv-x-accent, #1d9bf0);\r
+  font-family: inherit;\r
+  font-size: 14px;\r
+  font-weight: 600;\r
+  cursor: pointer;\r
+}\r
+.pv-x-more:hover:not(:disabled) {\r
+  background-color: var(--pv-x-hover, rgba(0, 0, 0, 0.03));\r
+}\r
+.pv-x-more:disabled {\r
+  color: var(--pv-x-muted, #536471);\r
+  cursor: default;\r
+}\r
 `;
 
   // src/ui/PopupPanel.js
@@ -4161,7 +5107,7 @@ a.xst::after {\r
     ensure() {
       if (this.panel) return this.panel;
       this.overlay = el("div", { id: "popup-panel-overlay", onclick: () => this.close() });
-      document.body.appendChild(this.overlay);
+      mountUi(this.overlay);
       const titleMark = el("span", { class: "pv-title-mark" });
       titleMark.appendChild(svgIcon("article", { size: 15 }));
       this.titleTextEl = el("span", { class: "pv-title-text", text: "查看内容" });
@@ -4223,7 +5169,7 @@ a.xst::after {\r
       this.footerLinkBtn.appendChild(svgIcon("external", { size: 14 }));
       this.footer = el("div", { id: "popup-panel-footer" }, navGroup, this.footerLinkBtn);
       this.panel = el("div", { id: "popup-content-panel" }, header, this.contentArea, this.footer);
-      document.body.appendChild(this.panel);
+      mountUi(this.panel);
       this.floatBtn = el("button", { id: "pv-float-settings", title: "脚本设置" });
       this.floatBtn.appendChild(svgIcon("settings", { size: 16 }));
       this.floatBtn.addEventListener("click", () => {
@@ -4233,16 +5179,16 @@ a.xst::after {\r
         }
         this.showSettingsNear(this.floatBtn.getBoundingClientRect());
       });
-      document.body.appendChild(this.floatBtn);
+      mountUi(this.floatBtn);
       this.settingsPopover = createSettingsPanel({
         onChange: (s) => this.applySettings(s),
         onManageRules: () => this.showRulesPanel(),
         onClose: () => this.hideSettings()
       });
-      document.body.appendChild(this.settingsPopover);
+      mountUi(this.settingsPopover);
       this.rulesPanel = createRulesPanel();
-      document.body.appendChild(this.rulesPanel.backdrop);
-      document.body.appendChild(this.rulesPanel.root);
+      mountUi(this.rulesPanel.backdrop);
+      mountUi(this.rulesPanel.root);
       document.addEventListener("click", (e) => {
         var _a;
         if (!((_a = this.settingsPopover) == null ? void 0 : _a.classList.contains("visible"))) return;
@@ -4310,6 +5256,7 @@ a.xst::after {\r
         this.panel.classList.add("visible");
         debugMark("panel.visible");
         if (settingsManager.get().windowMode !== "float") this.overlay.classList.add("visible");
+        this._fixCentering();
       });
     }
     close() {
@@ -4435,6 +5382,38 @@ a.xst::after {\r
       this.panel.style.left = "";
       this.panel.style.top = "";
       this.panel.style.transform = "";
+      this._fixCentering();
+    }
+    /**
+     * 居中校正：挂载点已避开被 transform 的祖先，但宿主页面仍可能有别的因素让
+     * CSS 的 top/left:50% 算不准（缩放、被覆盖等）。这里实测「窗体中心」与「视口中心」
+     * 的偏差并换算成显式像素；用中心点计算，因此不受打开动画 scale 影响。
+     * 只在居中模式（用户没拖过、非全屏）下生效。
+     */
+    _fixCentering() {
+      if (!this.panel || this.isFullScreen) return;
+      if (this.panel.style.left || this.panel.style.top) return;
+      const rect = this.panel.getBoundingClientRect();
+      if (!rect.width || !rect.height) return;
+      const dx = window.innerWidth / 2 - (rect.left + rect.width / 2);
+      const dy = window.innerHeight / 2 - (rect.top + rect.height / 2);
+      if (Math.abs(dx) < 1 && Math.abs(dy) < 1) return;
+      const cs = getComputedStyle(this.panel);
+      const left = parseFloat(cs.left);
+      const top = parseFloat(cs.top);
+      if (!Number.isFinite(left) || !Number.isFinite(top)) return;
+      let ancestorScale = 1;
+      try {
+        const matrix = typeof DOMMatrixReadOnly === "function" ? new DOMMatrixReadOnly(cs.transform === "none" ? "" : cs.transform) : null;
+        const panelScale = matrix && matrix.a ? matrix.a : 1;
+        if (this.panel.offsetWidth && panelScale) {
+          ancestorScale = rect.width / (this.panel.offsetWidth * panelScale) || 1;
+        }
+      } catch (err) {
+        ancestorScale = 1;
+      }
+      this.panel.style.left = `${left + dx / ancestorScale}px`;
+      this.panel.style.top = `${top + dy / ancestorScale}px`;
     }
     hideOverlay() {
       var _a;
@@ -5285,6 +6264,2328 @@ a.xst::after {\r
     }
   };
 
+  // src/adapters/XAdapter.js
+  var X_DOMAINS = ["x.com", "twitter.com"];
+  var STATUS_PATTERN = /^\/(?:i\/web\/)?([^/?#]+)\/status\/(\d+)/i;
+  var PROFILE_PATTERN = /^\/([A-Za-z0-9_]+)\/?$/;
+  var XAdapter = class extends BaseAdapter {
+    constructor() {
+      super();
+      this.name = "X";
+    }
+    match(hostname) {
+      return this.matchDomain(hostname, X_DOMAINS);
+    }
+    /** 规范化帖子地址：统一为 https://x.com/{handle}/status/{id} */
+    normalizePostUrl(href, base = window.location.href) {
+      if (!href || typeof href !== "string") return null;
+      let url;
+      try {
+        url = new URL(href, base);
+      } catch {
+        return null;
+      }
+      if (!this.match(url.hostname.replace(/^www\./i, ""))) return null;
+      const m = url.pathname.match(STATUS_PATTERN);
+      if (!m) return null;
+      return `https://x.com/${m[1]}/status/${m[2]}`;
+    }
+    /** 顶层页面当前是否已经是帖子详情页 */
+    isDetailPage() {
+      return Boolean(this.normalizePostUrl(window.location.href));
+    }
+    /**
+     * 从点击事件解析出应打开的帖子。
+     * @returns {{url:string,title:string,element:Element}|null}
+     */
+    parseClick(event) {
+      if (event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return null;
+      const target = event.target;
+      if (!target || typeof target.closest !== "function") return null;
+      const article = target.closest('article[data-testid="tweet"]');
+      if (!article) return null;
+      if (!this.isTopLevelTweet(article)) return null;
+      if (this.shouldSkipTarget(target)) return null;
+      const quoteScope = this.findClickedQuoteScope(article, target);
+      if (this.isDetailPage() && !quoteScope) return null;
+      const quotedUrl = quoteScope ? this.findQuotedPostUrl(article, quoteScope) : null;
+      const anchor = target.closest('a[href*="/status/"]');
+      const outerUrl = this.findPostUrl(article);
+      const url = quotedUrl || this.normalizePostUrl(anchor && anchor.getAttribute("href")) || outerUrl;
+      if (!url) return null;
+      const scope = quoteScope || article;
+      return { url, title: this.titleOf(scope), element: article };
+    }
+    /** 视觉增强：X 的列表是虚拟化 React 树，这里不做任何 DOM 改写，避免与其渲染冲突 */
+    enhance() {
+      return false;
+    }
+    // ---------- 内部：X DOM 解析 ----------
+    isTopLevelTweet(article) {
+      var _a;
+      try {
+        return !((_a = article.parentElement) == null ? void 0 : _a.closest('article[data-testid="tweet"]'));
+      } catch {
+        return true;
+      }
+    }
+    shouldSkipTarget(target) {
+      if (target.closest('button, input, textarea, select, [contenteditable="true"], video')) return true;
+      if (target.closest('[data-testid="tweetPhoto"]')) return true;
+      const anchor = target.closest("a[href]");
+      return Boolean(anchor && !this.normalizePostUrl(anchor.getAttribute("href")));
+    }
+    /** 引用帖卡片：X 用 role=link 的 div 包住，内部同时有身份与内容节点 */
+    isQuotedPostLink(node) {
+      var _a, _b, _c;
+      const hasIdentity = (_a = node == null ? void 0 : node.querySelector) == null ? void 0 : _a.call(node, '[data-testid="Tweet-User-Avatar"], [data-testid="User-Name"]');
+      const hasQuotedContent = (_b = node == null ? void 0 : node.querySelector) == null ? void 0 : _b.call(
+        node,
+        '[data-testid="tweetText"], [data-testid="tweetPhoto"], [data-testid="videoPlayer"], [data-testid="article-cover-image"]'
+      );
+      return Boolean(((_c = node == null ? void 0 : node.matches) == null ? void 0 : _c.call(node, '[role="link"][tabindex="0"]')) && hasIdentity && hasQuotedContent);
+    }
+    findClickedQuoteScope(article, target) {
+      let current = target;
+      while (current && current !== article) {
+        if (this.isQuotedPostLink(current)) return current;
+        current = current.parentElement;
+      }
+      return null;
+    }
+    authorProfileHref(scope) {
+      const userName = scope.querySelector('[data-testid="User-Name"]');
+      return [...(userName == null ? void 0 : userName.querySelectorAll("a[href]")) || []].map((a) => a.getAttribute("href")).find((href) => PROFILE_PATTERN.test(href || "")) || null;
+    }
+    statusLinks(scope) {
+      var _a;
+      return [...((_a = scope == null ? void 0 : scope.querySelectorAll) == null ? void 0 : _a.call(scope, 'a[href*="/status/"]')) || []].map((a) => this.normalizePostUrl(a.getAttribute("href"))).filter(Boolean);
+    }
+    /** 一个作用域内可能同时含外层帖与引用帖的链接，按作者 handle 选出属于本作用域的那条 */
+    selectOwnPostUrl(hrefs, profileHref2) {
+      var _a, _b;
+      const unique = [...new Set(hrefs.filter(Boolean))];
+      const handle = ((_b = (_a = String(profileHref2 || "").match(PROFILE_PATTERN)) == null ? void 0 : _a[1]) == null ? void 0 : _b.toLowerCase()) || null;
+      if (!handle) return unique[0] || null;
+      return unique.find((u) => {
+        var _a2;
+        try {
+          return ((_a2 = new URL(u).pathname.split("/")[1]) == null ? void 0 : _a2.toLowerCase()) === handle;
+        } catch {
+          return false;
+        }
+      }) || unique[0] || null;
+    }
+    findPostUrl(article) {
+      return this.selectOwnPostUrl(this.statusLinks(article), this.authorProfileHref(article));
+    }
+    findQuotedPostUrl(article, quoteScope) {
+      const ownUrl = this.findPostUrl(article);
+      const direct = quoteScope.matches('a[href*="/status/"]') ? this.normalizePostUrl(quoteScope.getAttribute("href")) : null;
+      return [direct, ...this.statusLinks(quoteScope)].find((u) => u && u !== ownUrl) || null;
+    }
+    titleOf(scope) {
+      var _a, _b, _c, _d, _e, _f;
+      try {
+        const name = (_d = (_c = (_b = (_a = scope.querySelector('[data-testid="User-Name"]')) == null ? void 0 : _a.innerText) == null ? void 0 : _b.split("\n")) == null ? void 0 : _c[0]) == null ? void 0 : _d.trim();
+        const text = (_f = (_e = scope.querySelector('[data-testid="tweetText"]')) == null ? void 0 : _e.innerText) == null ? void 0 : _f.trim();
+        if (name && text) return `${name}: ${text.slice(0, 60)}`;
+        return name || (text ? text.slice(0, 60) : "") || "X 帖子";
+      } catch (err) {
+        logger.debug("[XAdapter] title parse failed", err);
+        return "X 帖子";
+      }
+    }
+  };
+
+  // src/x/xBridge.js
+  var GRAPHQL_PATH = /\/graphql\/([^/]+)\/([^/?#]+)/;
+  var TRANSLATION_PATH = /\/translation\/service\/translateTweet(?:\.json)?(?:[?#]|$)/;
+  var AUTH_HEADER_NAMES = /* @__PURE__ */ new Set([
+    "authorization",
+    "x-twitter-auth-type",
+    "x-twitter-active-user",
+    "x-twitter-client-language",
+    "x-client-uuid"
+  ]);
+  var captured = {
+    auth: /* @__PURE__ */ Object.create(null),
+    templates: /* @__PURE__ */ new Map(),
+    translationTemplate: null,
+    bearerSource: null
+  };
+  var webpackRuntime = null;
+  var transactionIdFn;
+  var operationCache = /* @__PURE__ */ new Map();
+  function pageWindow() {
+    try {
+      if (typeof unsafeWindow !== "undefined" && unsafeWindow) return unsafeWindow;
+    } catch (err) {
+      logger.debug("[xBridge] unsafeWindow unavailable", err);
+    }
+    return window;
+  }
+  function normalizeHeaders(headers) {
+    const out = {};
+    if (!headers) return out;
+    try {
+      if (typeof headers.forEach === "function" && typeof headers.get === "function") {
+        headers.forEach((value, key) => {
+          out[String(key).toLowerCase()] = value;
+        });
+        return out;
+      }
+    } catch (err) {
+      logger.debug("[xBridge] Headers normalize failed", err);
+    }
+    if (Array.isArray(headers)) {
+      for (const pair of headers) {
+        if (Array.isArray(pair) && pair.length >= 2) out[String(pair[0]).toLowerCase()] = pair[1];
+      }
+      return out;
+    }
+    if (typeof headers === "object") {
+      for (const [key, value] of Object.entries(headers)) out[String(key).toLowerCase()] = value;
+    }
+    return out;
+  }
+  function rememberRequest(win, url, method, headers, body) {
+    if (!url) return;
+    const absolute = String(url);
+    const normalized = normalizeHeaders(headers);
+    for (const name of AUTH_HEADER_NAMES) {
+      const value = normalized[name];
+      if (value && !captured.auth[name]) captured.auth[name] = value;
+    }
+    const match = absolute.match(GRAPHQL_PATH);
+    if (match) {
+      captured.templates.set(match[2], {
+        url: absolute,
+        method: String(method || "GET").toUpperCase(),
+        headers: normalized,
+        body: typeof body === "string" ? body : null
+      });
+    }
+    if (TRANSLATION_PATH.test(absolute)) {
+      captured.translationTemplate = { url: absolute, headers: normalized };
+    }
+  }
+  function patchFetch(win) {
+    const original = win.fetch;
+    if (typeof original !== "function" || original.__pv2Patched) return;
+    const patched = function(input, init2) {
+      try {
+        const url = typeof input === "string" ? input : input && input.url;
+        const method = init2 && init2.method || input && input.method || "GET";
+        const headers = init2 && init2.headers || input && input.headers;
+        rememberRequest(win, url, method, headers, init2 && init2.body);
+      } catch (err) {
+        logger.debug("[xBridge] fetch capture failed", err);
+      }
+      return Reflect.apply(original, this, [input, init2]);
+    };
+    patched.__pv2Patched = true;
+    try {
+      win.fetch = patched;
+    } catch (err) {
+      logger.warn("[xBridge] fetch patch rejected", err);
+    }
+  }
+  function patchXhr(win) {
+    const XHR = win.XMLHttpRequest;
+    if (!XHR || !XHR.prototype || XHR.prototype.__pv2Patched) return;
+    const proto = XHR.prototype;
+    const originalOpen = proto.open;
+    const originalSetHeader = proto.setRequestHeader;
+    const originalSend = proto.send;
+    proto.open = function(method, url, ...rest) {
+      try {
+        this.__pv2Request = { method, url, headers: {} };
+      } catch (err) {
+        logger.debug("[xBridge] xhr open capture failed", err);
+      }
+      return Reflect.apply(originalOpen, this, [method, url, ...rest]);
+    };
+    proto.setRequestHeader = function(name, value) {
+      try {
+        if (this.__pv2Request) this.__pv2Request.headers[String(name).toLowerCase()] = value;
+      } catch (err) {
+        logger.debug("[xBridge] xhr header capture failed", err);
+      }
+      return Reflect.apply(originalSetHeader, this, [name, value]);
+    };
+    proto.send = function(body) {
+      try {
+        const req = this.__pv2Request;
+        if (req) rememberRequest(win, req.url, req.method, req.headers, body);
+      } catch (err) {
+        logger.debug("[xBridge] xhr send capture failed", err);
+      }
+      return Reflect.apply(originalSend, this, [body === void 0 ? null : body]);
+    };
+    proto.__pv2Patched = true;
+  }
+  function getWebpackRuntime(win) {
+    if (webpackRuntime) return webpackRuntime;
+    let chunkName = null;
+    try {
+      chunkName = Object.keys(win).find((name) => name.startsWith("webpackChunk") && Array.isArray(win[name]));
+    } catch (err) {
+      logger.debug("[xBridge] webpack scan failed", err);
+    }
+    const chunk = chunkName ? win[chunkName] : null;
+    if (!chunk) return null;
+    let runtime = null;
+    try {
+      chunk.push([[`pv2-${Date.now()}`], {}, (candidate) => {
+        runtime = candidate;
+      }]);
+    } catch (err) {
+      logger.debug("[xBridge] webpack probe failed", err);
+      return null;
+    }
+    if (runtime && runtime.c && runtime.m) webpackRuntime = runtime;
+    return webpackRuntime;
+  }
+  function deepFind(value, predicate, maxDepth = 5, seen = /* @__PURE__ */ new Set()) {
+    if (!value || typeof value !== "object" || maxDepth < 0 || seen.has(value)) return null;
+    seen.add(value);
+    try {
+      if (predicate(value)) return value;
+    } catch (err) {
+      logger.debug("[xBridge] predicate failed", err);
+    }
+    for (const key of Object.keys(value)) {
+      let child;
+      try {
+        child = value[key];
+      } catch (err) {
+        continue;
+      }
+      const found = deepFind(child, predicate, maxDepth - 1, seen);
+      if (found) return found;
+    }
+    return null;
+  }
+  function scanRuntime(runtime, sourceNeedle, predicate) {
+    if (!runtime) return null;
+    for (const module of Object.values(runtime.c || {})) {
+      const found = deepFind(module && module.exports, predicate);
+      if (found) return found;
+    }
+    for (const [moduleId, factory] of Object.entries(runtime.m || {})) {
+      let source = "";
+      try {
+        source = Function.prototype.toString.call(factory);
+      } catch (err) {
+        continue;
+      }
+      if (sourceNeedle && !source.includes(sourceNeedle)) continue;
+      try {
+        const exports = runtime(moduleId);
+        const found = deepFind(exports && (exports.exports || exports), predicate);
+        if (found) return found;
+      } catch (err) {
+      }
+    }
+    return null;
+  }
+  function findOperation(win, operationName) {
+    if (operationCache.has(operationName)) return operationCache.get(operationName);
+    const predicate = (value) => value && value.operationName === operationName && typeof value.queryId === "string";
+    const found = scanRuntime(getWebpackRuntime(win), operationName, predicate) || null;
+    operationCache.set(operationName, found);
+    return found;
+  }
+  function findTransactionIdFunction(win) {
+    var _a;
+    const predicate = (value) => {
+      const candidate = value && value.kc;
+      return typeof candidate === "function" && candidate.length === 3;
+    };
+    return ((_a = scanRuntime(getWebpackRuntime(win), "x-client-transaction-id", predicate)) == null ? void 0 : _a.kc) || null;
+  }
+  function toggleMap(items) {
+    const result = {};
+    for (const item of items || []) {
+      if (typeof item === "string") result[item] = true;
+      else if (item && typeof item.name === "string") result[item.name] = item.value === void 0 ? true : item.value;
+    }
+    return result;
+  }
+  function csrfToken(win) {
+    try {
+      return decodeURIComponent((String(win.document.cookie).match(/(?:^|;\s*)ct0=([^;]+)/) || [])[1] || "");
+    } catch (err) {
+      return "";
+    }
+  }
+  function discoverBearer(win) {
+    const runtime = getWebpackRuntime(win);
+    if (!runtime) return null;
+    for (const factory of Object.values(runtime.m || {})) {
+      let source = "";
+      try {
+        source = Function.prototype.toString.call(factory);
+      } catch (err) {
+        continue;
+      }
+      if (!source.includes("Bearer ")) continue;
+      const match = source.match(/Bearer\s+([A-Za-z0-9%_-]{30,})/);
+      if (match) return `Bearer ${match[1]}`;
+    }
+    return null;
+  }
+  async function requestHeaders(win, path, method, requiresCsrf) {
+    const headers = { "content-type": "application/json" };
+    headers["x-twitter-active-user"] = captured.auth["x-twitter-active-user"] || "yes";
+    headers["x-twitter-auth-type"] = captured.auth["x-twitter-auth-type"] || "OAuth2Session";
+    let authorization = captured.auth.authorization;
+    if (!authorization) {
+      authorization = discoverBearer(win);
+      if (authorization) captured.bearerSource = "webpack";
+    } else {
+      captured.bearerSource = captured.bearerSource || "request";
+    }
+    if (!authorization) throw new Error("还没有捕获到 X 登录请求，请刷新 X 页面后重试");
+    headers.authorization = authorization;
+    for (const name of ["x-twitter-client-language", "x-client-uuid"]) {
+      if (captured.auth[name]) headers[name] = captured.auth[name];
+    }
+    const csrf = csrfToken(win);
+    if (csrf) headers["x-csrf-token"] = csrf;
+    if (requiresCsrf && !csrf) throw new Error("当前 X 登录会话缺少 CSRF 信息，请刷新后重试");
+    try {
+      if (transactionIdFn === void 0) transactionIdFn = findTransactionIdFunction(win);
+      if (typeof transactionIdFn === "function") {
+        const transactionId = await transactionIdFn(win.location.host, path, method);
+        if (transactionId && !String(transactionId).startsWith("e:")) headers["x-client-transaction-id"] = transactionId;
+      }
+    } catch (err) {
+      logger.debug("[xBridge] transaction id unavailable", err);
+    }
+    return headers;
+  }
+  async function readJson(response) {
+    const json = await response.json().catch(() => null);
+    if (!response.ok || json && json.errors && json.errors.length) {
+      const message = json && json.errors && json.errors[0] && json.errors[0].message || `X 请求失败（${response.status}）`;
+      throw new Error(message);
+    }
+    return json;
+  }
+  async function graphql(win, operationName, variables, method = "POST", signal) {
+    const operation = findOperation(win, operationName);
+    if (!operation) throw new Error(`当前 X 页面尚未加载 ${operationName} 操作，请刷新页面后重试`);
+    const path = `/i/api/graphql/${operation.queryId}/${operationName}`;
+    const metadata = operation.metadata || {};
+    const features = toggleMap(metadata.featureSwitches);
+    const fieldToggles = toggleMap(metadata.fieldToggles);
+    const headers = await requestHeaders(win, path, method, method === "POST");
+    if (method === "GET") {
+      const url = new URL(path, win.location.origin);
+      url.searchParams.set("variables", JSON.stringify(variables));
+      url.searchParams.set("features", JSON.stringify(features));
+      url.searchParams.set("fieldToggles", JSON.stringify(fieldToggles));
+      return readJson(await win.fetch(url.toString(), { method, headers, credentials: "include", cache: "no-store", signal }));
+    }
+    return readJson(
+      await win.fetch(path, {
+        method,
+        headers,
+        credentials: "include",
+        cache: "no-store",
+        body: JSON.stringify({ variables, features, queryId: operation.queryId })
+      })
+    );
+  }
+  function readArticle(win, tweetId) {
+    return graphql(
+      win,
+      "TweetResultByRestId",
+      { tweetId: String(tweetId), withCommunity: false, includePromotedContent: false, withVoice: false },
+      "GET"
+    );
+  }
+  async function replayTweetDetail(win, tweetId, cursor) {
+    const template = captured.templates.get("TweetDetail");
+    if (!template) return null;
+    const url = new URL(template.url, win.location.origin);
+    let variables = {};
+    try {
+      variables = JSON.parse(url.searchParams.get("variables") || "{}");
+    } catch (err) {
+      logger.debug("[xBridge] template variables unparsable", err);
+    }
+    variables.focalTweetId = String(tweetId);
+    if (cursor) variables.cursor = cursor;
+    else delete variables.cursor;
+    url.searchParams.set("variables", JSON.stringify(variables));
+    const headers = { ...template.headers, ...await requestHeaders(win, url.pathname, template.method, false) };
+    return readJson(await win.fetch(url.toString(), { method: template.method, headers, credentials: "include", cache: "no-store" }));
+  }
+  async function readThread(win, tweetId, cursor) {
+    const variables = {
+      focalTweetId: String(tweetId),
+      referrer: "home",
+      with_rux_injections: false,
+      rankingMode: "Relevance",
+      includePromotedContent: true,
+      withCommunity: true,
+      withQuickPromoteEligibilityTweetFields: true,
+      withBirdwatchNotes: true,
+      withVoice: true
+    };
+    if (cursor) variables.cursor = cursor;
+    try {
+      return await graphql(win, "TweetDetail", variables, "GET");
+    } catch (primaryError) {
+      const replayed = await replayTweetDetail(win, tweetId, cursor).catch((err) => {
+        logger.debug("[xBridge] template replay failed", err);
+        return null;
+      });
+      if (replayed) return replayed;
+      throw primaryError;
+    }
+  }
+  var ACTIONS = Object.freeze({
+    like: { active: "UnfavoriteTweet", inactive: "FavoriteTweet" },
+    repost: { active: "DeleteRetweet", inactive: "CreateRetweet" },
+    bookmark: { active: "DeleteBookmark", inactive: "CreateBookmark" }
+  });
+  async function toggleAction(win, action, tweetId, active) {
+    const mapping = ACTIONS[action];
+    if (!mapping) throw new Error("不支持的互动操作");
+    const operationName = active ? mapping.active : mapping.inactive;
+    const variables = action === "repost" && active ? { source_tweet_id: String(tweetId), dark_request: false } : action === "repost" ? { tweet_id: String(tweetId), dark_request: false } : { tweet_id: String(tweetId) };
+    return graphql(win, operationName, variables, "POST");
+  }
+  async function createReply(win, tweetId, text) {
+    const replyText = String(text || "").trim();
+    if (!replyText) throw new Error("回复内容不能为空");
+    return graphql(
+      win,
+      "CreateTweet",
+      {
+        tweet_text: replyText,
+        dark_request: false,
+        media: { media_entities: [], possibly_sensitive: false },
+        semantic_annotation_ids: [],
+        disallowed_reply_options: null,
+        reply: { in_reply_to_tweet_id: String(tweetId), exclude_reply_user_ids: [] }
+      },
+      "POST"
+    );
+  }
+  async function translateTweet(win, tweetId, targetLanguage) {
+    const language = String(targetLanguage || "zh-cn").toLowerCase();
+    const fallbackPath = `/i/api/1.1/strato/column/None/tweetId=${tweetId},destinationLanguage=None,translationSource=Some(Google),feature=None,timeout=None,onlyCached=None/translation/service/translateTweet`;
+    const template = captured.translationTemplate;
+    const url = new URL(template && template.url || fallbackPath, win.location.origin);
+    if (/tweetId=\d+/.test(url.pathname)) url.pathname = url.pathname.replace(/tweetId=\d+/, `tweetId=${tweetId}`);
+    else url.pathname = fallbackPath;
+    const headers = {
+      ...template && template.headers || {},
+      ...await requestHeaders(win, url.pathname, "GET", false),
+      accept: "*/*",
+      "x-twitter-client-language": language
+    };
+    const response = await win.fetch(url.toString(), { method: "GET", headers, credentials: "include", cache: "no-store" });
+    const json = await response.json().catch(() => null);
+    const errors = json && json.errors;
+    if (!response.ok || errors && errors.length || json && json.translationState === "Failed") {
+      throw new Error(errors && errors[0] && errors[0].message || `X 翻译请求失败（${response.status}）`);
+    }
+    const text = String(json && json.translation || "").trim();
+    if (!text) throw new Error("X 暂时没有返回这条帖子的翻译");
+    return {
+      text,
+      sourceLanguage: String(json && (json.sourceLanguage || json.source_language) || ""),
+      localizedSourceLanguage: String(json && (json.localizedSourceLanguage || json.localized_source_language) || ""),
+      destinationLanguage: String(json && (json.destinationLanguage || json.destination_language) || language)
+    };
+  }
+  function followStateFromUser(user, userId) {
+    if (!user) return null;
+    const id = user.rest_id || user.id_str || (typeof user.id === "string" ? user.id : null);
+    if (String(id) !== String(userId)) return null;
+    const relationship = user.relationship_perspectives || user.legacy || user;
+    const following = relationship.following;
+    const pending = relationship.follow_request_sent;
+    if (typeof following !== "boolean" && pending !== true) return null;
+    const followers = user.relationship_counts ? user.relationship_counts.followers_count : (user.legacy && user.legacy.followers_count) !== void 0 ? user.legacy.followers_count : user.followers_count;
+    return {
+      confirmed: true,
+      following: following === true,
+      followRequestSent: pending === true,
+      followers: Number.isFinite(Number(followers)) ? Number(followers) : null
+    };
+  }
+  async function toggleFollow(win, userId, active) {
+    const id = String(userId || "");
+    if (!/^\d+$/.test(id)) throw new Error("用户 ID 无效");
+    const path = `/i/api/1.1/friendships/${active ? "create" : "destroy"}.json`;
+    const headers = await requestHeaders(win, path, "POST", true);
+    headers["content-type"] = "application/x-www-form-urlencoded;charset=UTF-8";
+    const response = await win.fetch(path, {
+      method: "POST",
+      headers,
+      credentials: "include",
+      cache: "no-store",
+      body: new URLSearchParams({ user_id: id }).toString()
+    });
+    const json = await response.json().catch(() => null);
+    const errors = json && json.errors;
+    if (!response.ok || errors && errors.length) {
+      throw new Error(errors && errors[0] && errors[0].message || `X 关注请求失败（${response.status}）`);
+    }
+    const direct = followStateFromUser(json, id);
+    if (direct && (active ? direct.following || direct.followRequestSent : !direct.following && !direct.followRequestSent)) {
+      return direct;
+    }
+    try {
+      const signal = typeof AbortSignal !== "undefined" && AbortSignal.timeout ? AbortSignal.timeout(4e3) : void 0;
+      const profile = await graphql(win, "UserByRestId", { userId: id }, "GET", signal);
+      const verified = followStateFromUser(profile && profile.data && profile.data.user && profile.data.user.result, id);
+      if (verified) return verified;
+    } catch (err) {
+      logger.debug("[xBridge] follow read-back failed", err);
+    }
+    return { confirmed: false };
+  }
+  function installXBridge(win = pageWindow()) {
+    if (!win) return null;
+    if (win.__PV2_X_BRIDGE__) return win.__PV2_X_BRIDGE__;
+    patchFetch(win);
+    patchXhr(win);
+    getWebpackRuntime(win);
+    const api = {
+      readThread: (tweetId, cursor) => readThread(win, tweetId, cursor),
+      readArticle: (tweetId) => readArticle(win, tweetId),
+      graphql: (operationName, variables, method) => graphql(win, operationName, variables, method),
+      toggleAction: (action, tweetId, active) => toggleAction(win, action, tweetId, active),
+      createReply: (tweetId, text) => createReply(win, tweetId, text),
+      translateTweet: (tweetId, targetLanguage) => translateTweet(win, tweetId, targetLanguage),
+      toggleFollow: (userId, active) => toggleFollow(win, userId, active),
+      findOperation: (operationName) => findOperation(win, operationName),
+      captureState: () => captureState()
+    };
+    try {
+      win.__PV2_X_BRIDGE__ = api;
+    } catch (err) {
+      logger.warn("[xBridge] expose failed", err);
+    }
+    return api;
+  }
+  function captureState() {
+    return {
+      hasAuthorization: Boolean(captured.auth.authorization),
+      bearerSource: captured.bearerSource,
+      authHeaders: Object.keys(captured.auth),
+      templates: [...captured.templates.keys()],
+      hasTranslationTemplate: Boolean(captured.translationTemplate),
+      hasWebpackRuntime: Boolean(webpackRuntime)
+    };
+  }
+
+  // src/x/xModel.js
+  var MAX_UNWRAP_HOPS = 6;
+  var STATUS_PATTERN2 = /^\/(?:i\/web\/)?([^/?#]+)\/status\/(\d+)/i;
+  function replyCursorAfterPage(previousCursor, nextCursor, addedCount) {
+    const next = String(nextCursor || "");
+    return Number(addedCount) > 0 && next && next !== String(previousCursor || "") ? next : null;
+  }
+  function shouldOfferTranslation(text) {
+    const plain = String(text || "").replace(/https?:\/\/\S+/g, " ").replace(/@[A-Za-z0-9_]+/g, " ").trim();
+    if (!plain) return false;
+    const han = (plain.match(/[\u3400-\u9fff]/g) || []).length;
+    const latin = (plain.match(/[A-Za-z\u00c0-\u024f]/g) || []).length;
+    const japaneseKorean = (plain.match(/[\u3040-\u30ff\uac00-\ud7af]/g) || []).length;
+    const cyrillic = (plain.match(/[\u0400-\u04ff]/g) || []).length;
+    if (japaneseKorean >= 2 || cyrillic >= 4) return true;
+    return latin >= 6 && han < Math.max(4, latin * 0.35);
+  }
+  function sourceLanguageLabel(entry) {
+    if (entry && entry.localizedSourceLanguage) return entry.localizedSourceLanguage;
+    const language = String(entry && entry.sourceLanguage || "").toLowerCase();
+    const names = { en: "英语", ja: "日语", ko: "韩语", es: "西班牙语", fr: "法语", de: "德语", ru: "俄语" };
+    return names[language] || "外语";
+  }
+  function postIdFromUrl(href, base = "https://x.com/") {
+    if (!href || typeof href !== "string") return null;
+    try {
+      const url = new URL(href, base);
+      const match = url.pathname.match(STATUS_PATTERN2);
+      return match ? match[2] : null;
+    } catch (err) {
+      return null;
+    }
+  }
+  function unwrapResult(value) {
+    let current = value && typeof value === "object" ? value : null;
+    for (let index = 0; current && index < MAX_UNWRAP_HOPS; index += 1) {
+      if (current.legacy && current.rest_id) return current;
+      if (current.tweet && typeof current.tweet === "object") {
+        current = current.tweet;
+        continue;
+      }
+      if (current.result && typeof current.result === "object") {
+        current = current.result;
+        continue;
+      }
+      break;
+    }
+    return current && current.legacy && current.rest_id ? current : null;
+  }
+  function collectTweetNodes(value, out = [], seen = /* @__PURE__ */ new Set()) {
+    if (!value || typeof value !== "object" || seen.has(value)) return out;
+    seen.add(value);
+    const result = value.tweet_results && value.tweet_results.result || value.tweetResult && value.tweetResult.result || null;
+    if (result) {
+      out.push(result);
+      return out;
+    }
+    for (const key of Object.keys(value)) {
+      let child;
+      try {
+        child = value[key];
+      } catch (err) {
+        continue;
+      }
+      collectTweetNodes(child, out, seen);
+    }
+    return out;
+  }
+  function unwrapUser(value) {
+    let current = value && typeof value === "object" ? value : null;
+    for (let index = 0; current && index < 4; index += 1) {
+      const legacy = current.legacy;
+      const core = current.core;
+      if (legacy && legacy.screen_name || core && core.screen_name || current.avatar && current.avatar.image_url || current.__typename === "User") {
+        return current;
+      }
+      if (current.result && typeof current.result === "object") {
+        current = current.result;
+        continue;
+      }
+      break;
+    }
+    return current && (current.legacy || current.core) ? current : null;
+  }
+  var VARIANT_KEYS = ["video_info", "videoInfo", "media_info", "video_config"];
+  function variantsOf(item) {
+    const groups = [];
+    for (const key of VARIANT_KEYS) {
+      const holder = item[key];
+      if (!holder) continue;
+      if (Array.isArray(holder.variants)) groups.push(holder.variants);
+      if (holder.video_info && Array.isArray(holder.video_info.variants)) groups.push(holder.video_info.variants);
+    }
+    const seen = /* @__PURE__ */ new Set();
+    const out = [];
+    for (const group of groups) {
+      for (const variant of group) {
+        const url = variant && variant.url;
+        if (!url || seen.has(url)) continue;
+        seen.add(url);
+        out.push(variant);
+      }
+    }
+    return out;
+  }
+  var isMp4 = (variant) => /video\/mp4/i.test(String(variant.contentType || "")) || /\.mp4(?:\?|$)/i.test(String(variant.url || ""));
+  var isHls = (variant) => /mpegurl/i.test(String(variant.contentType || "")) || /\.m3u8(?:\?|$)/i.test(String(variant.url || ""));
+  function selectMp4(variants, targetBitrate = 12e5) {
+    const measured = variants.filter((variant) => Number(variant.bitrate) > 0).sort((a, b) => a.bitrate - b.bitrate);
+    const within = measured.filter((variant) => variant.bitrate <= targetBitrate);
+    return (within.length ? within[within.length - 1] : measured[0]) || variants[0] || null;
+  }
+  function mediaItems(tweet, legacy) {
+    const modern = Array.isArray(tweet.media) ? tweet.media : tweet.media && (tweet.media.all || tweet.media.media) || [];
+    const list = legacy.extended_entities && legacy.extended_entities.media || legacy.entities && legacy.entities.media || modern || [];
+    const items = [];
+    for (const raw of list) {
+      const variants = variantsOf(raw);
+      const mp4s = variants.filter(isMp4);
+      const hls = variants.find(isHls) || null;
+      const rawType = String(raw.type || raw.media_type || raw.__typename || "").toLowerCase();
+      const hasVideo = mp4s.length > 0 || Boolean(raw.video_info || raw.videoInfo || raw.video_config);
+      const type = rawType.includes("animated") || rawType === "gif" ? "animated_gif" : rawType.includes("video") || hasVideo ? "video" : "photo";
+      const chosen = type === "photo" ? null : selectMp4(mp4s);
+      const poster = String(raw.media_url_https || raw.media_url || "");
+      const item = {
+        type,
+        url: poster,
+        videoUrl: chosen ? String(chosen.url) : "",
+        hlsUrl: hls ? String(hls.url) : "",
+        width: Number(raw.original_info && raw.original_info.width || raw.sizes && raw.sizes.large && raw.sizes.large.w) || 0,
+        height: Number(raw.original_info && raw.original_info.height || raw.sizes && raw.sizes.large && raw.sizes.large.h) || 0,
+        altText: String(raw.ext_alt_text || "")
+      };
+      if (item.url || item.videoUrl || item.hlsUrl) items.push(item);
+    }
+    return items;
+  }
+  function findNamedValue(root, names, maxDepth = 5, seen = /* @__PURE__ */ new Set()) {
+    if (!root || typeof root !== "object" || maxDepth < 0 || seen.has(root)) return null;
+    seen.add(root);
+    for (const name of names) {
+      const value = root[name];
+      if (value !== void 0 && value !== null) return value;
+    }
+    for (const key of Object.keys(root)) {
+      let child;
+      try {
+        child = root[key];
+      } catch (err) {
+        continue;
+      }
+      const found = findNamedValue(child, names, maxDepth - 1, seen);
+      if (found !== null) return found;
+    }
+    return null;
+  }
+  function articleResult(tweet) {
+    let current = tweet.article && tweet.article.article_results && tweet.article.article_results.result || tweet.article && tweet.article.result || tweet.article_results && tweet.article_results.result || tweet.article || null;
+    for (let index = 0; current && index < 5; index += 1) {
+      if (current.title || current.preview_text || current.cover_media || current.cover_image) return current;
+      if (current.result) current = current.result;
+      else if (current.article) current = current.article;
+      else break;
+    }
+    return null;
+  }
+  function articleContent(article) {
+    const state = article && (article.content_state || article.contentState) || findNamedValue(article, ["content_state", "contentState"], 5) || null;
+    const rawBlocks = state && state.blocks || [];
+    const entityMap = state && (state.entityMap || state.entity_map || state.entities) || {};
+    const blocks = [];
+    for (const block of rawBlocks) {
+      if (!block) continue;
+      blocks.push({
+        key: String(block.key || ""),
+        type: String(block.type || "unstyled"),
+        text: String(block.text || ""),
+        depth: Number(block.depth) || 0,
+        inlineStyles: Array.isArray(block.inlineStyleRanges) ? block.inlineStyleRanges.map((range) => ({
+          offset: Number(range.offset) || 0,
+          length: Number(range.length) || 0,
+          style: String(range.style || "")
+        })) : [],
+        entityRanges: Array.isArray(block.entityRanges) ? block.entityRanges.map((range) => ({
+          offset: Number(range.offset) || 0,
+          length: Number(range.length) || 0,
+          key: String(range.key)
+        })) : []
+      });
+    }
+    if (!blocks.length) {
+      const plain = String(article && (article.plain_text || article.plainText) || "");
+      plain.split(/\n{2,}/).map((part) => part.trim()).filter(Boolean).forEach((text, index) => {
+        blocks.push({ key: `plain-${index}`, type: "unstyled", text, depth: 0, inlineStyles: [], entityRanges: [] });
+      });
+    }
+    const entities = {};
+    for (const [key, value] of Object.entries(entityMap)) {
+      const data = value && value.data || {};
+      entities[key] = {
+        type: String(value && value.type || ""),
+        url: String(data.url || data.href || data.src || ""),
+        image: String(data.src || data.image || data.url || ""),
+        width: Number(data.width) || 0,
+        height: Number(data.height) || 0,
+        alt: String(data.alt || data.caption || "")
+      };
+    }
+    return { blocks, entities };
+  }
+  function articleUrlFromEntities(legacy) {
+    const urls = legacy.entities && legacy.entities.urls || [];
+    for (const entry of urls) {
+      const expanded = String(entry && (entry.expanded_url || entry.url) || "");
+      if (/(?:x|twitter)\.com\/i\/article\//i.test(expanded)) return expanded;
+    }
+    return "";
+  }
+  function articleAttachment(tweet, legacy) {
+    const article = articleResult(tweet);
+    if (!article) return null;
+    const cover = findNamedValue(article, ["cover_media", "cover_image", "preview_image"], 3) || article;
+    return {
+      type: "article",
+      url: articleUrlFromEntities(legacy),
+      sourceUrl: articleUrlFromEntities(legacy),
+      domain: "x.com",
+      title: String(article.title || ""),
+      description: String(article.preview_text || article.description || article.summary || ""),
+      image: String(
+        findNamedValue(cover, ["original_img_url", "media_url_https", "image_url", "url"], 5) || ""
+      ),
+      imageWidth: Number(findNamedValue(cover, ["original_img_width", "width"], 5)) || 0,
+      imageHeight: Number(findNamedValue(cover, ["original_img_height", "height"], 5)) || 0,
+      content: articleContent(article)
+    };
+  }
+  function articleContentFromPayload(json) {
+    const nodes = collectTweetNodes(json && json.data || json);
+    for (const node of nodes) {
+      const tweet = unwrapResult(node);
+      const article = tweet ? articleResult(tweet) : null;
+      if (!article) continue;
+      const content = articleContent(article);
+      if (content.blocks.length) return content;
+    }
+    const state = findNamedValue(json && json.data || json, ["content_state", "contentState"], 12);
+    if (state && Array.isArray(state.blocks) && state.blocks.length) return articleContent({ content_state: state });
+    return null;
+  }
+  function numberValue(value) {
+    const n = Number(value);
+    return Number.isFinite(n) ? n : 0;
+  }
+  function liteModel(node) {
+    const tweet = unwrapResult(node);
+    if (!tweet) return null;
+    const legacy = tweet.legacy || {};
+    const user = unwrapUser(tweet.core && tweet.core.user_results) || unwrapUser(tweet.user_results);
+    const userLegacy = user && user.legacy || {};
+    const userCore = user && user.core || {};
+    const perspectives = user && user.relationship_perspectives || {};
+    const counts = user && user.relationship_counts || {};
+    const bio = user && user.profile_bio || {};
+    const noteText = tweet.note_tweet && tweet.note_tweet.note_tweet_results && tweet.note_tweet.note_tweet_results.result;
+    const media = mediaItems(tweet, legacy);
+    return {
+      id: String(tweet.rest_id || legacy.id_str || ""),
+      inReplyToId: String(legacy.in_reply_to_status_id_str || ""),
+      conversationId: String(legacy.conversation_id_str || ""),
+      text: (noteText && typeof noteText.text === "string" ? noteText.text : "") || String(legacy.full_text || legacy.text || ""),
+      createdAt: String(legacy.created_at || ""),
+      author: {
+        id: String(user && user.rest_id || userLegacy.id_str || ""),
+        name: String(userLegacy.name || userCore.name || ""),
+        handle: String(userLegacy.screen_name || userCore.screen_name || ""),
+        // 头像：legacy 用 _normal 小图，换成 _200x200 才够清晰；新结构在 avatar.image_url
+        avatar: String(
+          userLegacy.profile_image_url_https || user && user.avatar && user.avatar.image_url || ""
+        ).replace("_normal.", "_200x200."),
+        verified: Boolean(user && (user.is_blue_verified || userLegacy.verified)),
+        // 资料卡所需字段
+        description: String(userLegacy.description || userCore.description || bio.description || ""),
+        followers: numberValue(userLegacy.followers_count !== void 0 ? userLegacy.followers_count : counts.followers_count !== void 0 ? counts.followers_count : counts.followers),
+        followingCount: numberValue(userLegacy.friends_count !== void 0 ? userLegacy.friends_count : counts.following_count !== void 0 ? counts.following_count : counts.following),
+        viewerFollowing: Boolean(userLegacy.following || perspectives.following),
+        followRequestSent: Boolean(userLegacy.follow_request_sent || perspectives.follow_request_sent),
+        followsViewer: Boolean(userLegacy.followed_by || perspectives.followed_by)
+      },
+      counts: {
+        replies: Number(legacy.reply_count) || 0,
+        likes: Number(legacy.favorite_count) || 0,
+        reposts: Number(legacy.retweet_count) || 0,
+        bookmarks: Number(legacy.bookmark_count) || 0,
+        views: Number(tweet.views && tweet.views.count) || 0
+      },
+      // 当前登录用户与这条帖子的互动状态，用于按钮的激活色与乐观更新
+      flags: {
+        liked: Boolean(legacy.favorited),
+        reposted: Boolean(legacy.retweeted || legacy.current_user_retweet && legacy.current_user_retweet.id_str),
+        bookmarked: Boolean(legacy.bookmarked)
+      },
+      media,
+      mediaCount: media.length,
+      attachment: articleAttachment(tweet, legacy),
+      isNoteTweet: Boolean(noteText && typeof noteText.text === "string" && noteText.text)
+    };
+  }
+  function bottomCursor(value, seen = /* @__PURE__ */ new Set()) {
+    if (!value || typeof value !== "object" || seen.has(value)) return null;
+    seen.add(value);
+    let fallback = null;
+    const walk = (node) => {
+      if (!node || typeof node !== "object") return null;
+      const type = String(node.cursorType || "");
+      if (/^Bottom$/i.test(type) && typeof node.value === "string") return node.value;
+      if (/^(?:ShowMoreThreads|ShowMoreThread)$/i.test(type) && typeof node.value === "string" && !fallback) fallback = node.value;
+      for (const key of Object.keys(node)) {
+        let child;
+        try {
+          child = node[key];
+        } catch (err) {
+          continue;
+        }
+        const found = walk(child);
+        if (found) return found;
+      }
+      return null;
+    };
+    return walk(value) || fallback;
+  }
+  function parseThreadSummary(json, focalTweetId) {
+    const nodes = collectTweetNodes(json && json.data || json);
+    const models = nodes.map(liteModel).filter((model) => model && model.id);
+    const byId = new Map(models.map((model) => [model.id, model]));
+    const focalId = String(focalTweetId || "");
+    const focal = byId.get(focalId) || null;
+    const cursor = bottomCursor(json && json.data || json);
+    const descendsFromFocal = (model) => {
+      if (!model || model.id === focalId) return false;
+      if (model.inReplyToId === focalId) return true;
+      const visited = /* @__PURE__ */ new Set([model.id]);
+      let parentId = model.inReplyToId;
+      while (parentId && !visited.has(parentId)) {
+        if (parentId === focalId) return true;
+        visited.add(parentId);
+        const parent = byId.get(parentId);
+        parentId = parent ? parent.inReplyToId : "";
+      }
+      return false;
+    };
+    const replyDepth = (model) => {
+      let depth = 0;
+      const visited = /* @__PURE__ */ new Set([model.id]);
+      let parentId = model.inReplyToId;
+      while (parentId && parentId !== focalId && byId.has(parentId) && !visited.has(parentId)) {
+        depth += 1;
+        visited.add(parentId);
+        parentId = byId.get(parentId).inReplyToId;
+      }
+      return Math.min(depth, 3);
+    };
+    const replies = models.filter(descendsFromFocal).map((model) => ({ ...model, depth: replyDepth(model) }));
+    const ancestors = [];
+    if (focal) {
+      const visited = /* @__PURE__ */ new Set([focal.id]);
+      let parentId = focal.inReplyToId;
+      while (parentId && byId.has(parentId) && !visited.has(parentId)) {
+        visited.add(parentId);
+        const parent = byId.get(parentId);
+        ancestors.unshift(parent);
+        parentId = parent.inReplyToId;
+      }
+      const root = byId.get(focal.conversationId);
+      if (root && root.id !== focal.id && !ancestors.some((model) => model.id === root.id)) ancestors.unshift(root);
+    }
+    const mediaTotal = models.reduce((sum, model) => sum + model.mediaCount, 0);
+    return {
+      focalFound: Boolean(focal),
+      focal,
+      ancestors,
+      replies,
+      replyCount: replies.length,
+      nodeCount: models.length,
+      mediaTotal,
+      cursor
+    };
+  }
+
+  // src/x/xTheme.js
+  var FALLBACK = {
+    light: { bg: "#ffffff", fg: "#0f1419", muted: "#536471", border: "#eff3f4", soft: "#f7f9f9", hover: "rgba(0, 0, 0, 0.03)" },
+    dim: { bg: "#15202b", fg: "#f7f9f9", muted: "#8b98a5", border: "#38444d", soft: "#1e2732", hover: "rgba(255, 255, 255, 0.03)" },
+    dark: { bg: "#000000", fg: "#e7e9ea", muted: "#71767b", border: "#2f3336", soft: "#16181c", hover: "rgba(255, 255, 255, 0.03)" }
+  };
+  var ACCENT = "#1d9bf0";
+  var LIKE = "#f91880";
+  var REPOST = "#00ba7c";
+  var VAR_MAP = {
+    bg: "--pv-x-bg",
+    fg: "--pv-x-fg",
+    muted: "--pv-x-muted",
+    border: "--pv-x-border",
+    soft: "--pv-x-soft",
+    hover: "--pv-x-hover",
+    accent: "--pv-x-accent",
+    like: "--pv-x-like",
+    repost: "--pv-x-repost",
+    font: "--pv-x-font"
+  };
+  function computed(node, prop) {
+    if (!node) return null;
+    try {
+      const value = getComputedStyle(node)[prop];
+      return value && value !== "rgba(0, 0, 0, 0)" ? value : null;
+    } catch (err) {
+      return null;
+    }
+  }
+  function firstComputed(selectors, prop) {
+    for (const selector of selectors) {
+      let node = null;
+      try {
+        node = document.querySelector(selector);
+      } catch (err) {
+        continue;
+      }
+      const value = computed(node, prop);
+      if (value) return value;
+    }
+    return null;
+  }
+  function mutedFor(mode) {
+    return FALLBACK[mode].muted;
+  }
+  function borderFor(mode) {
+    return FALLBACK[mode].border;
+  }
+  function readXTheme() {
+    const bodyBg = computed(document.body, "backgroundColor");
+    const mode = /rgb\(0,\s*0,\s*0\)/.test(bodyBg || "") ? "dark" : /rgb\((?:21|22),\s*(?:31|32),\s*(?:42|43)\)/.test(bodyBg || "") ? "dim" : "light";
+    const base = FALLBACK[mode];
+    return {
+      mode,
+      // 采样只保留来源可靠的几项：body 背景、帖子正文色、话题链接色、body 字体
+      bg: bodyBg || base.bg,
+      fg: firstComputed(['[data-testid="tweetText"]', 'article[data-testid="tweet"]'], "color") || base.fg,
+      muted: mutedFor(mode),
+      border: borderFor(mode),
+      soft: base.soft,
+      hover: base.hover,
+      accent: firstComputed(['a[href^="/hashtag"]', 'a[href^="/i/hashtag"]'], "color") || ACCENT,
+      like: LIKE,
+      repost: REPOST,
+      font: computed(document.body, "fontFamily")
+    };
+  }
+  function applyXSkin(elements, theme = readXTheme()) {
+    for (const node of elements) {
+      if (!node) continue;
+      for (const [key, cssVar] of Object.entries(VAR_MAP)) {
+        const value = theme[key];
+        if (value) node.style.setProperty(cssVar, value);
+      }
+    }
+    return theme;
+  }
+  function watchXTheme(callback) {
+    if (!document.body) return () => {
+    };
+    const observer2 = new MutationObserver(() => callback(readXTheme()));
+    const options = { attributes: true, attributeFilter: ["style", "class"] };
+    observer2.observe(document.body, options);
+    if (document.documentElement) observer2.observe(document.documentElement, options);
+    return () => observer2.disconnect();
+  }
+
+  // src/x/xIcons.js
+  var SELECTORS = {
+    reply: ['[data-testid="reply"] svg'],
+    repost: ['[data-testid="retweet"] svg'],
+    like: ['[data-testid="like"] svg'],
+    bookmark: ['[data-testid="bookmark"] svg'],
+    share: ['[data-testid="share"] svg'],
+    views: ['[data-testid="analytics"] svg', 'a[href$="/analytics"] svg'],
+    verified: ['[data-testid="icon-verified"] svg', 'svg[aria-label*="认证"]', 'svg[aria-label*="Verified"]']
+  };
+  var cache = /* @__PURE__ */ new Map();
+  function xIcon(name) {
+    if (cache.has(name)) {
+      const cached = cache.get(name);
+      return cached ? cached.cloneNode(true) : null;
+    }
+    let source = null;
+    for (const selector of SELECTORS[name] || []) {
+      try {
+        source = document.querySelector(selector);
+      } catch (err) {
+        source = null;
+      }
+      if (source && String(source.tagName).toLowerCase() === "svg") break;
+      source = null;
+    }
+    if (!source) {
+      cache.set(name, null);
+      return null;
+    }
+    const clone = source.cloneNode(true);
+    clone.removeAttribute("width");
+    clone.removeAttribute("height");
+    clone.removeAttribute("style");
+    clone.setAttribute("aria-hidden", "true");
+    clone.setAttribute("focusable", "false");
+    cache.set(name, clone);
+    return clone.cloneNode(true);
+  }
+  function primeXIcons() {
+    for (const name of Object.keys(SELECTORS)) xIcon(name);
+  }
+
+  // src/x/xProfileCard.js
+  var SHOW_DELAY = 1e3;
+  var HIDE_DELAY = 650;
+  function formatCount(value) {
+    const n = Number(value) || 0;
+    if (n < 1e3) return String(n);
+    if (n < 1e4) return `${(n / 1e3).toFixed(1)}K`;
+    return `${(n / 1e4).toFixed(1)}万`;
+  }
+  function profileHref(author) {
+    return author.handle ? `https://x.com/${author.handle}` : `https://x.com/i/user/${author.id}`;
+  }
+  function createProfileCard({ getRoot, onToggleFollow, onNotify }) {
+    let card = null;
+    let cardKey = "";
+    let anchor = null;
+    let showTimer = null;
+    let hideTimer = null;
+    const keyOf = (author) => String(author.id || author.handle || "");
+    const clearTimers = () => {
+      clearTimeout(showTimer);
+      clearTimeout(hideTimer);
+      showTimer = null;
+      hideTimer = null;
+    };
+    const remove = () => {
+      clearTimers();
+      card == null ? void 0 : card.remove();
+      card = null;
+      cardKey = "";
+      anchor = null;
+    };
+    const scheduleHide = () => {
+      clearTimers();
+      hideTimer = setTimeout(remove, HIDE_DELAY);
+    };
+    const position = (node, target) => {
+      const root = getRoot();
+      if (!(node == null ? void 0 : node.isConnected) || !(target == null ? void 0 : target.isConnected) || !root) return;
+      const rootRect = root.getBoundingClientRect();
+      const anchorRect = target.getBoundingClientRect();
+      const cardRect = node.getBoundingClientRect();
+      const gap = 4;
+      const pad = 8;
+      const maxLeft = Math.max(pad, rootRect.width - cardRect.width - pad);
+      const left = Math.min(Math.max(pad, anchorRect.left - rootRect.left), maxLeft);
+      const below = anchorRect.bottom - rootRect.top + gap;
+      const top = below + cardRect.height <= rootRect.height - pad ? below : Math.max(pad, anchorRect.top - rootRect.top - cardRect.height - gap);
+      node.style.left = `${left}px`;
+      node.style.top = `${top}px`;
+    };
+    const followButton = (author, cardNode) => {
+      if (!author.id) return null;
+      const button = el(
+        "button",
+        { class: "pv-x-profile-follow", type: "button" },
+        el("span", { class: "pv-x-profile-follow-default" }),
+        el("span", { class: "pv-x-profile-follow-hover", text: "取消关注" })
+      );
+      const refresh = () => {
+        const following = Boolean(author.viewerFollowing);
+        const pending = !following && Boolean(author.followRequestSent);
+        const uncertain = Boolean(author.followStateUnconfirmed);
+        const label = uncertain ? "查看状态" : following ? "正在关注" : pending ? "已请求" : "关注";
+        button.dataset.following = String(following && !uncertain);
+        button.disabled = pending && !uncertain;
+        button.title = uncertain ? "请求已提交，点击在 X 个人资料页核对状态" : pending ? "关注请求待批准，可在 X 个人资料页管理" : "";
+        button.querySelector(".pv-x-profile-follow-default").textContent = label;
+        button.setAttribute("aria-label", `${label} @${author.handle || author.name || "X 用户"}`);
+        const followers = cardNode.querySelector(".pv-x-profile-followers-count");
+        if (followers) followers.textContent = formatCount(author.followers) || "0";
+      };
+      refresh();
+      button.addEventListener("click", async (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        if (button.disabled) return;
+        if (author.followStateUnconfirmed) {
+          window.open(profileHref(author), "_blank", "noopener");
+          return;
+        }
+        const nextActive = !Boolean(author.viewerFollowing);
+        button.disabled = true;
+        button.setAttribute("aria-busy", "true");
+        try {
+          const result = await onToggleFollow(author, nextActive);
+          refresh();
+          if (result && result.confirmed === false) {
+            onNotify == null ? void 0 : onNotify("请求已提交，状态暂未同步，可点「查看状态」核对", "info");
+          } else if (result && result.following) {
+            onNotify == null ? void 0 : onNotify(`已关注 @${author.handle}`, "ok");
+          } else if (result && result.followRequestSent) {
+            onNotify == null ? void 0 : onNotify(`已发送关注请求 @${author.handle}`, "ok");
+          } else if (nextActive) {
+            onNotify == null ? void 0 : onNotify(`X 当前显示尚未关注 @${author.handle}`, "info");
+          } else {
+            onNotify == null ? void 0 : onNotify(`已取消关注 @${author.handle}`, "ok");
+          }
+        } catch (err) {
+          onNotify == null ? void 0 : onNotify(err && err.message ? err.message : "关注操作失败", "error");
+        } finally {
+          button.disabled = false;
+          button.removeAttribute("aria-busy");
+          refresh();
+        }
+      });
+      return button;
+    };
+    const build = (author, href) => {
+      const node = el("section", {
+        class: "pv-x-profile-card",
+        role: "dialog",
+        "aria-label": `${author.name || author.handle || "X 用户"} 的账号资料`
+      });
+      const top = el("div", { class: "pv-x-profile-top" });
+      const avatarLink = el("a", { class: "pv-x-profile-avatar", href, target: "_blank", rel: "noreferrer" });
+      if (author.avatar) avatarLink.appendChild(el("img", { src: author.avatar, alt: author.name || author.handle || "" }));
+      top.appendChild(avatarLink);
+      const follow = followButton(author, node);
+      if (follow) top.appendChild(follow);
+      const nameRow = el("a", { class: "pv-x-profile-name", href, target: "_blank", rel: "noreferrer" });
+      nameRow.appendChild(el("strong", { text: author.name || author.handle || "X 用户" }));
+      if (author.verified) {
+        const badge2 = xIcon("verified");
+        if (badge2) nameRow.appendChild(el("span", { class: "pv-x-badge" }, badge2));
+      }
+      const handleRow = el("a", {
+        class: "pv-x-profile-handle",
+        href,
+        target: "_blank",
+        rel: "noreferrer",
+        text: `@${author.handle || "unknown"}`
+      });
+      node.append(top, nameRow, handleRow);
+      if (author.followsViewer) node.appendChild(el("div", { class: "pv-x-profile-follows-you", text: "关注了你" }));
+      if (author.description) node.appendChild(el("p", { class: "pv-x-profile-bio", text: author.description }));
+      const stats = el("div", { class: "pv-x-profile-stats" });
+      const followingLink = el("a", { href: `${href.replace(/\/$/, "")}/following`, target: "_blank", rel: "noreferrer" });
+      followingLink.append(el("strong", { text: formatCount(author.followingCount) || "0" }), document.createTextNode(" 正在关注"));
+      const followersLink = el("a", { href: `${href.replace(/\/$/, "")}/verified_followers`, target: "_blank", rel: "noreferrer" });
+      followersLink.append(
+        el("strong", { class: "pv-x-profile-followers-count", text: formatCount(author.followers) || "0" }),
+        document.createTextNode(" 关注者")
+      );
+      stats.append(followingLink, followersLink);
+      node.appendChild(stats);
+      node.appendChild(
+        el("a", {
+          class: "pv-x-profile-summary",
+          href: `https://x.com/i/grok?text=${encodeURIComponent(`请总结 @${author.handle || ""} 的个人资料`)}`,
+          target: "_blank",
+          rel: "noreferrer",
+          text: "个人资料概要"
+        })
+      );
+      node.addEventListener("pointerenter", clearTimers);
+      node.addEventListener("pointerleave", scheduleHide);
+      node.addEventListener("focusin", () => clearTimeout(hideTimer));
+      node.addEventListener("focusout", scheduleHide);
+      return node;
+    };
+    const show = (author, href, target) => {
+      const root = getRoot();
+      if (!root || !target.isConnected) return;
+      const key = keyOf(author);
+      if ((card == null ? void 0 : card.isConnected) && cardKey === key) {
+        anchor = target;
+        position(card, target);
+        return;
+      }
+      remove();
+      card = build(author, href);
+      cardKey = key;
+      anchor = target;
+      root.appendChild(card);
+      position(card, target);
+    };
+    const bind = (node, author, href) => {
+      if (!node || !author) return;
+      node.classList.add("pv-x-profile-trigger");
+      node.setAttribute("aria-haspopup", "dialog");
+      node.addEventListener("pointerenter", () => {
+        clearTimers();
+        if ((card == null ? void 0 : card.isConnected) && cardKey === keyOf(author)) {
+          anchor = node;
+          position(card, node);
+          return;
+        }
+        showTimer = setTimeout(() => show(author, href, node), SHOW_DELAY);
+      });
+      node.addEventListener("pointerleave", scheduleHide);
+      node.addEventListener("focus", () => show(author, href, node));
+      node.addEventListener("blur", scheduleHide);
+    };
+    return {
+      bind,
+      remove,
+      destroy: remove,
+      // 弹窗尺寸变化后卡片位置会失效，重新贴回锚点
+      reposition: () => {
+        if (card && anchor) position(card, anchor);
+      }
+    };
+  }
+
+  // src/x/xRender.js
+  var SORTS = [
+    { key: "relevant", label: "相关" },
+    { key: "latest", label: "最新" },
+    { key: "liked", label: "最多喜欢" }
+  ];
+  function formatDate(value) {
+    if (!value) return "";
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return "";
+    return date.toLocaleString("zh-CN", { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
+  }
+  function formatCount2(value) {
+    const n = Number(value) || 0;
+    if (n < 1e3) return String(n);
+    if (n < 1e4) return `${(n / 1e3).toFixed(1)}K`;
+    return `${(n / 1e4).toFixed(1)}万`;
+  }
+  function profileUrlOf(model) {
+    const handle = model.author && model.author.handle;
+    if (handle) return `https://x.com/${handle}`;
+    const id = model.author && model.author.id;
+    return id ? `https://x.com/i/user/${id}` : `https://x.com/i/status/${model.id}`;
+  }
+  function openUrlOf(model) {
+    const handle = model.author && model.author.handle;
+    return handle ? `https://x.com/${handle}/status/${model.id}` : `https://x.com/i/status/${model.id}`;
+  }
+  function avatarColumn(model, { link = true, bindProfile = null } = {}) {
+    const column = el("div", { class: "pv-x-avatar-col" });
+    const avatar = el(link ? "a" : "span", {
+      class: "pv-x-avatar",
+      href: link ? profileUrlOf(model) : null,
+      target: link ? "_blank" : null,
+      rel: link ? "noreferrer" : null
+    });
+    if (model.author && model.author.avatar) avatar.appendChild(el("img", { src: model.author.avatar, alt: "", loading: "lazy" }));
+    column.appendChild(avatar);
+    if (link) bindProfile == null ? void 0 : bindProfile(avatar, model);
+    return column;
+  }
+  function headNode(model, bindProfile = null) {
+    const head = el("div", { class: "pv-x-head" });
+    const nameLink = el("a", {
+      class: "pv-x-name",
+      href: profileUrlOf(model),
+      target: "_blank",
+      rel: "noreferrer",
+      text: model.author && (model.author.name || model.author.handle) || "X 用户"
+    });
+    head.appendChild(nameLink);
+    bindProfile == null ? void 0 : bindProfile(nameLink, model);
+    if (model.author && model.author.verified) {
+      const badge2 = xIcon("verified");
+      if (badge2) head.appendChild(el("span", { class: "pv-x-badge" }, badge2));
+    }
+    if (model.author && model.author.handle) {
+      const handle = el("span", { class: "pv-x-handle", text: `@${model.author.handle}` });
+      head.appendChild(handle);
+      bindProfile == null ? void 0 : bindProfile(handle, model);
+    }
+    if (model.createdAt) {
+      head.appendChild(el("span", { class: "pv-x-dot", text: "·" }));
+      head.appendChild(el("time", { class: "pv-x-time", text: formatDate(model.createdAt) }));
+    }
+    return head;
+  }
+  var ACTIONS2 = [
+    { key: "reply", icon: "reply", count: "replies", label: "回复" },
+    { key: "repost", icon: "repost", count: "reposts", label: "转推" },
+    { key: "like", icon: "like", count: "likes", label: "喜欢" },
+    { key: "bookmark", icon: "bookmark", count: "bookmarks", label: "收藏" },
+    { key: "share", icon: "share", count: null, label: "复制链接" },
+    { key: "views", icon: "views", count: "views", label: "查看", readonly: true }
+  ];
+  var FLAG_BY_ACTION = { like: "liked", repost: "reposted", bookmark: "bookmarked" };
+  var COUNT_BY_ACTION = { reply: "replies", repost: "reposts", like: "likes", bookmark: "bookmarks", views: "views" };
+  function paintAction(button, model, key) {
+    if (!button) return;
+    const flag = FLAG_BY_ACTION[key];
+    if (flag) button.dataset.active = model.flags && model.flags[flag] ? "true" : "false";
+    const countNode = button.querySelector(".pv-x-count");
+    const countKey = COUNT_BY_ACTION[key];
+    if (!countNode || !countKey) return;
+    const value = Number(model.counts[countKey]) || 0;
+    countNode.textContent = value ? formatCount2(value) : "";
+  }
+  function actionsNode(model, onAction) {
+    const row = el("div", { class: "pv-x-actions" });
+    for (const spec of ACTIONS2) {
+      const value = spec.count ? Number(model.counts[spec.count]) || 0 : 0;
+      const icon = xIcon(spec.icon);
+      if (!icon && !value && !spec.readonly) continue;
+      if (spec.readonly && !value) continue;
+      const node = el(spec.readonly ? "span" : "button", {
+        class: `pv-x-action pv-x-action-${spec.key}`,
+        type: spec.readonly ? null : "button",
+        "data-action": spec.key,
+        "aria-label": spec.label,
+        title: spec.label
+      });
+      if (icon) node.appendChild(icon);
+      if (spec.count) node.appendChild(el("span", { class: "pv-x-count", text: value ? formatCount2(value) : "" }));
+      if (!spec.readonly && onAction) {
+        node.addEventListener("click", (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          onAction(spec.key, model, node);
+        });
+      }
+      paintAction(node, model, spec.key);
+      row.appendChild(node);
+    }
+    return row;
+  }
+  function displayText(model) {
+    const text = String(model.text || "");
+    if (!model.attachment || model.attachment.type !== "article") return text;
+    return text.replace(/https?:\/\/t\.co\/\S+/g, "").trim();
+  }
+  function renderTextBlock(block, model, view) {
+    block.replaceChildren();
+    const offered = Boolean(view && view.offered);
+    const entry = view && view.entry;
+    const showing = Boolean(entry && entry.status === "ready" && view.display !== "original");
+    if (offered) {
+      const row = el("div", { class: "pv-x-translation-row" });
+      if (!entry || entry.status === "queued" || entry.status === "loading") {
+        row.appendChild(el("span", { class: "pv-x-translation-note", text: "正在翻译…" }));
+      } else if (entry.status === "ready" && showing) {
+        row.appendChild(el("span", { class: "pv-x-translation-note", text: `翻译自${sourceLanguageLabel(entry)}` }));
+        row.appendChild(
+          el("button", { class: "pv-x-translation-link", type: "button", text: "显示原文" })
+        );
+      } else if (entry.status === "error") {
+        row.appendChild(
+          el("button", { class: "pv-x-translation-link", type: "button", text: "重试翻译", title: entry.message || "" })
+        );
+      } else if (entry.status === "ready") {
+        row.appendChild(el("button", { class: "pv-x-translation-link", type: "button", text: "显示翻译" }));
+      }
+      const link = row.querySelector("button");
+      if (link) {
+        link.addEventListener("click", (event) => {
+          var _a, _b, _c;
+          event.preventDefault();
+          event.stopPropagation();
+          if (entry && entry.status === "error") (_a = view.onRetry) == null ? void 0 : _a.call(view);
+          else if (entry && entry.status === "ready") (_b = view.onToggle) == null ? void 0 : _b.call(view, showing ? "original" : "translation");
+          else (_c = view.onRetry) == null ? void 0 : _c.call(view);
+        });
+      }
+      if (row.childNodes.length) block.appendChild(row);
+    }
+    block.appendChild(el("div", { class: "pv-x-text", text: showing ? entry.text : displayText(model) }));
+  }
+  function textBlock(model, view) {
+    const block = el("div", { class: "pv-x-translatable", "data-translation-id": model.id });
+    renderTextBlock(block, model, view);
+    return block;
+  }
+  function appendInline(container, block) {
+    const text = String(block.text || "");
+    const ranges = (block.inlineStyles || []).filter((range) => range.length > 0 && range.offset >= 0).sort((a, b) => a.offset - b.offset);
+    if (!ranges.length) {
+      container.appendChild(document.createTextNode(text));
+      return;
+    }
+    let cursor = 0;
+    for (const range of ranges) {
+      const start = Math.max(cursor, Math.min(range.offset, text.length));
+      const end = Math.max(start, Math.min(range.offset + range.length, text.length));
+      if (start > cursor) container.appendChild(document.createTextNode(text.slice(cursor, start)));
+      if (end > start) {
+        const style = String(range.style || "").toUpperCase();
+        const tag = style.includes("BOLD") ? "strong" : style.includes("ITALIC") ? "em" : style.includes("UNDERLINE") ? "u" : style.includes("STRIKETHROUGH") ? "s" : null;
+        const chunk = text.slice(start, end);
+        container.appendChild(tag ? el(tag, { text: chunk }) : document.createTextNode(chunk));
+      }
+      cursor = end;
+    }
+    if (cursor < text.length) container.appendChild(document.createTextNode(text.slice(cursor)));
+  }
+  function articleBlocks(content) {
+    const container = el("div", { class: "pv-x-article-content" });
+    let list = null;
+    let listTag = "";
+    const endList = () => {
+      list = null;
+      listTag = "";
+    };
+    for (const block of content.blocks || []) {
+      const type = String(block.type || "unstyled");
+      if (type === "unordered-list-item" || type === "ordered-list-item") {
+        const tag2 = type === "ordered-list-item" ? "ol" : "ul";
+        if (!list || listTag !== tag2) {
+          list = el(tag2, { class: "pv-x-article-list" });
+          listTag = tag2;
+          container.appendChild(list);
+        }
+        const item = el("li");
+        appendInline(item, block);
+        list.appendChild(item);
+        continue;
+      }
+      endList();
+      if (type === "atomic") {
+        const range = (block.entityRanges || [])[0];
+        const entity = range ? content.entities[range.key] : null;
+        if (entity && entity.image) {
+          container.appendChild(
+            el("figure", { class: "pv-x-article-figure" }, el("img", { src: entity.image, alt: entity.alt || "", loading: "lazy" }))
+          );
+        }
+        continue;
+      }
+      if (!String(block.text || "").trim()) continue;
+      const tag = type === "header-one" ? "h2" : type === "header-two" ? "h3" : type === "header-three" ? "h4" : type === "blockquote" ? "blockquote" : "p";
+      const className = tag === "blockquote" ? "pv-x-article-quote" : tag === "p" ? "pv-x-article-p" : tag === "h2" ? "pv-x-article-h2" : tag === "h3" ? "pv-x-article-h3" : "pv-x-article-h4";
+      const node = el(tag, { class: className });
+      appendInline(node, block);
+      container.appendChild(node);
+    }
+    return container;
+  }
+  function articleReader(model) {
+    const attachment = model.attachment;
+    const section = el("section", { class: "pv-x-article" });
+    if (attachment.image) {
+      section.appendChild(el("div", { class: "pv-x-article-cover" }, el("img", { src: attachment.image, alt: "", loading: "lazy" })));
+    }
+    const heading = el("header", { class: "pv-x-article-heading" });
+    if (attachment.title) heading.appendChild(el("h1", { class: "pv-x-article-title", text: attachment.title }));
+    heading.appendChild(
+      el("a", {
+        class: "pv-x-article-open",
+        href: attachment.url || openUrlOf(model),
+        target: "_blank",
+        rel: "noreferrer",
+        text: "在 X 阅读全文"
+      })
+    );
+    section.appendChild(heading);
+    if (attachment.content && attachment.content.blocks.length) section.appendChild(articleBlocks(attachment.content));
+    else if (attachment.description) section.appendChild(el("p", { class: "pv-x-article-p", text: attachment.description }));
+    return section;
+  }
+  function articleCard(model) {
+    const attachment = model.attachment;
+    const card = el("a", {
+      class: "pv-x-article-card",
+      href: attachment.url || openUrlOf(model),
+      target: "_blank",
+      rel: "noreferrer"
+    });
+    if (attachment.image) {
+      card.appendChild(el("img", { class: "pv-x-article-card-cover", src: attachment.image, alt: "", loading: "lazy" }));
+    }
+    const body = el("div", { class: "pv-x-article-card-body" });
+    body.appendChild(el("span", { class: "pv-x-article-card-domain", text: "x.com · 长文" }));
+    if (attachment.title) body.appendChild(el("strong", { class: "pv-x-article-card-title", text: attachment.title }));
+    if (attachment.description) body.appendChild(el("span", { class: "pv-x-article-card-desc", text: attachment.description }));
+    card.appendChild(body);
+    return card;
+  }
+  function openLightbox(reader, items, index, openUrl) {
+    var _a;
+    (_a = reader.querySelector(".pv-x-lightbox")) == null ? void 0 : _a.remove();
+    if (!items.length) return () => {
+    };
+    let current = Math.max(0, Math.min(index, items.length - 1));
+    const box = el("div", { class: "pv-x-lightbox", role: "dialog", "aria-modal": "true", "aria-label": "图片查看" });
+    const image = el("img", { class: "pv-x-lightbox-img", src: items[current].url, alt: items[current].altText || "" });
+    const counter = items.length > 1 ? el("span", { class: "pv-x-lightbox-counter", text: `${current + 1} / ${items.length}` }) : null;
+    const show = (next) => {
+      current = (next + items.length) % items.length;
+      image.src = items[current].url;
+      image.alt = items[current].altText || "";
+      if (counter) counter.textContent = `${current + 1} / ${items.length}`;
+    };
+    const onKey = (event) => {
+      if (event.key === "Escape") {
+        event.stopPropagation();
+        close();
+      } else if (event.key === "ArrowRight" && items.length > 1) {
+        event.stopPropagation();
+        show(current + 1);
+      } else if (event.key === "ArrowLeft" && items.length > 1) {
+        event.stopPropagation();
+        show(current - 1);
+      }
+    };
+    const close = () => {
+      document.removeEventListener("keydown", onKey, true);
+      box.remove();
+    };
+    const closeButton = el("button", { class: "pv-x-lightbox-close", type: "button", "aria-label": "关闭", text: "✕" });
+    closeButton.addEventListener("click", close);
+    const bar = el(
+      "div",
+      { class: "pv-x-lightbox-bar" },
+      counter,
+      el("a", { class: "pv-x-lightbox-open", href: openUrl, target: "_blank", rel: "noreferrer", text: "在 X 打开" }),
+      closeButton
+    );
+    box.appendChild(image);
+    box.appendChild(bar);
+    if (items.length > 1) {
+      const prev = el("button", { class: "pv-x-lightbox-nav pv-x-lightbox-prev", type: "button", "aria-label": "上一张", text: "‹" });
+      const next = el("button", { class: "pv-x-lightbox-nav pv-x-lightbox-next", type: "button", "aria-label": "下一张", text: "›" });
+      prev.addEventListener("click", () => show(current - 1));
+      next.addEventListener("click", () => show(current + 1));
+      box.append(prev, next);
+    }
+    box.addEventListener("click", (event) => {
+      if (event.target === box) close();
+    });
+    document.addEventListener("keydown", onKey, true);
+    reader.appendChild(box);
+    return close;
+  }
+  function mediaGrid(model, { openUrl, onMedia }) {
+    const items = (model.media || []).slice(0, 4);
+    if (!items.length) return null;
+    const photos = items.filter((item) => item.type === "photo");
+    const grid = el("div", { class: `pv-x-media pv-x-media-${items.length}` });
+    for (const item of items) {
+      if (item.type === "photo") {
+        const button = el(
+          "button",
+          { class: "pv-x-media-item", type: "button", "aria-label": "放大图片" },
+          el("img", { src: item.url, alt: item.altText || "", loading: "lazy" })
+        );
+        button.addEventListener("click", (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          onMedia == null ? void 0 : onMedia(photos, photos.indexOf(item));
+        });
+        grid.appendChild(button);
+        continue;
+      }
+      const video = el("video", {
+        class: "pv-x-video",
+        poster: item.url || null,
+        controls: "",
+        playsinline: "",
+        preload: "none"
+      });
+      const nativeHls = item.hlsUrl && typeof video.canPlayType === "function" && video.canPlayType("application/vnd.apple.mpegurl");
+      const source = item.videoUrl || (nativeHls ? item.hlsUrl : "");
+      const wrapper = el("div", { class: "pv-x-media-item pv-x-media-video" });
+      if (source) {
+        video.src = source;
+        wrapper.appendChild(video);
+      } else {
+        wrapper.appendChild(el("img", { class: "pv-x-video-poster", src: item.url, alt: item.altText || "", loading: "lazy" }));
+        wrapper.appendChild(
+          el("a", { class: "pv-x-video-open", href: openUrl, target: "_blank", rel: "noreferrer", text: "在 X 播放" })
+        );
+      }
+      grid.appendChild(wrapper);
+    }
+    return grid;
+  }
+  function renderPost(model, { threadLine = false, onAction = null, onMedia = null, translation = null, bindProfile = null, compact = false } = {}) {
+    const article = el("article", { class: compact ? "pv-x-post pv-x-post-compact" : "pv-x-post" });
+    article.dataset.tweetId = model.id;
+    const column = avatarColumn(model, { bindProfile });
+    if (threadLine) column.appendChild(el("span", { class: "pv-x-thread-line" }));
+    article.appendChild(column);
+    const isArticle = model.attachment && model.attachment.type === "article";
+    const main = el(
+      "div",
+      { class: "pv-x-main" },
+      headNode(model, bindProfile),
+      displayText(model) || !isArticle ? textBlock(model, translation) : null,
+      isArticle ? compact ? articleCard(model) : articleReader(model) : null,
+      mediaGrid(model, { openUrl: openUrlOf(model), onMedia }),
+      actionsNode(model, onAction)
+    );
+    article.appendChild(main);
+    return article;
+  }
+  function renderReply(model, options = {}) {
+    const article = renderPost(model, { ...options, threadLine: true, compact: true });
+    article.classList.add("pv-x-reply");
+    article.style.setProperty("--pv-x-depth", String(Math.min(Number(model.depth) || 0, 3)));
+    return article;
+  }
+  function sortControl(current, onSort) {
+    const group = el("div", { class: "pv-x-sort", role: "group", "aria-label": "评论排序" });
+    for (const sort of SORTS) {
+      const button = el("button", {
+        class: "pv-x-sort-btn",
+        type: "button",
+        "data-sort": sort.key,
+        text: sort.label,
+        "aria-pressed": sort.key === current ? "true" : "false"
+      });
+      button.addEventListener("click", () => onSort(sort.key, group));
+      group.appendChild(button);
+    }
+    return group;
+  }
+  function paintSort(group, current) {
+    if (!group) return;
+    for (const button of group.querySelectorAll(".pv-x-sort-btn")) {
+      button.setAttribute("aria-pressed", button.dataset.sort === current ? "true" : "false");
+    }
+  }
+  function composer({ avatar, onSubmit, focalId }) {
+    const section = el("section", { class: "pv-x-composer" });
+    const avatarHolder = el("span", { class: "pv-x-avatar pv-x-avatar-sm" });
+    if (avatar) avatarHolder.appendChild(el("img", { src: avatar, alt: "" }));
+    const input = el("textarea", { class: "pv-x-composer-input", rows: "1", placeholder: "发布你的回复" });
+    const submit = el("button", { class: "pv-x-composer-submit", type: "button", text: "回复", disabled: "" });
+    const hint = el("span", { class: "pv-x-composer-hint" });
+    let targetModel = null;
+    const targetRow = el("div", { class: "pv-x-composer-target" });
+    const targetLabel = el("span", { class: "pv-x-composer-target-label" });
+    const clearTarget = el("button", { class: "pv-x-composer-target-clear", type: "button", "aria-label": "取消回复该评论", text: "✕" });
+    targetRow.append(targetLabel, clearTarget);
+    targetRow.hidden = true;
+    clearTarget.addEventListener("click", () => setTarget(null));
+    function setTarget(model) {
+      targetModel = model && String(model.id) !== String(focalId) ? model : null;
+      if (targetModel) {
+        targetLabel.textContent = `回复 @${targetModel.author && (targetModel.author.handle || targetModel.author.name) || "X 用户"}`;
+        targetRow.hidden = false;
+      } else {
+        targetRow.hidden = true;
+      }
+      return targetModel;
+    }
+    const autoGrow = () => {
+      input.style.height = "auto";
+      input.style.height = `${Math.min(input.scrollHeight, 200)}px`;
+    };
+    input.addEventListener("input", () => {
+      autoGrow();
+      submit.disabled = !input.value.trim();
+    });
+    const send = async () => {
+      const text = input.value.trim();
+      if (!text || submit.disabled) return;
+      submit.disabled = true;
+      hint.textContent = "正在发布...";
+      try {
+        await onSubmit(text, targetModel);
+        input.value = "";
+        autoGrow();
+        hint.textContent = "";
+        setTarget(null);
+      } catch (err) {
+        hint.textContent = `发布失败：${err && err.message ? err.message : err}`;
+      } finally {
+        submit.disabled = !input.value.trim();
+      }
+    };
+    submit.addEventListener("click", send);
+    input.addEventListener("keydown", (event) => {
+      if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
+        event.preventDefault();
+        send();
+      }
+    });
+    section.append(
+      avatarHolder,
+      el("div", { class: "pv-x-composer-body" }, targetRow, input, el("div", { class: "pv-x-composer-foot" }, hint, submit))
+    );
+    return { node: section, input, setTarget, focus: () => input.focus() };
+  }
+  function notify(reader, message, tone = "error") {
+    if (!reader) return;
+    let toast = reader.querySelector(".pv-x-toast");
+    if (!toast) {
+      toast = el("div", { class: "pv-x-toast" });
+      reader.appendChild(toast);
+    }
+    toast.textContent = message;
+    toast.dataset.tone = tone;
+    toast.dataset.visible = "true";
+    clearTimeout(toast.__pvTimer);
+    toast.__pvTimer = setTimeout(() => {
+      toast.dataset.visible = "false";
+    }, 3200);
+  }
+  function renderReader({
+    focal,
+    ancestors = [],
+    replyCount,
+    openUrl,
+    onAction,
+    onSort,
+    onSubmitReply,
+    onMedia,
+    translationFor,
+    bindProfile,
+    composerAvatar
+  }) {
+    const reader = el("div", { class: "pv-x-reader" });
+    const postPane = el("section", { class: "pv-x-pane pv-x-pane-post" });
+    for (const ancestor of ancestors) {
+      postPane.appendChild(
+        renderPost(ancestor, {
+          threadLine: true,
+          onAction,
+          onMedia,
+          bindProfile,
+          translation: translationFor == null ? void 0 : translationFor(ancestor),
+          compact: true
+        })
+      );
+    }
+    postPane.appendChild(
+      renderPost(focal, { threadLine: true, onAction, onMedia, bindProfile, translation: translationFor == null ? void 0 : translationFor(focal) })
+    );
+    const countLabel = el("span", { class: "pv-x-reply-count", text: `评论（${replyCount}）` });
+    const sort = onSort ? sortControl("relevant", onSort) : null;
+    const tools = el(
+      "div",
+      { class: "pv-x-reply-tools" },
+      el("div", { class: "pv-x-tools-left" }, countLabel, sort),
+      el("a", { class: "pv-x-open", href: openUrl, target: "_blank", rel: "noreferrer", text: "在 X 打开" })
+    );
+    const replyPane = el("section", { class: "pv-x-pane pv-x-pane-replies" }, tools);
+    const composerView = onSubmitReply ? composer({ avatar: composerAvatar, onSubmit: onSubmitReply, focalId: focal.id }) : null;
+    if (composerView) replyPane.appendChild(composerView.node);
+    const list = el("div", { class: "pv-x-reply-list" });
+    replyPane.appendChild(list);
+    reader.append(postPane, replyPane);
+    return { reader, list, replyPane, countLabel, composer: composerView, sort };
+  }
+
+  // src/loaders/XThreadLoader.js
+  var SINGLE_COLUMN_WIDTH = 640;
+  var COUNT_BY_ACTION2 = { reply: "replies", repost: "reposts", like: "likes", bookmark: "bookmarks" };
+  var ACTION_LABEL = { like: "点赞", repost: "转推", bookmark: "收藏" };
+  var TARGET_LANGUAGE = "zh-cn";
+  var MAX_TRANSLATION_CONCURRENCY = 2;
+  function currentAccount() {
+    const button = document.querySelector('[data-testid="SideNav_AccountSwitcher_Button"]');
+    const img = button && button.querySelector("img");
+    const handleMatch = button && String(button.innerText || "").match(/@([A-Za-z0-9_]+)/);
+    return {
+      avatar: img && (img.currentSrc || img.src) || "",
+      handle: handleMatch ? handleMatch[1] : ""
+    };
+  }
+  var XThreadLoader = class {
+    /**
+     * @param {Object} ctx { url, container, onError, onLoad, loadingSelector? }
+     * @returns {Function} abort
+     */
+    load({ url, container, onError, onLoad, loadingSelector = "#popup-panel-loading" }) {
+      const tweetId = postIdFromUrl(url);
+      if (!tweetId) {
+        onError("无法从链接解析出 X 帖子 ID。");
+        return () => {
+        };
+      }
+      const win = pageWindow();
+      const bridge = installXBridge(win);
+      if (!bridge) {
+        onError("X 网络层未安装，请刷新 X 页面后重试。");
+        return () => {
+        };
+      }
+      const panel = document.getElementById("popup-content-panel");
+      const account = currentAccount();
+      const replies = [];
+      const seen = /* @__PURE__ */ new Set();
+      const modelsById = /* @__PURE__ */ new Map();
+      let aborted = false;
+      let cursor = null;
+      let sortMode = "relevant";
+      let loadingMore = false;
+      let readerEl = null;
+      let replyList = null;
+      let countLabel = null;
+      let sortGroup = null;
+      let composerView = null;
+      let resizeObserver = null;
+      let sentinelObserver = null;
+      let sentinel = null;
+      let profileCard = null;
+      let replyTarget = null;
+      const autoTranslate = true;
+      const translationCache = /* @__PURE__ */ new Map();
+      const translationDisplay = /* @__PURE__ */ new Map();
+      const translationQueue = [];
+      const queuedKeys = /* @__PURE__ */ new Set();
+      let activeTranslations = 0;
+      let translationObserver = null;
+      primeXIcons();
+      applyXSkin([panel, container]);
+      panel == null ? void 0 : panel.classList.add("pv-x-skin");
+      container.classList.add("pv-x-reader-mode");
+      const stopThemeWatch = watchXTheme((theme) => applyXSkin([panel, container], theme));
+      const loadingView = showLoading(container, { title: "正在通过 X 会话读取帖子..." });
+      container.replaceChildren(el("div", { class: "pv-x-loading-layer" }, loadingView));
+      const syncLayout = () => {
+        if (!readerEl) return;
+        readerEl.classList.toggle("pv-x-single", container.clientWidth < SINGLE_COLUMN_WIDTH);
+        profileCard == null ? void 0 : profileCard.reposition();
+      };
+      const cleanup = () => {
+        var _a;
+        aborted = true;
+        stopThemeWatch();
+        resizeObserver == null ? void 0 : resizeObserver.disconnect();
+        resizeObserver = null;
+        sentinelObserver == null ? void 0 : sentinelObserver.disconnect();
+        sentinelObserver = null;
+        translationObserver == null ? void 0 : translationObserver.disconnect();
+        translationObserver = null;
+        profileCard == null ? void 0 : profileCard.destroy();
+        profileCard = null;
+        container.classList.remove("pv-x-reader-mode");
+        panel == null ? void 0 : panel.classList.remove("pv-x-skin");
+        (_a = container.querySelector(loadingSelector)) == null ? void 0 : _a.remove();
+      };
+      const hydrateArticle = async (model) => {
+        if (!model || !model.attachment || model.attachment.type !== "article") return false;
+        if (model.attachment.content && model.attachment.content.blocks.length) return false;
+        try {
+          const json = await bridge.readArticle(model.id);
+          const content = articleContentFromPayload(json);
+          if (!content) return false;
+          model.attachment.content = content;
+          return true;
+        } catch (err) {
+          logger.debug("[XThreadLoader] article hydrate failed", err);
+          return false;
+        }
+      };
+      const translationKey = (model) => `${model.id}:${TARGET_LANGUAGE}`;
+      const refreshTranslation = (id) => {
+        if (!readerEl) return;
+        const model = modelsById.get(id);
+        if (!model) return;
+        for (const block of readerEl.querySelectorAll(`.pv-x-translatable[data-translation-id="${id}"]`)) {
+          renderTextBlock(block, model, translationFor(model));
+        }
+      };
+      const translationFor = (model) => ({
+        offered: shouldOfferTranslation(model.text),
+        entry: translationCache.get(translationKey(model)),
+        display: translationDisplay.get(model.id) || (autoTranslate ? "translation" : "original"),
+        onToggle: (next) => {
+          translationDisplay.set(model.id, next);
+          refreshTranslation(model.id);
+        },
+        onRetry: () => enqueueTranslation(model, true, true)
+      });
+      const pumpTranslations = () => {
+        while (activeTranslations < MAX_TRANSLATION_CONCURRENCY && translationQueue.length) {
+          const model = translationQueue.shift();
+          const key = translationKey(model);
+          queuedKeys.delete(key);
+          activeTranslations += 1;
+          translationCache.set(key, { status: "loading" });
+          refreshTranslation(model.id);
+          bridge.translateTweet(model.id, TARGET_LANGUAGE).then((result) => {
+            const text = String(result && result.text || "").trim();
+            if (!text || text === String(model.text || "").trim()) {
+              translationCache.set(key, { status: "unavailable" });
+              return;
+            }
+            translationCache.set(key, {
+              status: "ready",
+              text,
+              sourceLanguage: String(result.sourceLanguage || ""),
+              localizedSourceLanguage: String(result.localizedSourceLanguage || ""),
+              destinationLanguage: String(result.destinationLanguage || TARGET_LANGUAGE)
+            });
+          }).catch((error) => {
+            translationCache.set(key, { status: "error", message: error && error.message ? error.message : "翻译失败" });
+          }).finally(() => {
+            activeTranslations -= 1;
+            refreshTranslation(model.id);
+            pumpTranslations();
+          });
+        }
+      };
+      const enqueueTranslation = (model, priority = false, force = false) => {
+        if (!model || !shouldOfferTranslation(model.text)) return;
+        const key = translationKey(model);
+        const cached = translationCache.get(key);
+        if (!force && cached && cached.status !== "error") return;
+        if (force) translationCache.delete(key);
+        if (queuedKeys.has(key)) return;
+        queuedKeys.add(key);
+        translationCache.set(key, { status: "queued" });
+        if (priority) translationQueue.unshift(model);
+        else translationQueue.push(model);
+        refreshTranslation(model.id);
+        pumpTranslations();
+      };
+      const scheduleTranslationWork = () => {
+        translationObserver == null ? void 0 : translationObserver.disconnect();
+        translationObserver = null;
+        if (!readerEl) return;
+        for (const model of modelsById.values()) {
+          if (model.depth === void 0) enqueueTranslation(model, true);
+        }
+        const replyBlocks = [...readerEl.querySelectorAll(".pv-x-reply .pv-x-translatable")];
+        if (!replyBlocks.length) return;
+        if (typeof IntersectionObserver !== "function") {
+          for (const block of replyBlocks) enqueueTranslation(modelsById.get(block.dataset.translationId));
+          return;
+        }
+        translationObserver = new IntersectionObserver(
+          (entries) => {
+            for (const entry of entries) {
+              if (!entry.isIntersecting) continue;
+              translationObserver == null ? void 0 : translationObserver.unobserve(entry.target);
+              enqueueTranslation(modelsById.get(entry.target.dataset.translationId));
+            }
+          },
+          // 评论列表是右栏唯一滚动区
+          { root: replyList, rootMargin: "180px 0px", threshold: 0.01 }
+        );
+        for (const block of replyBlocks) translationObserver.observe(block);
+      };
+      const applyFollowState = (author, result) => {
+        if (result && result.confirmed === false) {
+          for (const model of modelsById.values()) {
+            if (model.author && String(model.author.id) === String(author.id)) model.author.followStateUnconfirmed = true;
+          }
+          author.followStateUnconfirmed = true;
+          return;
+        }
+        const active = Boolean(result.following);
+        const nextFollowers = Number.isFinite(result.followers) ? result.followers : Math.max(0, Number(author.followers || 0) + Number(active) - Number(Boolean(author.viewerFollowing)));
+        for (const model of modelsById.values()) {
+          if (!model.author || String(model.author.id) !== String(author.id)) continue;
+          model.author.viewerFollowing = active;
+          model.author.followStateUnconfirmed = false;
+          model.author.followRequestSent = Boolean(result.followRequestSent);
+          model.author.followers = nextFollowers;
+        }
+        author.viewerFollowing = active;
+        author.followStateUnconfirmed = false;
+        author.followRequestSent = Boolean(result.followRequestSent);
+        author.followers = nextFollowers;
+      };
+      const bindProfile = (node, model) => {
+        if (!profileCard || !model || !model.author || !model.author.id) return;
+        profileCard.bind(node, model.author, profileUrlOf(model));
+      };
+      const sortedReplies = () => {
+        if (sortMode === "relevant") return replies;
+        const copy = [...replies];
+        if (sortMode === "latest") copy.sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
+        else copy.sort((a, b) => (Number(b.counts.likes) || 0) - (Number(a.counts.likes) || 0));
+        return copy;
+      };
+      const updateCount = () => {
+        if (countLabel) countLabel.textContent = `评论（${seen.size}）`;
+      };
+      const renderReplies = () => {
+        if (!replyList) return;
+        const scrollTop = replyList.scrollTop;
+        replyList.replaceChildren();
+        const list = sortedReplies();
+        if (!list.length) {
+          replyList.appendChild(el("div", { class: "pv-x-empty", text: "这条帖子暂时没有可显示的评论" }));
+        }
+        for (const reply of list) {
+          replyList.appendChild(
+            renderReply(reply, {
+              onAction: handleAction,
+              onMedia: handleMedia,
+              bindProfile,
+              translation: translationFor(reply)
+            })
+          );
+        }
+        if (cursor) {
+          sentinel = el("div", { class: "pv-x-load-sentinel" }, el("span", { class: "pv-x-loading", text: "正在加载更多评论..." }));
+          replyList.appendChild(sentinel);
+          observeSentinel();
+        } else {
+          sentinel = null;
+        }
+        if (replyList) replyList.scrollTop = scrollTop;
+        markReplyTarget();
+        scheduleTranslationWork();
+      };
+      const observeSentinel = () => {
+        sentinelObserver == null ? void 0 : sentinelObserver.disconnect();
+        if (!sentinel || typeof IntersectionObserver !== "function" || !replyList) return;
+        sentinelObserver = new IntersectionObserver(
+          (entries) => {
+            if (entries.some((entry) => entry.isIntersecting)) loadMore();
+          },
+          // 评论列表是右栏唯一滚动区
+          { root: replyList, rootMargin: "0px 0px 240px 0px", threshold: 0.01 }
+        );
+        sentinelObserver.observe(sentinel);
+      };
+      const markReplyTarget = () => {
+        if (!readerEl) return;
+        for (const article2 of readerEl.querySelectorAll('article[data-reply-target="true"]')) {
+          delete article2.dataset.replyTarget;
+        }
+        if (!replyTarget) return;
+        const article = readerEl.querySelector(`article[data-tweet-id="${replyTarget.id}"]`);
+        if (article) article.dataset.replyTarget = "true";
+      };
+      const setReplyTarget = (model) => {
+        replyTarget = model && String(model.id) !== String(tweetId) ? model : null;
+        composerView == null ? void 0 : composerView.setTarget(replyTarget);
+        markReplyTarget();
+        composerView == null ? void 0 : composerView.focus();
+      };
+      const handleMedia = (photos, index) => {
+        if (!readerEl || !photos.length) return;
+        openLightbox(readerEl, photos, index < 0 ? 0 : index, openUrlOf(modelsById.get(tweetId) || { id: tweetId }));
+      };
+      const handleAction = async (key, model, button) => {
+        if (key === "reply") {
+          setReplyTarget(model);
+          return;
+        }
+        if (key === "share") {
+          const target = openUrlOf(model);
+          try {
+            await navigator.clipboard.writeText(target);
+            notify(readerEl, "链接已复制", "ok");
+          } catch (err) {
+            notify(readerEl, `复制失败：${target}`, "error");
+          }
+          return;
+        }
+        const flag = FLAG_BY_ACTION[key];
+        const countKey = COUNT_BY_ACTION2[key];
+        if (!flag || !countKey) return;
+        const wasActive = Boolean(model.flags[flag]);
+        model.flags[flag] = !wasActive;
+        model.counts[countKey] = Math.max(0, (Number(model.counts[countKey]) || 0) + (wasActive ? -1 : 1));
+        paintAction(button, model, key);
+        try {
+          await bridge.toggleAction(key, model.id, wasActive);
+        } catch (err) {
+          logger.warn(`[XThreadLoader] ${key} failed`, err);
+          model.flags[flag] = wasActive;
+          model.counts[countKey] = Math.max(0, (Number(model.counts[countKey]) || 0) + (wasActive ? 1 : -1));
+          paintAction(button, model, key);
+          notify(readerEl, `${ACTION_LABEL[key] || key}失败：${err && err.message ? err.message : err}`, "error");
+        }
+      };
+      const handleSort = (next, group) => {
+        if (next === sortMode) return;
+        sortMode = next;
+        paintSort(group, next);
+        renderReplies();
+      };
+      const submitReply = async (text, target) => {
+        const inReplyTo = target && target.id ? String(target.id) : tweetId;
+        await bridge.createReply(inReplyTo, text);
+        const local = {
+          id: `local-${Date.now()}`,
+          text,
+          createdAt: (/* @__PURE__ */ new Date()).toISOString(),
+          author: { name: account.handle ? `@${account.handle}` : "我", handle: account.handle, avatar: account.avatar, verified: false },
+          counts: { replies: 0, likes: 0, reposts: 0, bookmarks: 0, views: 0 },
+          flags: { liked: false, reposted: false, bookmarked: false },
+          media: [],
+          depth: target && target.depth !== void 0 ? Math.min(Number(target.depth) + 1, 3) : 0,
+          inReplyToId: inReplyTo
+        };
+        replies.unshift(local);
+        seen.add(local.id);
+        modelsById.set(local.id, local);
+        replyTarget = null;
+        composerView == null ? void 0 : composerView.setTarget(null);
+        sortMode = "relevant";
+        paintSort(sortGroup, "relevant");
+        updateCount();
+        renderReplies();
+        notify(readerEl, target ? `已回复 @${target.author && target.author.handle || ""}` : "回复已发布", "ok");
+      };
+      const loadMore = async () => {
+        if (aborted || loadingMore || !cursor) return;
+        loadingMore = true;
+        const previousCursor = cursor;
+        try {
+          const json = await bridge.readThread(tweetId, previousCursor);
+          if (aborted) return;
+          const next = parseThreadSummary(json, tweetId);
+          let added = 0;
+          for (const reply of next.replies) {
+            if (seen.has(reply.id)) continue;
+            seen.add(reply.id);
+            replies.push(reply);
+            modelsById.set(reply.id, reply);
+            added += 1;
+          }
+          cursor = replyCursorAfterPage(previousCursor, next.cursor, added);
+          updateCount();
+          renderReplies();
+        } catch (err) {
+          logger.warn("[XThreadLoader] load more failed", err);
+          notify(readerEl, `加载更多评论失败：${err && err.message ? err.message : err}`, "error");
+        } finally {
+          loadingMore = false;
+        }
+      };
+      (async () => {
+        try {
+          const json = await bridge.readThread(tweetId);
+          if (aborted) return;
+          const summary = parseThreadSummary(json, tweetId);
+          if (!summary.focalFound) throw new Error("X 返回了数据，但没有找到这条原帖。");
+          cursor = summary.cursor;
+          modelsById.set(summary.focal.id, summary.focal);
+          for (const ancestor of summary.ancestors) modelsById.set(ancestor.id, ancestor);
+          for (const reply of summary.replies) {
+            seen.add(reply.id);
+            replies.push(reply);
+            modelsById.set(reply.id, reply);
+          }
+          await hydrateArticle(summary.focal);
+          profileCard = createProfileCard({
+            getRoot: () => readerEl,
+            onToggleFollow: async (author, nextActive) => {
+              const result = await bridge.toggleFollow(author.id, nextActive);
+              applyFollowState(author, result);
+              return result;
+            },
+            onNotify: (message, tone) => notify(readerEl, message, tone === "ok" ? "ok" : "error")
+          });
+          const built = renderReader({
+            focal: summary.focal,
+            ancestors: summary.ancestors,
+            replyCount: seen.size,
+            openUrl: openUrlOf(summary.focal),
+            onAction: handleAction,
+            onSort: handleSort,
+            onSubmitReply: submitReply,
+            onMedia: handleMedia,
+            translationFor,
+            bindProfile,
+            composerAvatar: account.avatar
+          });
+          readerEl = built.reader;
+          replyList = built.list;
+          countLabel = built.countLabel;
+          sortGroup = built.sort;
+          composerView = built.composer;
+          container.replaceChildren(readerEl);
+          syncLayout();
+          if (typeof ResizeObserver === "function") {
+            resizeObserver = new ResizeObserver(syncLayout);
+            resizeObserver.observe(container);
+          }
+          updateCount();
+          renderReplies();
+          onLoad == null ? void 0 : onLoad();
+        } catch (err) {
+          if (aborted) return;
+          logger.warn("[XThreadLoader] read thread failed", err);
+          container.classList.remove("pv-x-reader-mode");
+          onError == null ? void 0 : onError(`${err && err.message ? err.message : err}（X 的接口会变动，可点下方按钮改用新标签页打开）`);
+        }
+      })();
+      return cleanup;
+    }
+  };
+
   // src/main.js
   var prefetch = new PrefetchManager(loaderManager);
   function registerAdapters() {
@@ -5292,6 +8593,89 @@ a.xst::after {\r
     siteManager.register(new TgbAdapter());
     siteManager.register(new LinuxAdapter());
     siteManager.register(new CiliAdapter());
+    siteManager.register(new XAdapter());
+  }
+  var X_HOSTS = /(^|\.)(x|twitter)\.com$/i;
+  function installXSupport() {
+    if (!X_HOSTS.test(window.location.hostname)) return;
+    loaderManager.register("xthread", new XThreadLoader());
+    const win = pageWindow();
+    const bridge = installXBridge(win);
+    if (!bridge) return;
+    const api = {
+      captureState: () => captureState(),
+      probe: async (tweetId) => {
+        const started = Date.now();
+        const json = await bridge.readThread(String(tweetId));
+        return { ...parseThreadSummary(json, String(tweetId)), ms: Date.now() - started, state: captureState() };
+      },
+      probeRaw: (tweetId, cursor) => bridge.readThread(String(tweetId), cursor),
+      hasOperation: (name) => Boolean(bridge.findOperation(name)),
+      // 观感令牌自检：看 X 皮肤实际拿到的颜色/字体
+      theme: () => readXTheme(),
+      // 定位自检：面板是否被宿主页面的 transform / CSS 影响而无法居中
+      positionDiag: () => {
+        const panel = document.getElementById("popup-content-panel");
+        const panelStyle = panel ? getComputedStyle(panel) : null;
+        const rect = panel ? panel.getBoundingClientRect() : null;
+        const bodyStyle = getComputedStyle(document.body);
+        const htmlStyle = getComputedStyle(document.documentElement);
+        return {
+          panel: panelStyle ? {
+            position: panelStyle.position,
+            top: panelStyle.top,
+            left: panelStyle.left,
+            transform: panelStyle.transform,
+            width: panelStyle.width,
+            height: panelStyle.height
+          } : null,
+          rect: rect ? { x: Math.round(rect.x), y: Math.round(rect.y), w: Math.round(rect.width), h: Math.round(rect.height) } : null,
+          viewport: { w: window.innerWidth, h: window.innerHeight, scrollY: Math.round(window.scrollY) },
+          body: { transform: bodyStyle.transform, position: bodyStyle.position, width: bodyStyle.width },
+          html: { transform: htmlStyle.transform, position: htmlStyle.position, width: htmlStyle.width },
+          bodyHijacksFixed: hijacksFixed(document.body),
+          htmlHijacksFixed: hijacksFixed(document.documentElement),
+          mount: panel && panel.parentElement ? `${panel.parentElement.tagName}#${panel.parentElement.id}` : null
+        };
+      },
+      // 样式自检：区分「整表没生效」（CSP 拦内联样式）与「只有 X 皮肤没生效」
+      styleDiag: () => {
+        const panel = document.getElementById("popup-content-panel");
+        const area = document.getElementById("popup-content-area");
+        const reader = document.querySelector(".pv-x-reader");
+        let xRulesFound = false;
+        for (const sheet of Array.from(document.styleSheets)) {
+          try {
+            if (Array.from(sheet.cssRules).some((rule) => String(rule.selectorText || "").includes("pv-x-reader"))) {
+              xRulesFound = true;
+              break;
+            }
+          } catch (err) {
+          }
+        }
+        return {
+          hasPanel: Boolean(panel),
+          panelPosition: panel ? getComputedStyle(panel).position : null,
+          areaClasses: area ? Array.from(area.classList) : [],
+          // 内容区第一个子元素的类名：pv-x-reader = 走了 X 渲染器；有 iframe = 走了抓取渲染
+          areaFirstChildClass: area && area.firstElementChild ? area.firstElementChild.className : null,
+          areaHtmlHead: area ? area.innerHTML.slice(0, 160) : null,
+          hasIframe: Boolean(area && area.querySelector("iframe")),
+          loaderModes: Object.keys(loaderManager.loaders),
+          readerFound: Boolean(reader),
+          readerDisplay: reader ? getComputedStyle(reader).display : null,
+          adoptedSheets: "adoptedStyleSheets" in document ? document.adoptedStyleSheets.length : "unsupported",
+          styleElementCount: document.querySelectorAll("style").length,
+          xRulesFound
+        };
+      }
+    };
+    try {
+      win.__PV2_X__ = api;
+    } catch (err) {
+      logger.warn("[main] expose __PV2_X__ failed", err);
+    }
+    logger.log("[PV2] X GraphQL 网络层已安装");
   }
   function applyForumMarker() {
     const hostname = window.location.hostname;
@@ -5400,6 +8784,7 @@ a.xst::after {\r
     popupManager.popup.applyTheme(settingsManager.get().theme);
     popupManager.popup.ensure();
     registerAdapters();
+    installXSupport();
     applyForumMarker();
     setupEvents();
     setupObserver();

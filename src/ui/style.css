@@ -1468,3 +1468,890 @@ a.xst::after {
     display: none;
   }
 }
+
+/* ===== X 皮肤（GraphQL 原生渲染）：令牌来自 xTheme.js 读取的 X 实时样式 =====
+   注意：X 的全局 CSS 是「无层级」的，@layer 挡不住它（层级优先级低于无层级规则），
+   因此这里全部用无层级 + 高特异性（#popup-content-area / #popup-content-panel 前缀）书写。 */
+#popup-content-panel.pv-x-skin,
+#popup-content-panel.pv-x-skin #popup-panel-header,
+#popup-content-panel.pv-x-skin #popup-panel-footer {
+  background-color: var(--pv-x-bg, #fff);
+  color: var(--pv-x-fg, #0f1419);
+  border-color: var(--pv-x-border, #eff3f4);
+}
+#popup-content-panel.pv-x-skin #popup-panel-title,
+#popup-content-panel.pv-x-skin #popup-panel-footer {
+  color: var(--pv-x-muted, #536471);
+}
+#popup-content-area.pv-x-reader-mode {
+  /* 两栏各自独立滚动，互不绑定 */
+  display: flex;
+  padding: 0;
+  overflow: hidden;
+  overscroll-behavior: contain;
+  background-color: var(--pv-x-bg, #fff);
+  color: var(--pv-x-fg, #0f1419);
+  font-family: var(--pv-x-font, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif);
+}
+/* 加载中：绝对定位的居中层，避免 loading 视图被 flex/滚动容器挤到一侧 */
+.pv-x-loading-layer {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.pv-x-reader {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1.04fr) minmax(0, 0.96fr);
+}
+.pv-x-reader.pv-x-single {
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);
+}
+.pv-x-pane {
+  min-width: 0;
+  min-height: 0;
+}
+/* 左栏：独立滚动，滚动条隐藏 */
+.pv-x-pane-post {
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.pv-x-pane-post::-webkit-scrollbar {
+  display: none;
+}
+/* 右栏：工具行与回复框固定，只有评论列表滚动 */
+.pv-x-pane-replies {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.pv-x-reply-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.pv-x-reply-list::-webkit-scrollbar {
+  display: none;
+}
+.pv-x-pane-post {
+  border-right: 1px solid var(--pv-x-border, #eff3f4);
+}
+.pv-x-reader.pv-x-single .pv-x-pane-post {
+  border-right: none;
+  border-bottom: 1px solid var(--pv-x-border, #eff3f4);
+}
+.pv-x-reply-tools {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 16px;
+  background-color: var(--pv-x-bg, #fff);
+  border-bottom: 1px solid var(--pv-x-border, #eff3f4);
+  font-size: 13px;
+  color: var(--pv-x-muted, #536471);
+}
+.pv-x-open {
+  color: var(--pv-x-accent, #1d9bf0);
+  white-space: nowrap;
+}
+/* 昵称/头像/媒体不显示下划线（与 X 一致；宿主页面的 a{text-decoration} 也会被这里压掉） */
+.pv-x-name,
+.pv-x-avatar,
+.pv-x-media-item,
+.pv-x-open,
+.pv-x-video-open {
+  text-decoration: none;
+}
+.pv-x-open:hover {
+  text-decoration: underline;
+}
+.pv-x-post {
+  display: grid;
+  grid-template-columns: 40px minmax(0, 1fr);
+  gap: 12px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--pv-x-border, #eff3f4);
+}
+.pv-x-post:hover {
+  background-color: var(--pv-x-hover, rgba(0, 0, 0, 0.03));
+}
+.pv-x-avatar-col {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  min-width: 0;
+}
+.pv-x-avatar {
+  display: block;
+  width: 40px;
+  height: 40px;
+  flex: none;
+  border-radius: 50%;
+  overflow: hidden;
+  background-color: var(--pv-x-soft, #f7f9f9);
+}
+.pv-x-avatar img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  border: 0;
+}
+.pv-x-thread-line {
+  flex: 1;
+  width: 2px;
+  min-height: 8px;
+  margin-top: 4px;
+  background-color: var(--pv-x-border, #eff3f4);
+}
+.pv-x-main {
+  min-width: 0;
+}
+.pv-x-head {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  font-size: 15px;
+  line-height: 20px;
+}
+.pv-x-name {
+  font-weight: 700;
+  color: var(--pv-x-fg, #0f1419);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.pv-x-badge {
+  width: 18px;
+  height: 18px;
+  flex: none;
+  color: var(--pv-x-accent, #1d9bf0);
+}
+.pv-x-badge svg {
+  display: block;
+  width: 18px;
+  height: 18px;
+  fill: currentColor;
+}
+.pv-x-handle,
+.pv-x-time,
+.pv-x-dot {
+  color: var(--pv-x-muted, #536471);
+  white-space: nowrap;
+}
+.pv-x-text {
+  margin-top: 2px;
+  font-size: 15px;
+  line-height: 20px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.pv-x-actions {
+  display: flex;
+  align-items: center;
+  gap: 22px;
+  margin-top: 10px;
+  color: var(--pv-x-muted, #536471);
+  font-size: 13px;
+}
+.pv-x-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  /* 按钮复位：X 的全局 CSS 会重置 button，这里显式写全 */
+  appearance: none;
+  -webkit-appearance: none;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+.pv-x-action svg {
+  display: block;
+  width: 18px;
+  height: 18px;
+  flex: none;
+  fill: currentColor;
+}
+.pv-x-action-views {
+  cursor: default;
+}
+.pv-x-action[data-action]:hover {
+  color: var(--pv-x-accent, #1d9bf0);
+}
+.pv-x-action-like:hover,
+.pv-x-action-like[data-active='true'] {
+  color: var(--pv-x-like, #f91880);
+}
+.pv-x-action-repost:hover,
+.pv-x-action-repost[data-active='true'] {
+  color: var(--pv-x-repost, #00ba7c);
+}
+.pv-x-action-bookmark[data-active='true'] {
+  color: var(--pv-x-accent, #1d9bf0);
+}
+.pv-x-action[data-active='true'] .pv-x-count {
+  font-weight: 600;
+}
+.pv-x-avatar-sm {
+  width: 32px;
+  height: 32px;
+  flex: none;
+}
+.pv-x-post-compact .pv-x-text {
+  font-size: 14px;
+  line-height: 19px;
+}
+.pv-x-post-compact .pv-x-actions {
+  gap: 18px;
+  margin-top: 6px;
+  font-size: 12px;
+}
+/* 右栏工具行：评论数 + 排序 */
+.pv-x-tools-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+.pv-x-sort {
+  display: inline-flex;
+  gap: 4px;
+}
+.pv-x-sort-btn {
+  appearance: none;
+  margin: 0;
+  padding: 2px 8px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: none;
+  font: inherit;
+  font-size: 12px;
+  color: var(--pv-x-muted, #536471);
+  cursor: pointer;
+}
+.pv-x-sort-btn:hover {
+  background-color: var(--pv-x-hover, rgba(0, 0, 0, 0.03));
+}
+.pv-x-sort-btn[aria-pressed='true'] {
+  color: var(--pv-x-accent, #1d9bf0);
+  border-color: var(--pv-x-accent, #1d9bf0);
+}
+/* 纯文字回复框 */
+.pv-x-composer {
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr);
+  gap: 10px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--pv-x-border, #eff3f4);
+}
+.pv-x-composer-body {
+  min-width: 0;
+}
+/* 回复目标提示（点评论的「回复」时出现，可取消） */
+.pv-x-composer-target {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 2px;
+  font-size: 13px;
+}
+.pv-x-composer-target[hidden] {
+  display: none;
+}
+.pv-x-composer-target-label {
+  color: var(--pv-x-accent, #1d9bf0);
+}
+.pv-x-composer-target-clear {
+  appearance: none;
+  -webkit-appearance: none;
+  margin: 0;
+  padding: 0 4px;
+  border: 0;
+  background: none;
+  color: var(--pv-x-muted, #536471);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+.pv-x-composer-target-clear:hover {
+  color: var(--pv-x-fg, #0f1419);
+}
+/* 正在回复的那条：高亮，避免「点了回复却不知道回到哪」 */
+article.pv-x-post[data-reply-target='true'] {
+  background-color: var(--pv-x-hover, rgba(0, 0, 0, 0.03));
+  box-shadow: inset 3px 0 0 var(--pv-x-accent, #1d9bf0);
+}
+.pv-x-composer-input {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 8px 0;
+  border: 0;
+  background: none;
+  color: var(--pv-x-fg, #0f1419);
+  font: inherit;
+  font-size: 15px;
+  line-height: 20px;
+  resize: none;
+  overflow-y: auto;
+}
+.pv-x-composer-input:focus {
+  outline: none;
+}
+.pv-x-composer-input::placeholder {
+  color: var(--pv-x-muted, #536471);
+}
+.pv-x-composer-foot {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  min-height: 28px;
+}
+.pv-x-composer-hint {
+  color: var(--pv-x-muted, #536471);
+  font-size: 12px;
+  text-align: right;
+}
+.pv-x-composer-submit {
+  appearance: none;
+  margin: 0;
+  padding: 6px 16px;
+  border: 0;
+  border-radius: 999px;
+  background-color: var(--pv-x-accent, #1d9bf0);
+  color: #fff;
+  font: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.pv-x-composer-submit:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+/* 滚动到底自动加载 */
+.pv-x-load-sentinel {
+  display: flex;
+  justify-content: center;
+  padding: 14px;
+}
+.pv-x-loading {
+  color: var(--pv-x-muted, #536471);
+  font-size: 13px;
+}
+/* 翻译行 */
+.pv-x-translation-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+  color: var(--pv-x-muted, #536471);
+  font-size: 13px;
+  line-height: 18px;
+}
+.pv-x-translation-link {
+  appearance: none;
+  -webkit-appearance: none;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--pv-x-accent, #1d9bf0);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+.pv-x-translation-link:hover {
+  text-decoration: underline;
+}
+/* 图片放大浮层（覆盖阅读器区域） */
+.pv-x-lightbox {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background-color: rgba(0, 0, 0, 0.86);
+}
+.pv-x-lightbox-img {
+  display: block;
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+}
+.pv-x-lightbox-bar {
+  position: absolute;
+  top: 0;
+  right: 0;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+}
+.pv-x-lightbox-counter,
+.pv-x-lightbox-open {
+  color: #fff;
+  font-size: 13px;
+  text-decoration: none;
+}
+.pv-x-lightbox-counter {
+  opacity: 0.8;
+}
+.pv-x-lightbox-open {
+  opacity: 0.85;
+}
+.pv-x-lightbox-open:hover {
+  opacity: 1;
+  text-decoration: underline;
+}
+.pv-x-lightbox-close,
+.pv-x-lightbox-nav {
+  appearance: none;
+  -webkit-appearance: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background-color: rgba(255, 255, 255, 0.14);
+  color: #fff;
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+}
+.pv-x-lightbox-close:hover,
+.pv-x-lightbox-nav:hover {
+  background-color: rgba(255, 255, 255, 0.24);
+}
+.pv-x-lightbox-nav {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 40px;
+  height: 40px;
+  font-size: 24px;
+}
+.pv-x-lightbox-prev {
+  left: 12px;
+}
+.pv-x-lightbox-next {
+  right: 12px;
+}
+/* 作者资料卡（悬停出现，与 X 一致） */
+.pv-x-profile-trigger {
+  cursor: pointer;
+}
+.pv-x-profile-card {
+  /* 相对 .pv-x-reader 绝对定位：面板带 transform，fixed 的包含块会变成面板而非视口 */
+  position: absolute;
+  z-index: 6;
+  width: 300px;
+  padding: 16px;
+  box-sizing: border-box;
+  border-radius: 16px;
+  background-color: var(--pv-x-bg, #fff);
+  color: var(--pv-x-fg, #0f1419);
+  box-shadow: 0 0 0 1px var(--pv-x-border, #eff3f4), 0 12px 32px rgba(0, 0, 0, 0.18);
+  font-size: 15px;
+  line-height: 20px;
+}
+.pv-x-profile-top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 64px;
+}
+.pv-x-profile-avatar {
+  display: block;
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  overflow: hidden;
+  background-color: var(--pv-x-soft, #f7f9f9);
+  text-decoration: none;
+}
+.pv-x-profile-avatar img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  border: 0;
+}
+.pv-x-profile-follow {
+  appearance: none;
+  -webkit-appearance: none;
+  margin: 0;
+  padding: 7px 16px;
+  border: 1px solid var(--pv-x-fg, #0f1419);
+  border-radius: 999px;
+  background-color: var(--pv-x-fg, #0f1419);
+  color: var(--pv-x-bg, #fff);
+  font: inherit;
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.pv-x-profile-follow[data-following='true'] {
+  background-color: transparent;
+  color: var(--pv-x-fg, #0f1419);
+}
+.pv-x-profile-follow-hover {
+  display: none;
+}
+.pv-x-profile-follow[data-following='true']:hover {
+  border-color: #f4212e;
+  background-color: rgba(244, 33, 46, 0.1);
+  color: #f4212e;
+}
+.pv-x-profile-follow[data-following='true']:hover .pv-x-profile-follow-default {
+  display: none;
+}
+.pv-x-profile-follow[data-following='true']:hover .pv-x-profile-follow-hover {
+  display: inline;
+}
+.pv-x-profile-follow:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+.pv-x-profile-name {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 10px;
+  color: var(--pv-x-fg, #0f1419);
+  font-size: 17px;
+  font-weight: 700;
+  text-decoration: none;
+}
+.pv-x-profile-name strong {
+  font-weight: 700;
+}
+.pv-x-profile-handle {
+  display: block;
+  color: var(--pv-x-muted, #536471);
+  font-size: 15px;
+  text-decoration: none;
+}
+.pv-x-profile-follows-you {
+  display: inline-block;
+  margin-top: 6px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background-color: var(--pv-x-soft, #f7f9f9);
+  color: var(--pv-x-muted, #536471);
+  font-size: 12px;
+}
+.pv-x-profile-bio {
+  margin: 10px 0 0;
+  font-size: 15px;
+  line-height: 20px;
+  overflow-wrap: anywhere;
+}
+.pv-x-profile-stats {
+  display: flex;
+  gap: 16px;
+  margin-top: 10px;
+  font-size: 14px;
+}
+.pv-x-profile-stats a {
+  color: var(--pv-x-muted, #536471);
+  text-decoration: none;
+}
+.pv-x-profile-stats strong {
+  color: var(--pv-x-fg, #0f1419);
+  font-weight: 700;
+}
+.pv-x-profile-summary {
+  display: block;
+  margin-top: 12px;
+  color: var(--pv-x-muted, #536471);
+  font-size: 14px;
+  text-decoration: none;
+}
+.pv-x-profile-summary:hover {
+  text-decoration: underline;
+}
+/* X 长文（Article）：封面 + 标题 + 正文排版 */
+.pv-x-article {
+  margin-top: 10px;
+}
+.pv-x-article-cover {
+  overflow: hidden;
+  border: 1px solid var(--pv-x-border, #eff3f4);
+  border-radius: 16px;
+}
+.pv-x-article-cover img {
+  display: block;
+  width: 100%;
+  max-height: 320px;
+  object-fit: cover;
+  border: 0;
+}
+.pv-x-article-heading {
+  margin-top: 12px;
+}
+.pv-x-article-title {
+  margin: 0 0 6px;
+  font-size: 20px;
+  line-height: 26px;
+  font-weight: 800;
+  color: var(--pv-x-fg, #0f1419);
+}
+.pv-x-article-open {
+  color: var(--pv-x-accent, #1d9bf0);
+  font-size: 13px;
+  text-decoration: none;
+}
+.pv-x-article-open:hover {
+  text-decoration: underline;
+}
+.pv-x-article-content {
+  margin-top: 10px;
+}
+.pv-x-article-p {
+  margin: 0 0 12px;
+  font-size: 15px;
+  line-height: 20px;
+  overflow-wrap: anywhere;
+}
+.pv-x-article-h2,
+.pv-x-article-h3,
+.pv-x-article-h4 {
+  margin: 18px 0 8px;
+  color: var(--pv-x-fg, #0f1419);
+  font-weight: 800;
+}
+.pv-x-article-h2 {
+  font-size: 18px;
+  line-height: 24px;
+}
+.pv-x-article-h3 {
+  font-size: 17px;
+  line-height: 22px;
+}
+.pv-x-article-h4 {
+  font-size: 16px;
+  line-height: 21px;
+}
+.pv-x-article-quote {
+  margin: 0 0 12px;
+  padding: 2px 0 2px 12px;
+  border-left: 3px solid var(--pv-x-border, #eff3f4);
+  color: var(--pv-x-muted, #536471);
+  font-size: 15px;
+  line-height: 20px;
+}
+.pv-x-article-list {
+  margin: 0 0 12px;
+  padding-left: 22px;
+  font-size: 15px;
+  line-height: 20px;
+}
+.pv-x-article-list li {
+  margin-bottom: 4px;
+}
+.pv-x-article-figure {
+  margin: 12px 0;
+}
+.pv-x-article-figure img {
+  display: block;
+  width: 100%;
+  border: 1px solid var(--pv-x-border, #eff3f4);
+  border-radius: 16px;
+}
+/* 评论里的长文：紧凑卡片 */
+.pv-x-article-card {
+  display: block;
+  margin-top: 8px;
+  overflow: hidden;
+  border: 1px solid var(--pv-x-border, #eff3f4);
+  border-radius: 16px;
+  text-decoration: none;
+}
+.pv-x-article-card-cover {
+  display: block;
+  width: 100%;
+  max-height: 200px;
+  object-fit: cover;
+}
+.pv-x-article-card-body {
+  display: block;
+  padding: 10px 12px;
+}
+.pv-x-article-card-domain {
+  display: block;
+  color: var(--pv-x-muted, #536471);
+  font-size: 13px;
+}
+.pv-x-article-card-title {
+  display: block;
+  margin-top: 2px;
+  color: var(--pv-x-fg, #0f1419);
+  font-size: 15px;
+  line-height: 20px;
+}
+.pv-x-article-card-desc {
+  display: block;
+  margin-top: 2px;
+  color: var(--pv-x-muted, #536471);
+  font-size: 14px;
+  line-height: 19px;
+}
+/* 轻提示 */
+.pv-x-toast {
+  position: absolute;
+  left: 50%;
+  bottom: 16px;
+  transform: translateX(-50%);
+  max-width: 80%;
+  padding: 8px 14px;
+  border-radius: 8px;
+  background-color: var(--pv-x-fg, #0f1419);
+  color: var(--pv-x-bg, #fff);
+  font-size: 13px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.18s ease;
+  z-index: 2;
+}
+.pv-x-toast[data-visible='true'] {
+  opacity: 1;
+}
+.pv-x-reply {
+  display: grid;
+  grid-template-columns: 40px minmax(0, 1fr);
+  gap: 12px;
+  padding: 10px 16px 10px calc(16px + var(--pv-x-depth, 0) * 18px);
+  border-bottom: 1px solid var(--pv-x-border, #eff3f4);
+}
+.pv-x-reply:hover {
+  background-color: var(--pv-x-hover, rgba(0, 0, 0, 0.03));
+}
+.pv-x-reply .pv-x-avatar,
+.pv-x-reply .pv-x-thread-line {
+  opacity: 0.92;
+}
+/* 媒体：1-4 宫格，X 的 16px 圆角 + 1px 描边 */
+.pv-x-media {
+  display: grid;
+  gap: 2px;
+  margin-top: 10px;
+  max-width: 100%;
+  border: 1px solid var(--pv-x-border, #eff3f4);
+  border-radius: 16px;
+  overflow: hidden;
+}
+.pv-x-media-1,
+.pv-x-media-2,
+.pv-x-media-3,
+.pv-x-media-4 {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.pv-x-media-1 {
+  grid-template-columns: minmax(0, 1fr);
+}
+.pv-x-media-3 .pv-x-media-item:first-child {
+  grid-row: span 2;
+}
+.pv-x-media-item {
+  display: block;
+  position: relative;
+  min-width: 0;
+  overflow: hidden;
+  /* 图片项是 <button>：显式复位，避免宿主 button 样式渗入 */
+  appearance: none;
+  -webkit-appearance: none;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  font: inherit;
+  background-color: var(--pv-x-soft, #f7f9f9);
+  cursor: zoom-in;
+}
+.pv-x-media-item img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  max-height: 420px;
+  object-fit: cover;
+  border: 0;
+}
+.pv-x-media-1 .pv-x-media-item img {
+  max-height: 460px;
+  object-fit: contain;
+}
+.pv-x-media-video {
+  display: flex;
+  flex-direction: column;
+}
+.pv-x-video {
+  display: block;
+  width: 100%;
+  max-height: 460px;
+  background-color: #000;
+}
+.pv-x-video-poster {
+  display: block;
+  width: 100%;
+  max-height: 460px;
+  object-fit: contain;
+  border: 0;
+}
+.pv-x-video-open {
+  display: block;
+  padding: 8px 12px;
+  background-color: var(--pv-x-bg, #fff);
+  color: var(--pv-x-accent, #1d9bf0);
+  font-size: 13px;
+  text-decoration: none;
+}
+.pv-x-empty {
+  padding: 24px 16px;
+  color: var(--pv-x-muted, #536471);
+  font-size: 14px;
+  text-align: center;
+}
+.pv-x-more {
+  display: block;
+  width: calc(100% - 32px);
+  margin: 12px 16px 16px;
+  padding: 10px;
+  border: 1px solid var(--pv-x-border, #eff3f4);
+  border-radius: 999px;
+  background-color: transparent;
+  color: var(--pv-x-accent, #1d9bf0);
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.pv-x-more:hover:not(:disabled) {
+  background-color: var(--pv-x-hover, rgba(0, 0, 0, 0.03));
+}
+.pv-x-more:disabled {
+  color: var(--pv-x-muted, #536471);
+  cursor: default;
+}

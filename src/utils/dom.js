@@ -91,3 +91,42 @@ export function clear(node) {
   while (node.firstChild) node.removeChild(node.firstChild);
   return node;
 }
+
+/**
+ * 该元素是否会「劫持」后代 position: fixed 的包含块。
+ * 带 transform / filter / perspective / will-change:transform / contain 的祖先会成为
+ * fixed 后代的包含块，于是 CSS 里的 top/left:50% 按该祖先而非视口计算 —— 表现为弹窗不居中。
+ */
+export function hijacksFixed(node) {
+  if (!node) return false;
+  try {
+    const cs = getComputedStyle(node);
+    if (cs.transform && cs.transform !== 'none') return true;
+    if (cs.filter && cs.filter !== 'none') return true;
+    if (cs.perspective && cs.perspective !== 'none') return true;
+    if (cs.willChange && cs.willChange.includes('transform')) return true;
+    if (cs.contain && /paint|layout|strict|content/.test(cs.contain)) return true;
+  } catch (err) {
+    return false;
+  }
+  return false;
+}
+
+/**
+ * 选择 UI 挂载点：优先 body；若 body 会劫持 fixed 定位则退到 html。
+ * 这样弹窗/悬浮按钮/设置面板的 fixed 定位始终相对视口。
+ */
+export function pickMountPoint() {
+  const body = document.body;
+  const html = document.documentElement;
+  if (body && !hijacksFixed(body)) return body;
+  if (html && !hijacksFixed(html)) return html;
+  return body || html;
+}
+
+/** 按 pickMountPoint 的结果挂载 UI 节点 */
+export function mountUi(node) {
+  const parent = pickMountPoint();
+  if (parent) parent.appendChild(node);
+  return parent;
+}

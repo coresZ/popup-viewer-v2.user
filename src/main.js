@@ -12,7 +12,13 @@ import { DiscuzAdapter } from './adapters/DiscuzAdapter.js';
 import { TgbAdapter } from './adapters/TgbAdapter.js';
 import { LinuxAdapter } from './adapters/LinuxAdapter.js';
 import { CiliAdapter } from './adapters/CiliAdapter.js';
+import { XAdapter } from './adapters/XAdapter.js';
+import { installXBridge, pageWindow, captureState } from './x/xBridge.js';
+import { parseThreadSummary } from './x/xModel.js';
+import { readXTheme } from './x/xTheme.js';
+import { XThreadLoader } from './loaders/XThreadLoader.js';
 import { debugMark, showErr } from './utils/debugFlag.js';
+import { hijacksFixed } from './utils/dom.js';
 
 const prefetch = new PrefetchManager(loaderManager);
 
@@ -21,6 +27,99 @@ function registerAdapters() {
   siteManager.register(new TgbAdapter());
   siteManager.register(new LinuxAdapter());
   siteManager.register(new CiliAdapter());
+  siteManager.register(new XAdapter());
+}
+
+const X_HOSTS = /(^|\.)(x|twitter)\.com$/i;
+
+// X 专用：安装 GraphQL 网络层（页面上下文补丁 fetch/XHR + webpack operation 发现），
+// 并暴露控制台自检入口。弹窗渲染走 C3 的 XThreadLoader，本阶段只做数据层验证。
+function installXSupport() {
+  if (!X_HOSTS.test(window.location.hostname)) return;
+  // X 的 GraphQL 层依赖当前页面的 webpack runtime 与登录会话，只在 x.com 页面注册
+  loaderManager.register('xthread', new XThreadLoader());
+  const win = pageWindow();
+  const bridge = installXBridge(win);
+  if (!bridge) return;
+  const api = {
+    captureState: () => captureState(),
+    probe: async (tweetId) => {
+      const started = Date.now();
+      const json = await bridge.readThread(String(tweetId));
+      return { ...parseThreadSummary(json, String(tweetId)), ms: Date.now() - started, state: captureState() };
+    },
+    probeRaw: (tweetId, cursor) => bridge.readThread(String(tweetId), cursor),
+    hasOperation: (name) => Boolean(bridge.findOperation(name)),
+    // 观感令牌自检：看 X 皮肤实际拿到的颜色/字体
+    theme: () => readXTheme(),
+    // 定位自检：面板是否被宿主页面的 transform / CSS 影响而无法居中
+    positionDiag: () => {
+      const panel = document.getElementById('popup-content-panel');
+      const panelStyle = panel ? getComputedStyle(panel) : null;
+      const rect = panel ? panel.getBoundingClientRect() : null;
+      const bodyStyle = getComputedStyle(document.body);
+      const htmlStyle = getComputedStyle(document.documentElement);
+      return {
+        panel: panelStyle
+          ? {
+              position: panelStyle.position,
+              top: panelStyle.top,
+              left: panelStyle.left,
+              transform: panelStyle.transform,
+              width: panelStyle.width,
+              height: panelStyle.height
+            }
+          : null,
+        rect: rect
+          ? { x: Math.round(rect.x), y: Math.round(rect.y), w: Math.round(rect.width), h: Math.round(rect.height) }
+          : null,
+        viewport: { w: window.innerWidth, h: window.innerHeight, scrollY: Math.round(window.scrollY) },
+        body: { transform: bodyStyle.transform, position: bodyStyle.position, width: bodyStyle.width },
+        html: { transform: htmlStyle.transform, position: htmlStyle.position, width: htmlStyle.width },
+        bodyHijacksFixed: hijacksFixed(document.body),
+        htmlHijacksFixed: hijacksFixed(document.documentElement),
+        mount: panel && panel.parentElement ? `${panel.parentElement.tagName}#${panel.parentElement.id}` : null
+      };
+    },
+    // 样式自检：区分「整表没生效」（CSP 拦内联样式）与「只有 X 皮肤没生效」
+    styleDiag: () => {
+      const panel = document.getElementById('popup-content-panel');
+      const area = document.getElementById('popup-content-area');
+      const reader = document.querySelector('.pv-x-reader');
+      let xRulesFound = false;
+      for (const sheet of Array.from(document.styleSheets)) {
+        try {
+          if (Array.from(sheet.cssRules).some((rule) => String(rule.selectorText || '').includes('pv-x-reader'))) {
+            xRulesFound = true;
+            break;
+          }
+        } catch (err) {
+          // 跨域样式表读不到 cssRules，跳过
+        }
+      }
+      return {
+        hasPanel: Boolean(panel),
+        panelPosition: panel ? getComputedStyle(panel).position : null,
+        areaClasses: area ? Array.from(area.classList) : [],
+        // 内容区第一个子元素的类名：pv-x-reader = 走了 X 渲染器；有 iframe = 走了抓取渲染
+        areaFirstChildClass: area && area.firstElementChild ? area.firstElementChild.className : null,
+        areaHtmlHead: area ? area.innerHTML.slice(0, 160) : null,
+        hasIframe: Boolean(area && area.querySelector('iframe')),
+        loaderModes: Object.keys(loaderManager.loaders),
+        readerFound: Boolean(reader),
+        readerDisplay: reader ? getComputedStyle(reader).display : null,
+        adoptedSheets: 'adoptedStyleSheets' in document ? document.adoptedStyleSheets.length : 'unsupported',
+        styleElementCount: document.querySelectorAll('style').length,
+        xRulesFound
+      };
+    }
+  };
+  try {
+    win.__PV2_X__ = api;
+  } catch (err) {
+    logger.warn('[main] expose __PV2_X__ failed', err);
+  }
+  logger.log('[PV2] X GraphQL 网络层已安装');
 }
 
 // Discuz 类论坛需要「基础链接样式优化」，加标记类避免通用选择器污染其它站点
@@ -145,6 +244,7 @@ function init() {
   // 立即构建 UI（含右下角设置按钮/规则面板），未匹配内置适配器的网站也能访问设置与规则
   popupManager.popup.ensure();
   registerAdapters();
+  installXSupport();
   applyForumMarker();
   setupEvents();
   setupObserver();

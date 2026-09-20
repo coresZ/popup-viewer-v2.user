@@ -14,7 +14,9 @@ export class IframeLoader {
     }
     const iframe = el('iframe', {
       id: 'popup-panel-iframe',
-      sandbox: this.sandbox.buildSandboxAttrs(hostname)
+      sandbox: this.sandbox.buildSandboxAttrs(hostname),
+      allow: 'clipboard-read; clipboard-write; fullscreen; picture-in-picture',
+      referrerpolicy: 'strict-origin-when-cross-origin'
     });
     // 标记自己的弹窗 iframe：即使开启「在 iframe 中运行」，也不在其中重复注入脚本
     try {

@@ -1,6 +1,6 @@
 import { config } from '../config.js';
 import { gm } from '../utils/gm.js';
-import { el, svgIcon } from '../utils/dom.js';
+import { el, svgIcon, mountUi } from '../utils/dom.js';
 import { clampToViewport, setupDrag, setupResize, setupWheelScrollChain } from '../utils/panelBehavior.js';
 import { debugMark } from '../utils/debugFlag.js';
 import { settingsManager } from '../core/SettingsManager.js';
@@ -35,7 +35,7 @@ export class PopupPanel {
   ensure() {
     if (this.panel) return this.panel;
     this.overlay = el('div', { id: 'popup-panel-overlay', onclick: () => this.close() });
-    document.body.appendChild(this.overlay);
+    mountUi(this.overlay);
     const titleMark = el('span', { class: 'pv-title-mark' });
     titleMark.appendChild(svgIcon('article', { size: 15 }));
     this.titleTextEl = el('span', { class: 'pv-title-text', text: '查看内容' });
@@ -82,7 +82,7 @@ export class PopupPanel {
     this.footerLinkBtn.appendChild(svgIcon('external', { size: 14 }));
     this.footer = el('div', { id: 'popup-panel-footer' }, navGroup, this.footerLinkBtn);
     this.panel = el('div', { id: 'popup-content-panel' }, header, this.contentArea, this.footer);
-    document.body.appendChild(this.panel);
+    mountUi(this.panel);
     this.floatBtn = el('button', { id: 'pv-float-settings', title: '脚本设置' });
     this.floatBtn.appendChild(svgIcon('settings', { size: 16 }));
     this.floatBtn.addEventListener('click', () => {
@@ -92,16 +92,16 @@ export class PopupPanel {
       }
       this.showSettingsNear(this.floatBtn.getBoundingClientRect());
     });
-    document.body.appendChild(this.floatBtn);
+    mountUi(this.floatBtn);
     this.settingsPopover = createSettingsPanel({
       onChange: (s) => this.applySettings(s),
       onManageRules: () => this.showRulesPanel(),
       onClose: () => this.hideSettings()
     });
-    document.body.appendChild(this.settingsPopover);
+    mountUi(this.settingsPopover);
     this.rulesPanel = createRulesPanel();
-    document.body.appendChild(this.rulesPanel.backdrop);
-    document.body.appendChild(this.rulesPanel.root);
+    mountUi(this.rulesPanel.backdrop);
+    mountUi(this.rulesPanel.root);
     document.addEventListener('click', (e) => {
       if (!this.settingsPopover?.classList.contains('visible')) return;
       if (
@@ -174,6 +174,7 @@ export class PopupPanel {
       this.panel.classList.add('visible');
       debugMark('panel.visible');
       if (settingsManager.get().windowMode !== 'float') this.overlay.classList.add('visible');
+      this._fixCentering();
     });
   }
   close() {
@@ -305,6 +306,40 @@ export class PopupPanel {
     this.panel.style.left = '';
     this.panel.style.top = '';
     this.panel.style.transform = '';
+    this._fixCentering();
+  }
+  /**
+   * 居中校正：挂载点已避开被 transform 的祖先，但宿主页面仍可能有别的因素让
+   * CSS 的 top/left:50% 算不准（缩放、被覆盖等）。这里实测「窗体中心」与「视口中心」
+   * 的偏差并换算成显式像素；用中心点计算，因此不受打开动画 scale 影响。
+   * 只在居中模式（用户没拖过、非全屏）下生效。
+   */
+  _fixCentering() {
+    if (!this.panel || this.isFullScreen) return;
+    if (this.panel.style.left || this.panel.style.top) return;
+    const rect = this.panel.getBoundingClientRect();
+    if (!rect.width || !rect.height) return;
+    const dx = window.innerWidth / 2 - (rect.left + rect.width / 2);
+    const dy = window.innerHeight / 2 - (rect.top + rect.height / 2);
+    if (Math.abs(dx) < 1 && Math.abs(dy) < 1) return;
+    const cs = getComputedStyle(this.panel);
+    const left = parseFloat(cs.left);
+    const top = parseFloat(cs.top);
+    if (!Number.isFinite(left) || !Number.isFinite(top)) return;
+    // 视口像素 → 包含块像素：需要扣掉祖先的缩放
+    let ancestorScale = 1;
+    try {
+      const matrix =
+        typeof DOMMatrixReadOnly === 'function' ? new DOMMatrixReadOnly(cs.transform === 'none' ? '' : cs.transform) : null;
+      const panelScale = matrix && matrix.a ? matrix.a : 1;
+      if (this.panel.offsetWidth && panelScale) {
+        ancestorScale = rect.width / (this.panel.offsetWidth * panelScale) || 1;
+      }
+    } catch (err) {
+      ancestorScale = 1;
+    }
+    this.panel.style.left = `${left + dx / ancestorScale}px`;
+    this.panel.style.top = `${top + dy / ancestorScale}px`;
   }
   hideOverlay() {
     this.overlay?.classList.remove('visible');

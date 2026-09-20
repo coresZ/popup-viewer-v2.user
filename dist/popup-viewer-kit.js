@@ -22,6 +22,18 @@
     (document.head || document.documentElement).appendChild(style);
     return style;
   }
+  function adoptStyle(css) {
+    try {
+      if (typeof CSSStyleSheet !== "function" || !("adoptedStyleSheets" in document)) return null;
+      const sheet = new CSSStyleSheet();
+      sheet.replaceSync(css);
+      document.adoptedStyleSheets = [...document.adoptedStyleSheets, sheet];
+      return sheet;
+    } catch (err) {
+      console.warn("[PopupViewer] adoptedStyleSheets failed", err);
+      return null;
+    }
+  }
   function localGet(key, fallback) {
     try {
       const raw = localStorage.getItem("popup-viewer:" + key);
@@ -38,20 +50,24 @@
   }
   var gm = {
     addStyle(css) {
+      let node = null;
       const fn = gmApi("GM_addStyle");
       if (fn) {
         try {
-          return fn(css);
+          node = fn(css);
         } catch (err) {
           console.warn("[PopupViewer] GM_addStyle failed, fallback to <style>", err);
         }
       }
-      try {
-        return injectStyle(css);
-      } catch (err) {
-        console.warn("[PopupViewer] injectStyle failed", err);
-        return null;
+      if (!node) {
+        try {
+          node = injectStyle(css);
+        } catch (err) {
+          console.warn("[PopupViewer] injectStyle failed", err);
+        }
       }
+      adoptStyle(css);
+      return node;
     },
     xmlhttpRequest(options) {
       const fn = gmApi("GM_xmlhttpRequest");
@@ -173,8 +189,13 @@
     // 站点加载策略:
     //   iframe: true  → 使用 iframe 直接加载（页面自带脚本与登录态）
     //   scripts: true → 请求模式下保留目标页 <script> 以正常渲染（仅限信任站点）
+    //   xThread: true → 走 X 专用 GraphQL 原生渲染（见 docs/plan-x-graphql.md）
     sitePolicy: {
       "linux.do": { iframe: true, scripts: true },
+      // X：内容由客户端 React 渲染，抓取净化拿不到帖子（评论为空）；iframe 又被 X 的框架策略
+      // 全站拒绝——含同源，裸 iframe 实测同样白屏。故改为用当前登录会话读内部 GraphQL 自渲染。
+      "x.com": { xThread: true },
+      "twitter.com": { xThread: true },
       "1cili.com": { iframe: false, scripts: true },
       "s.9cili.mom": { iframe: false, scripts: true },
       unknown: { iframe: false, scripts: false }
@@ -843,7 +864,9 @@
       }
       const iframe = el("iframe", {
         id: "popup-panel-iframe",
-        sandbox: this.sandbox.buildSandboxAttrs(hostname)
+        sandbox: this.sandbox.buildSandboxAttrs(hostname),
+        allow: "clipboard-read; clipboard-write; fullscreen; picture-in-picture",
+        referrerpolicy: "strict-origin-when-cross-origin"
       });
       try {
         iframe.contentWindow.__PV2_OWN_IFRAME__ = true;
@@ -1161,10 +1184,19 @@
       };
     }
     /**
+     * 注册额外的加载方式。主脚本按需注册（如 X 的 GraphQL 加载器），
+     * 避免这些实现被静态打进 PopupKit 库产物。
+     */
+    register(mode, loader) {
+      this.loaders[mode] = loader;
+      return loader;
+    }
+    /**
      * 解析应使用的加载方式。
      */
     resolveMode(url, hostname) {
       const policy = this.sandbox.policyFor(hostname);
+      if (policy.xThread) return "xthread";
       if (policy.iframe) return "iframe";
       const mode = config.loader.defaultMode;
       if (mode === "iframe") return "iframe";
