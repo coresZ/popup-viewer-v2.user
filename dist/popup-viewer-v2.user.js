@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name          页内弹窗打开新帖
 // @namespace     http://tampermonkey.net/
-// @version       2.1.1
+// @version       2.1.2
 // @description   点击论坛帖子链接，在弹窗中加载内容 (插件化架构 V2)
 // @author        cores
 // @include       *://*/*
@@ -48,7 +48,7 @@
     if (!DEBUG) return;
     try {
       var d = document.createElement("div");
-      d.textContent = "[PV2] boot v" + (true ? "2.1.1" : "?");
+      d.textContent = "[PV2] boot v" + (true ? "2.1.2" : "?");
       d.style.cssText = "position:fixed;top:12px;left:12px;z-index:2147483647;background:#7c3aed;color:#fff;padding:6px 12px;font-size:12px;border-radius:6px;font-family:sans-serif";
       (document.body || document.documentElement).appendChild(d);
     } catch (e) {
