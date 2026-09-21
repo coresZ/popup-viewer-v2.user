@@ -1,9 +1,16 @@
 import { config } from '../config.js';
 import { gm } from '../utils/gm.js';
-import { el, svgIcon } from '../utils/dom.js';
+import { el, svgIcon, mountUi } from '../utils/dom.js';
 import { clampToViewport, setupDrag, setupResize, setupWheelScrollChain } from '../utils/panelBehavior.js';
 import { debugMark } from '../utils/debugFlag.js';
 import { settingsManager } from '../core/SettingsManager.js';
+
+// 本面板自己写入的「取整位移」形如 translate(calc(-50% ± Npx), ...)。
+// 用无状态的字符串判定，而不是布尔标记：标记一旦与实际情况不同步
+// （例如用户拖动后 transform 被置为 none，标记却仍为 true），
+// 下次打开就会把用户拖出来的位置当成自己的清掉，窗体随即偏移半个宽高。
+const SNAP_TRANSFORM_RE = /^translate\(calc\(-50%/;
+const isSnapTransform = (value) => SNAP_TRANSFORM_RE.test(String(value || '').trim());
 import { createToolbar } from './Toolbar.js';
 import { createSettingsPanel } from './SettingsPanel.js';
 import { createRulesPanel } from './RulesPanel.js';
@@ -31,11 +38,13 @@ export class PopupPanel {
     this.preFullScreen = {};
     this.handlers = {};
     this._onKeydownBound = null;
+    this._snapTimer = null;
+    this._centerTimer = null;
   }
   ensure() {
     if (this.panel) return this.panel;
     this.overlay = el('div', { id: 'popup-panel-overlay', onclick: () => this.close() });
-    document.body.appendChild(this.overlay);
+    mountUi(this.overlay);
     const titleMark = el('span', { class: 'pv-title-mark' });
     titleMark.appendChild(svgIcon('article', { size: 15 }));
     this.titleTextEl = el('span', { class: 'pv-title-text', text: '查看内容' });
@@ -82,7 +91,7 @@ export class PopupPanel {
     this.footerLinkBtn.appendChild(svgIcon('external', { size: 14 }));
     this.footer = el('div', { id: 'popup-panel-footer' }, navGroup, this.footerLinkBtn);
     this.panel = el('div', { id: 'popup-content-panel' }, header, this.contentArea, this.footer);
-    document.body.appendChild(this.panel);
+    mountUi(this.panel);
     this.floatBtn = el('button', { id: 'pv-float-settings', title: '脚本设置' });
     this.floatBtn.appendChild(svgIcon('settings', { size: 16 }));
     this.floatBtn.addEventListener('click', () => {
@@ -92,16 +101,16 @@ export class PopupPanel {
       }
       this.showSettingsNear(this.floatBtn.getBoundingClientRect());
     });
-    document.body.appendChild(this.floatBtn);
+    mountUi(this.floatBtn);
     this.settingsPopover = createSettingsPanel({
       onChange: (s) => this.applySettings(s),
       onManageRules: () => this.showRulesPanel(),
       onClose: () => this.hideSettings()
     });
-    document.body.appendChild(this.settingsPopover);
+    mountUi(this.settingsPopover);
     this.rulesPanel = createRulesPanel();
-    document.body.appendChild(this.rulesPanel.backdrop);
-    document.body.appendChild(this.rulesPanel.root);
+    mountUi(this.rulesPanel.backdrop);
+    mountUi(this.rulesPanel.root);
     document.addEventListener('click', (e) => {
       if (!this.settingsPopover?.classList.contains('visible')) return;
       if (
@@ -144,6 +153,7 @@ export class PopupPanel {
     this.titleTextEl.textContent = title || '查看内容';
     this.updateFooterUrl(url);
     this.panel.classList.remove('visible');
+    clearTimeout(this._centerTimer);
     // 保留拖动后的窗体位置；若正处于全屏，恢复全屏前位置
     const pos = this.isFullScreen
       ? {
@@ -154,7 +164,9 @@ export class PopupPanel {
       : {
           top: this.panel.style.top,
           left: this.panel.style.left,
-          transform: this.panel.style.transform
+          // 只清掉自己写的「取整位移」：它会压掉 CSS 的居中与 scale 开场动画，且尺寸变化后会过期。
+          // 用户拖动/手机模式写入的 transform（none）必须原样保留，否则 left/top 会被当成左上角坐标再叠一次 -50%。
+          transform: isSnapTransform(this.panel.style.transform) ? '' : this.panel.style.transform
         };
     Object.assign(this.panel.style, {
       width: '',
@@ -174,11 +186,18 @@ export class PopupPanel {
       this.panel.classList.add('visible');
       debugMark('panel.visible');
       if (settingsManager.get().windowMode !== 'float') this.overlay.classList.add('visible');
+      this._fixCentering();
+      // 开场动画（scale + opacity）结束后再取整位移：
+      // 动画中改 transform 会打断过渡，且动画期间 opacity<1 本来也不会有次像素抗锯齿
+      clearTimeout(this._snapTimer);
+      this._snapTimer = setTimeout(() => this._snapTransform(), 340);
     });
   }
   close() {
     if (!this.panel) return;
     if (this.isFullScreen) this.toggleFullScreen();
+    clearTimeout(this._snapTimer);
+    clearTimeout(this._centerTimer);
     this.hideSettings();
     this.floatBtn?.classList.remove('hidden');
     this.panel.classList.remove('visible');
@@ -239,6 +258,8 @@ export class PopupPanel {
     }
     this.panel?.style.setProperty('--popup-width', width);
     this.panel?.style.setProperty('--popup-height', height);
+    // 尺寸变了，之前的取整位移（基于旧宽高）就过期了，必须重算，否则面板会偏离居中
+    if (this.panel?.classList.contains('visible')) this._snapTransform();
     // 设置变化可能改变面板内容高度（如手机型号子控件显隐），可见时重新定位，避免尺寸错乱
     if (this.settingsPopover?.classList.contains('visible') && this._settingsAnchor) {
       this.showSettingsNear(this._settingsAnchor);
@@ -305,6 +326,69 @@ export class PopupPanel {
     this.panel.style.left = '';
     this.panel.style.top = '';
     this.panel.style.transform = '';
+    this._snapTransform();
+    // 居中校正必须等 transform 过渡结束再量。面板从「手机模式/拖动后的 none」切回居中时，
+    // -50% 本身正在 0.3s 过渡中；此刻立刻 getBoundingClientRect() 量到的是**还没偏移**的位置，
+    // 偏差正好是半个宽高，于是被当成误差写进 left/top，过渡结束后 CSS 再叠一次 -50%，
+    // 窗体就跑到左上角（手机 → 小/中/大 走的正是这条路径）。
+    clearTimeout(this._centerTimer);
+    this._centerTimer = setTimeout(() => {
+      if (!this.panel || !this.panel.classList.contains('visible')) return;
+      this._fixCentering();
+      this._snapTransform();
+    }, 340);
+  }
+  /**
+   * 把居中位移取整到整数像素。
+   * Chrome 在图层带**非整数位移**时会关闭次像素（LCD）抗锯齿、改用灰度抗锯齿，
+   * 同样的字重看起来就更细——弹窗正文与宿主页面字体粗细不一致多半出在这里
+   * （面板宽高取视口百分比，一半常是 x.5）。取整后视觉偏移 ≤0.5px，可忽略。
+   */
+  _snapTransform() {
+    if (!this.panel || this.isFullScreen) return;
+    if (this.panel.style.left || this.panel.style.top) return; // 用户拖过：由 left/top 定位，无需处理
+    const rect = this.panel.getBoundingClientRect();
+    if (!rect.width || !rect.height) return;
+    // 用 calc(-50% + 余数) 而不是写死像素：尺寸变化时几何仍然自洽（只是取整暂时失效），
+    // 不会像写死 -W/2 那样在换尺寸后整体偏移半个差值
+    const offset = (value) => {
+      const remainder = value / 2 - Math.round(value / 2);
+      return remainder < 0 ? `- ${Math.abs(remainder)}px` : `+ ${remainder}px`;
+    };
+    this.panel.style.transform = `translate(calc(-50% ${offset(rect.width)}), calc(-50% ${offset(rect.height)}))`;
+  }
+  /**
+   * 居中校正：挂载点已避开被 transform 的祖先，但宿主页面仍可能有别的因素让
+   * CSS 的 top/left:50% 算不准（缩放、被覆盖等）。这里实测「窗体中心」与「视口中心」
+   * 的偏差并换算成显式像素；用中心点计算，因此不受打开动画 scale 影响。
+   * 只在居中模式（用户没拖过、非全屏）下生效。
+   */
+  _fixCentering() {
+    if (!this.panel || this.isFullScreen) return;
+    if (this.panel.style.left || this.panel.style.top) return;
+    const rect = this.panel.getBoundingClientRect();
+    if (!rect.width || !rect.height) return;
+    const dx = window.innerWidth / 2 - (rect.left + rect.width / 2);
+    const dy = window.innerHeight / 2 - (rect.top + rect.height / 2);
+    if (Math.abs(dx) < 1 && Math.abs(dy) < 1) return;
+    const cs = getComputedStyle(this.panel);
+    const left = parseFloat(cs.left);
+    const top = parseFloat(cs.top);
+    if (!Number.isFinite(left) || !Number.isFinite(top)) return;
+    // 视口像素 → 包含块像素：需要扣掉祖先的缩放
+    let ancestorScale = 1;
+    try {
+      const matrix =
+        typeof DOMMatrixReadOnly === 'function' ? new DOMMatrixReadOnly(cs.transform === 'none' ? '' : cs.transform) : null;
+      const panelScale = matrix && matrix.a ? matrix.a : 1;
+      if (this.panel.offsetWidth && panelScale) {
+        ancestorScale = rect.width / (this.panel.offsetWidth * panelScale) || 1;
+      }
+    } catch (err) {
+      ancestorScale = 1;
+    }
+    this.panel.style.left = `${left + dx / ancestorScale}px`;
+    this.panel.style.top = `${top + dy / ancestorScale}px`;
   }
   hideOverlay() {
     this.overlay?.classList.remove('visible');
@@ -442,7 +526,11 @@ export class PopupPanel {
     });
     window.addEventListener('resize', () => {
       if (this.panel?.classList.contains('visible')) {
-        requestAnimationFrame(() => this._clampToViewport());
+        requestAnimationFrame(() => {
+          this._clampToViewport();
+          // 视口变化会改变百分比宽高 → 重算取整位移（几何用 calc(-50%) 已自洽，这里只为恢复抗锯齿取整）
+          this._snapTransform();
+        });
       }
       // 设置面板可见时同步重新定位，避免缩放窗口后位置错乱
       if (this.settingsPopover?.classList.contains('visible') && this._settingsAnchor) {

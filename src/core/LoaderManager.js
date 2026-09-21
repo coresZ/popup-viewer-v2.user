@@ -21,10 +21,26 @@ export class LoaderManager {
     };
   }
   /**
+   * 注册额外的加载方式。主脚本按需注册（如 X 的 GraphQL 加载器），
+   * 避免这些实现被静态打进 PopupKit 库产物。
+   */
+  register(mode, loader) {
+    this.loaders[mode] = loader;
+    return loader;
+  }
+  /** 按模式取加载器（未注册时返回 null，避免外部直接摸 this.loaders 内部表） */
+  get(mode) {
+    return this.loaders[mode] || null;
+  }
+  /**
    * 解析应使用的加载方式。
    */
   resolveMode(url, hostname) {
     const policy = this.sandbox.policyFor(hostname);
+    // X 专用：GraphQL 原生渲染（iframe 被 X 框架策略全站拒绝，抓取净化拿不到内容）。
+    // 必须同时确认加载器已注册——它只在 x.com 页面由主脚本注册（依赖页面的 webpack runtime
+    // 与登录会话），否则非 X 页面上点 x.com 链接会静默回退到抓取路径、并连带关掉悬停预热。
+    if (policy.xThread && this.loaders.xthread) return 'xthread';
     if (policy.iframe) return 'iframe';
     const mode = config.loader.defaultMode;
     if (mode === 'iframe') return 'iframe';

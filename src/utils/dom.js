@@ -28,6 +28,13 @@ const ICON_PATHS = {
   arrowRight: {
     path: '<line x1="5" y1="12" x2="19" y2="12"></line><polyline points="12 5 19 12 12 19"></polyline>'
   },
+  // 图片切换用的细箭头（无杆，X 灯箱左右两侧的样式）
+  chevronLeft: {
+    path: '<polyline points="15 18 9 12 15 6"></polyline>'
+  },
+  chevronRight: {
+    path: '<polyline points="9 18 15 12 9 6"></polyline>'
+  },
   resize: {
     path: '<polyline points="7 17 17 7"></polyline><line x1="10" y1="17" x2="17" y2="17"></line><line x1="17" y1="10" x2="17" y2="17"></line>'
   },
@@ -90,4 +97,43 @@ export function svgIcon(iconName, { size = 18 } = {}) {
 export function clear(node) {
   while (node.firstChild) node.removeChild(node.firstChild);
   return node;
+}
+
+/**
+ * 该元素是否会「劫持」后代 position: fixed 的包含块。
+ * 带 transform / filter / perspective / will-change:transform / contain 的祖先会成为
+ * fixed 后代的包含块，于是 CSS 里的 top/left:50% 按该祖先而非视口计算 —— 表现为弹窗不居中。
+ */
+export function hijacksFixed(node) {
+  if (!node) return false;
+  try {
+    const cs = getComputedStyle(node);
+    if (cs.transform && cs.transform !== 'none') return true;
+    if (cs.filter && cs.filter !== 'none') return true;
+    if (cs.perspective && cs.perspective !== 'none') return true;
+    if (cs.willChange && cs.willChange.includes('transform')) return true;
+    if (cs.contain && /paint|layout|strict|content/.test(cs.contain)) return true;
+  } catch (err) {
+    return false;
+  }
+  return false;
+}
+
+/**
+ * 选择 UI 挂载点：优先 body；若 body 会劫持 fixed 定位则退到 html。
+ * 这样弹窗/悬浮按钮/设置面板的 fixed 定位始终相对视口。
+ */
+export function pickMountPoint() {
+  const body = document.body;
+  const html = document.documentElement;
+  if (body && !hijacksFixed(body)) return body;
+  if (html && !hijacksFixed(html)) return html;
+  return body || html;
+}
+
+/** 按 pickMountPoint 的结果挂载 UI 节点 */
+export function mountUi(node) {
+  const parent = pickMountPoint();
+  if (parent) parent.appendChild(node);
+  return parent;
 }
