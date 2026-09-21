@@ -15,10 +15,8 @@ const cache = new Map();
 
 /** 取一枚 X 图标（每次返回新节点，可直接插入 DOM） */
 export function xIcon(name) {
-  if (cache.has(name)) {
-    const cached = cache.get(name);
-    return cached ? cached.cloneNode(true) : null;
-  }
+  const cached = cache.get(name);
+  if (cached) return cached.cloneNode(true);
   let source = null;
   for (const selector of SELECTORS[name] || []) {
     try {
@@ -29,10 +27,9 @@ export function xIcon(name) {
     if (source && String(source.tagName).toLowerCase() === 'svg') break;
     source = null;
   }
-  if (!source) {
-    cache.set(name, null);
-    return null;
-  }
+  // 未命中**不缓存**：X 的 DOM 随页面变化（「查看」图标基本只在详情页存在），
+  // 一旦把「这次没找到」缓存成 null，整个会话里这枚图标都不会再出现
+  if (!source) return null;
   const clone = source.cloneNode(true);
   // 尺寸交给我们自己的 CSS，避免 X 的内联宽高/样式带进来
   clone.removeAttribute('width');
@@ -46,5 +43,7 @@ export function xIcon(name) {
 
 /** 预热：弹窗打开时 X 的帖子 DOM 一定在，一次性抓齐，避免渲染时逐枚查询 */
 export function primeXIcons() {
+  // 每次打开都重探（克隆一枚图标很便宜，缓存过期的代价却是整会话缺图标）
+  cache.clear();
   for (const name of Object.keys(SELECTORS)) xIcon(name);
 }

@@ -1,6 +1,6 @@
 ---
 name: wyckoff-analytics-mandarin
-description: "Knowledge base from \"Wyckoff-Method / Wyckoff Analytics（中文版）\". Use when applying Wyckoff frameworks for 吸筹与派发识别、综合人、三大定律、九个买卖检验、点数图计数、努力与结果/比较强度, studying the Wyckoff Method, or referencing its events (PS/SC/AR/ST/Spring/SOS/LPS/PSY/BC/SOW/LPSY/UTAD) and phases A–E."
+description: "威科夫（Wyckoff）方法知识库与分析工作流，来自 Wyckoff Analytics 中文版图解手册。当用户要求用威科夫方法分析股票/K线图/量价行为、判断吸筹与派发阶段 A–E、识别事件（PS/SC/AR/ST/Spring/Shakeout/Test/SOS/LPS/BU 与 PSY/BC/SOW/UTAD/LPSY）、跑九个买卖检验、做点数图目标测算，或涉及综合人、三大定律、努力与结果、比较强度时使用；也用于学习该方法、查阅术语与章节。适用于 A 股/美股等任何市场。"
 ---
 
 <!-- argument-hint: [topic, framework name, or chapter number] -->
@@ -16,6 +16,8 @@ description: "Knowledge base from \"Wyckoff-Method / Wyckoff Analytics（中文�
 - **浏览** — 问"有哪些章节"即可列出全部索引
 
 主题不在下方核心框架中时，我会先读对应章节文件再作答。
+
+**要出一份完整分析报告**时，按 [ch13 分析工作流](chapters/ch13-analysis-workflow.md) 的 6 节模板输出（大盘环境 → 阶段与事件标注 → 九检验逐条打分 → 点数图目标 → 交易计划 → 风险与应变），不要只给结论；数据不足时明确说明，不要编造目标价。
 
 ---
 
@@ -76,6 +78,12 @@ A 停涨（PSY/BC 首次预示供应进入）→ B 清仓建空 → C 测试需�
 ① K 线图与点数图研究同一段区间与时间 ② 选图框尺寸：低价股 **0.5–1 点**、高价股（>200 美元）**5 点**、道指 **100 点** ③ 区间右侧确认 SOS 后找 **LPS** ④ **从 LPS 向左计数**，先保守再按阶段扩展，一次一个阶段 ⑤ 至少给两个目标（区间最低值、计数列与最低值的**均值**）⑥ 目标价 = **列数 × 图框尺寸 × 反转值**，加到「计数列 LPS 横向值（最高）/ 区间最低值（最低）/ 两者均值」。
 红线：**永不要只看一个阶段的结果**；点数图的"阶段"**不等于**吸筹/派发阶段 A–E。到价后"**停，看，听**"——目标是可能反转的位置，不是精确终点。
 
+### 最高胜率组合与纪律
+- **做多组合**：低量 Spring（阶段 C）→ Test 底部抬高、量能递减 → **SOS 确认** → **LPS 入场**。
+- **做空组合**：UTAD（阶段 C）→ 跌破支撑或跌下区间中线 → **LPSY 做空**（源文：比在 UTAD 处直接做空更安全，因为庄家会反复用上冲回落清洗做空者）。
+- **两条纪律**：SOS 是**确认**不是入场，LPS 才是入场；UTAD 是**测试**不是出场，LPSY 才是出场。
+- **免责**：本 skill 仅供技术分析学习与参考，不构成投资建议；分析完成后应提醒用户风险自负。
+
 ---
 
 ## Chapter Index
@@ -94,6 +102,7 @@ A 停涨（PSY/BC 首次预示供应进入）→ B 清仓建空 → C 测试需�
 | [ch10](chapters/ch10-nine-buy-sell-tests.md) | 九个买入/卖出检验 | 九条清单、图谱分工、3 倍止损 |
 | [ch11](chapters/ch11-point-and-figure-counting.md) | 点数图计量方法 | 图框尺寸、LPS 起算、脚踏石、目标价公式 |
 | [ch12](chapters/ch12-conclusion.md) | 结论 | 方法三性与训练要求 |
+| [ch13](chapters/ch13-analysis-workflow.md) | **附录：分析工作流** | 报告 6 节模板、最高胜率组合、数据不足处理、纪律与免责 |
 
 ## Topic Index
 

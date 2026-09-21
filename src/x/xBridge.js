@@ -31,6 +31,7 @@ const captured = {
 };
 let webpackRuntime = null;
 let transactionIdFn;
+let transactionIdProbedAt = 0;
 const operationCache = new Map();
 
 /** 用户脚本沙箱下的真实页面 window（TM 需 @grant unsafeWindow） */
@@ -222,11 +223,16 @@ function scanRuntime(runtime, sourceNeedle, predicate) {
   return null;
 }
 
-export function findOperation(win, operationName) {
-  if (operationCache.has(operationName)) return operationCache.get(operationName);
+// 未命中不永久缓存：X 是懒加载 chunk，模块可能在首次查询之后才出现。
+// 命中的结果永久缓存；未命中只缓存 5 秒，避免每次请求都重跑一遍 webpack 扫描。
+const OPERATION_MISS_TTL_MS = 5000;
+
+function findOperation(win, operationName) {
+  const cached = operationCache.get(operationName);
+  if (cached && (cached.found || Date.now() - cached.at < OPERATION_MISS_TTL_MS)) return cached.found;
   const predicate = (value) => value && value.operationName === operationName && typeof value.queryId === 'string';
   const found = scanRuntime(getWebpackRuntime(win), operationName, predicate) || null;
-  operationCache.set(operationName, found);
+  operationCache.set(operationName, { found, at: Date.now() });
   return found;
 }
 
@@ -299,11 +305,8 @@ async function requestHeaders(win, path, method, requiresCsrf) {
   if (csrf) headers['x-csrf-token'] = csrf;
   if (requiresCsrf && !csrf) throw new Error('当前 X 登录会话缺少 CSRF 信息，请刷新后重试');
   try {
-    if (transactionIdFn === void 0) transactionIdFn = findTransactionIdFunction(win);
-    if (typeof transactionIdFn === 'function') {
-      const transactionId = await transactionIdFn(win.location.host, path, method);
-      if (transactionId && !String(transactionId).startsWith('e:')) headers['x-client-transaction-id'] = transactionId;
-    }
+    const transactionId = await resolveTransactionId(win, path, method);
+    if (transactionId && !String(transactionId).startsWith('e:')) headers['x-client-transaction-id'] = transactionId;
   } catch (err) {
     // X 目前允许部分操作不带该头，保持请求可用
     logger.debug('[xBridge] transaction id unavailable', err);
@@ -311,18 +314,37 @@ async function requestHeaders(win, path, method, requiresCsrf) {
   return headers;
 }
 
+/**
+ * 取 x-client-transaction-id。签名函数是 best-effort：
+ * 找不到时**不永久放弃**（X 的 chunk 可能后加载），但最多每 5 秒重探一次，避免每次请求都重扫 webpack。
+ */
+async function resolveTransactionId(win, path, method) {
+  if (!transactionIdFn && Date.now() - transactionIdProbedAt > OPERATION_MISS_TTL_MS) {
+    transactionIdProbedAt = Date.now();
+    transactionIdFn = findTransactionIdFunction(win) || null;
+  }
+  if (typeof transactionIdFn !== 'function') return null;
+  return transactionIdFn(win.location.host, path, method);
+}
+
 async function readJson(response) {
   const json = await response.json().catch(() => null);
-  if (!response.ok || (json && json.errors && json.errors.length)) {
-    const message = (json && json.errors && json.errors[0] && json.errors[0].message) || `X 请求失败（${response.status}）`;
+  const errors = (json && json.errors) || [];
+  // X 会返回 HTTP 200 + errors[]，但同时带可用的 data（典型：某条引用帖已被删除）。
+  // 只有拿不到 data 才算失败；否则记日志继续，由数据层按缺失字段自行降级。
+  if (!response.ok || !json || !json.data) {
+    const message = (errors[0] && errors[0].message) || `X 请求失败（${response.status}）`;
     throw new Error(message);
+  }
+  if (errors.length) {
+    logger.debug(`[xBridge] ${response.status} 部分数据缺失: ${errors.map((item) => item && item.message).join('; ')}`);
   }
   return json;
 }
 
 // ---------- 业务请求 ----------
 
-export async function graphql(win, operationName, variables, method = 'POST', signal) {
+async function graphql(win, operationName, variables, method = 'POST', signal) {
   const operation = findOperation(win, operationName);
   if (!operation) throw new Error(`当前 X 页面尚未加载 ${operationName} 操作，请刷新页面后重试`);
   const path = `/i/api/graphql/${operation.queryId}/${operationName}`;
@@ -348,7 +370,7 @@ export async function graphql(win, operationName, variables, method = 'POST', si
   );
 }
 
-export function readArticle(win, tweetId) {
+function readArticle(win, tweetId) {
   return graphql(
     win,
     'TweetResultByRestId',
@@ -412,7 +434,7 @@ const ACTIONS = Object.freeze({
   bookmark: { active: 'DeleteBookmark', inactive: 'CreateBookmark' }
 });
 
-export async function toggleAction(win, action, tweetId, active) {
+async function toggleAction(win, action, tweetId, active) {
   const mapping = ACTIONS[action];
   if (!mapping) throw new Error('不支持的互动操作');
   const operationName = active ? mapping.active : mapping.inactive;
@@ -425,7 +447,7 @@ export async function toggleAction(win, action, tweetId, active) {
   return graphql(win, operationName, variables, 'POST');
 }
 
-export async function createReply(win, tweetId, text) {
+async function createReply(win, tweetId, text) {
   const replyText = String(text || '').trim();
   if (!replyText) throw new Error('回复内容不能为空');
   return graphql(
@@ -449,7 +471,7 @@ export async function createReply(win, tweetId, text) {
  * 用当前登录会话调 X 自己的翻译服务（与 peek 同路径）。
  * 优先复用捕获到的真实请求模板（替换其中的 tweetId），否则用固定兜底路径。
  */
-export async function translateTweet(win, tweetId, targetLanguage) {
+async function translateTweet(win, tweetId, targetLanguage) {
   const language = String(targetLanguage || 'zh-cn').toLowerCase();
   const fallbackPath = `/i/api/1.1/strato/column/None/tweetId=${tweetId},destinationLanguage=None,translationSource=Some(Google),feature=None,timeout=None,onlyCached=None/translation/service/translateTweet`;
   const template = captured.translationTemplate;
@@ -504,7 +526,7 @@ function followStateFromUser(user, userId) {
   };
 }
 
-export async function toggleFollow(win, userId, active) {
+async function toggleFollow(win, userId, active) {
   const id = String(userId || '');
   if (!/^\d+$/.test(id)) throw new Error('用户 ID 无效');
   const path = `/i/api/1.1/friendships/${active ? 'create' : 'destroy'}.json`;
@@ -540,9 +562,12 @@ export async function toggleFollow(win, userId, active) {
 
 // ---------- 安装与自检 ----------
 
+// 已安装的 api 句柄：模块级持有即可满足「只安装一次」，无需挂到页面 window 上
+let installedApi = null;
+
 export function installXBridge(win = pageWindow()) {
   if (!win) return null;
-  if (win.__PV2_X_BRIDGE__) return win.__PV2_X_BRIDGE__;
+  if (installedApi) return installedApi;
   patchFetch(win);
   patchXhr(win);
   getWebpackRuntime(win);
@@ -557,11 +582,9 @@ export function installXBridge(win = pageWindow()) {
     findOperation: (operationName) => findOperation(win, operationName),
     captureState: () => captureState()
   };
-  try {
-    win.__PV2_X_BRIDGE__ = api;
-  } catch (err) {
-    logger.warn('[xBridge] expose failed', err);
-  }
+  // 刻意不挂到页面 window：api 里含 createReply/toggleAction/toggleFollow 等已认证写操作，
+  // 挂全局等于把「以登录身份发帖/删帖」的能力开放给 x.com 上任何脚本；调用方本来就拿到了返回值。
+  installedApi = api;
   return api;
 }
 

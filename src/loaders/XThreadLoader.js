@@ -9,7 +9,14 @@ import { logger } from '../utils/logger.js';
 import { el } from '../utils/dom.js';
 import { showLoading } from '../ui/Loading.js';
 import { installXBridge, pageWindow } from '../x/xBridge.js';
-import { parseThreadSummary, postIdFromUrl, replyCursorAfterPage, shouldOfferTranslation, articleContentFromPayload } from '../x/xModel.js';
+import {
+  parseThreadSummary,
+  postIdFromUrl,
+  replyCursorAfterPage,
+  shouldOfferTranslation,
+  articleContentFromPayload,
+  fullTextFromPayload
+} from '../x/xModel.js';
 import { applyXSkin, watchXTheme } from '../x/xTheme.js';
 import { primeXIcons } from '../x/xIcons.js';
 import { createProfileCard } from '../x/xProfileCard.js';
@@ -17,7 +24,6 @@ import {
   renderReader,
   renderReply,
   renderTextBlock,
-  openLightbox,
   paintAction,
   paintSort,
   notify,
@@ -46,10 +52,10 @@ function currentAccount() {
 
 export class XThreadLoader {
   /**
-   * @param {Object} ctx { url, container, onError, onLoad, loadingSelector? }
+   * @param {Object} ctx { url, container, onError, onLoad }
    * @returns {Function} abort
    */
-  load({ url, container, onError, onLoad, loadingSelector = '#popup-panel-loading' }) {
+  load({ url, container, onError, onLoad }) {
     const tweetId = postIdFromUrl(url);
     if (!tweetId) {
       onError('无法从链接解析出 X 帖子 ID。');
@@ -83,7 +89,6 @@ export class XThreadLoader {
     let replyTarget = null;
 
     // 翻译状态（与 peek 一致：默认自动翻译，缓存按 帖子ID:目标语言）
-    const autoTranslate = true;
     const translationCache = new Map();
     const translationDisplay = new Map();
     const translationQueue = [];
@@ -121,29 +126,67 @@ export class XThreadLoader {
       translationObserver = null;
       profileCard?.destroy();
       profileCard = null;
+      // 翻译队列必须清空：否则关闭弹窗后在途请求的 finally 会继续出队、继续发请求
+      translationQueue.length = 0;
+      queuedKeys.clear();
+      translationCache.clear();
+      // 自检数据不跨会话保留（否则会一直钉住整张模型图）
+      this.lastThread = null;
+      // 图片就地放大不注册任何全局监听（键盘事件挂在展开容器上，随 DOM 一起回收），
+      // 因此这里无需额外注销
       container.classList.remove('pv-x-reader-mode');
       panel?.classList.remove('pv-x-skin');
-      container.querySelector(loadingSelector)?.remove();
+      // 加载视图由弹窗自身在下次 load/close 时清空（PopupManager 会重置内容区），这里不重复处理
     };
 
     // ---------- 长文（Article）正文补全 ----------
 
     /**
+     * 「显示更多」：正文被 X 截断时（legacy.truncated 且没有 note_tweet 全文），
+     * 用 TweetResultByRestId 补一次全文并就地替换；失败则提示走「在 X 打开」。
+     */
+    const expandPost = async (model) => {
+      if (!model || model.expanding) return;
+      model.expanding = true;
+      refreshTranslation(model.id);
+      try {
+        const json = await bridge.readArticle(model.id);
+        if (aborted) return;
+        const full = fullTextFromPayload(json, model.id);
+        // 取不到更长的正文：多半是「正文本来就以省略号结尾」的误判，
+        // 静默收起按钮并给中性提示，不要报成错误
+        if (!full) {
+          model.needsExpand = false;
+          notify(readerEl, '这条帖子没有更长的正文', 'ok');
+          return;
+        }
+        model.text = full.text;
+        model.entities = full.entities;
+        model.needsExpand = false;
+        // 正文变了，旧译文作废
+        translationCache.delete(translationKey(model));
+      } catch (err) {
+        logger.warn('[XThreadLoader] expand full text failed', err);
+        notify(readerEl, `展开全文失败：${err && err.message ? err.message : err}（可点「在 X 打开」看原文）`, 'error');
+      } finally {
+        model.expanding = false;
+        refreshTranslation(model.id);
+      }
+    };
+
+    /**
      * TweetDetail 对长文帖有时只给封面与摘要，正文要另取一次 TweetResultByRestId。
-     * 取不到不影响其它内容（失败静默）。
+     * 取不到不影响其它内容（失败只记日志，页面仍渲染封面与摘要）。
      */
     const hydrateArticle = async (model) => {
-      if (!model || !model.attachment || model.attachment.type !== 'article') return false;
-      if (model.attachment.content && model.attachment.content.blocks.length) return false;
+      if (!model || !model.attachment || model.attachment.type !== 'article') return;
+      if ((model.attachment.content?.blocks || []).length) return;
       try {
         const json = await bridge.readArticle(model.id);
         const content = articleContentFromPayload(json);
-        if (!content) return false;
-        model.attachment.content = content;
-        return true;
+        if (content) model.attachment.content = content;
       } catch (err) {
-        logger.debug('[XThreadLoader] article hydrate failed', err);
-        return false;
+        logger.warn('[XThreadLoader] article hydrate failed', err);
       }
     };
 
@@ -156,22 +199,26 @@ export class XThreadLoader {
       const model = modelsById.get(id);
       if (!model) return;
       for (const block of readerEl.querySelectorAll(`.pv-x-translatable[data-translation-id="${id}"]`)) {
-        renderTextBlock(block, model, translationFor(model));
+        renderTextBlock(block, model, translationFor(model), bindProfile);
       }
     };
 
     const translationFor = (model) => ({
       offered: shouldOfferTranslation(model.text),
       entry: translationCache.get(translationKey(model)),
-      display: translationDisplay.get(model.id) || (autoTranslate ? 'translation' : 'original'),
+      // 默认自动显示译文（尚无「关闭自动翻译」设置项，用户可用「显示原文」逐条切回）
+      display: translationDisplay.get(model.id) || 'translation',
       onToggle: (next) => {
         translationDisplay.set(model.id, next);
         refreshTranslation(model.id);
       },
-      onRetry: () => enqueueTranslation(model, true, true)
+      onRetry: () => enqueueTranslation(model, true, true),
+      onExpand: expandPost
     });
 
     const pumpTranslations = () => {
+      // 弹窗已关闭：不再出队、不再发请求（cleanup 已清空队列，这里再兜一道）
+      if (aborted) return;
       while (activeTranslations < MAX_TRANSLATION_CONCURRENCY && translationQueue.length) {
         const model = translationQueue.shift();
         const key = translationKey(model);
@@ -182,6 +229,7 @@ export class XThreadLoader {
         bridge
           .translateTweet(model.id, TARGET_LANGUAGE)
           .then((result) => {
+            if (aborted) return;
             const text = String((result && result.text) || '').trim();
             // 译文为空或与原文相同：说明这条不需要翻译
             if (!text || text === String(model.text || '').trim()) {
@@ -197,10 +245,12 @@ export class XThreadLoader {
             });
           })
           .catch((error) => {
+            if (aborted) return;
             translationCache.set(key, { status: 'error', message: error && error.message ? error.message : '翻译失败' });
           })
           .finally(() => {
             activeTranslations -= 1;
+            if (aborted) return;
             refreshTranslation(model.id);
             pumpTranslations();
           });
@@ -288,8 +338,10 @@ export class XThreadLoader {
     const sortedReplies = () => {
       if (sortMode === 'relevant') return replies;
       const copy = [...replies];
+      // 缺 counts 时归 0：模型一旦缺字段就抛错的话，排序会把整次渲染拖成「加载失败」
+      const likesOf = (model) => Number(model && model.counts && model.counts.likes) || 0;
       if (sortMode === 'latest') copy.sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
-      else copy.sort((a, b) => (Number(b.counts.likes) || 0) - (Number(a.counts.likes) || 0));
+      else copy.sort((a, b) => likesOf(b) - likesOf(a));
       return copy;
     };
 
@@ -309,7 +361,6 @@ export class XThreadLoader {
         replyList.appendChild(
           renderReply(reply, {
             onAction: handleAction,
-            onMedia: handleMedia,
             bindProfile,
             translation: translationFor(reply)
           })
@@ -361,11 +412,6 @@ export class XThreadLoader {
 
     // ---------- 交互 ----------
 
-    const handleMedia = (photos, index) => {
-      if (!readerEl || !photos.length) return;
-      openLightbox(readerEl, photos, index < 0 ? 0 : index, openUrlOf(modelsById.get(tweetId) || { id: tweetId }));
-    };
-
     const handleAction = async (key, model, button) => {
       if (key === 'reply') {
         setReplyTarget(model);
@@ -411,6 +457,7 @@ export class XThreadLoader {
       // 定向回复：点了某条评论的「回复」就回到那条，否则回主帖
       const inReplyTo = target && target.id ? String(target.id) : tweetId;
       await bridge.createReply(inReplyTo, text);
+      if (aborted) return;
       const local = {
         id: `local-${Date.now()}`,
         text,
@@ -480,6 +527,11 @@ export class XThreadLoader {
         }
         // 长文帖：先把正文补全再渲染，避免首屏只有封面
         await hydrateArticle(summary.focal);
+        // 补全期间用户可能已关闭弹窗或切到别的链接：必须重新确认，否则会把阅读器渲染进已关闭的面板，
+        // 并留下无人回收的 ResizeObserver / translationObserver / 资料卡
+        if (aborted) return;
+        // 供 diag() 自检使用
+        this.lastThread = { tweetId, models: modelsById };
         // 资料卡挂在阅读器根节点上，随弹窗关闭一起清理；须在渲染前创建，
         // 因为头像/昵称/@handle 的悬停绑定发生在渲染过程中
         profileCard = createProfileCard({
@@ -499,7 +551,6 @@ export class XThreadLoader {
           onAction: handleAction,
           onSort: handleSort,
           onSubmitReply: submitReply,
-          onMedia: handleMedia,
           translationFor,
           bindProfile,
           composerAvatar: account.avatar
@@ -517,16 +568,40 @@ export class XThreadLoader {
         }
         updateCount();
         renderReplies();
-        onLoad?.();
       } catch (err) {
         if (aborted) return;
         logger.warn('[XThreadLoader] read thread failed', err);
         // 错误态由弹窗自己的视图渲染，先摘掉阅读器布局
         container.classList.remove('pv-x-reader-mode');
         onError?.(`${err && err.message ? err.message : err}（X 的接口会变动，可点下方按钮改用新标签页打开）`);
+        return;
       }
-    })();
+      // onLoad 放在 try 之外：它若抛错就不会落进上面的 catch，
+      // 避免「先报加载成功、紧接着又报加载失败」并把已渲染的阅读器布局摘掉
+      if (!aborted) onLoad?.();
+    })().catch((err) => {
+      // 兜底：上面 catch 内部再抛错时不至于变成未处理的 rejection
+      logger.warn('[XThreadLoader] unexpected failure', err);
+    });
 
     return cleanup;
+  }
+
+  /**
+   * 自检：当前阅读器里各帖子的正文状态。
+   * 排查「长贴没显示全 / 该出『显示更多』却没出」时用它看真实数据。
+   */
+  diag() {
+    const thread = this.lastThread;
+    if (!thread) return 'no thread loaded';
+    const rows = [...thread.models.values()].slice(0, 12).map((model) => ({
+      id: model.id,
+      textLength: String(model.text || '').length,
+      hasFullText: Boolean(model.hasFullText),
+      needsExpand: Boolean(model.needsExpand),
+      entities: (model.entities || []).length,
+      tail: String(model.text || '').slice(-16)
+    }));
+    return { focalId: thread.tweetId, rows };
   }
 }

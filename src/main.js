@@ -17,7 +17,7 @@ import { installXBridge, pageWindow, captureState } from './x/xBridge.js';
 import { parseThreadSummary } from './x/xModel.js';
 import { readXTheme } from './x/xTheme.js';
 import { XThreadLoader } from './loaders/XThreadLoader.js';
-import { debugMark, showErr } from './utils/debugFlag.js';
+import { debugMark, showErr, debugEnabled } from './utils/debugFlag.js';
 import { hijacksFixed } from './utils/dom.js';
 
 const prefetch = new PrefetchManager(loaderManager);
@@ -52,6 +52,49 @@ function installXSupport() {
     hasOperation: (name) => Boolean(bridge.findOperation(name)),
     // 观感令牌自检：看 X 皮肤实际拿到的颜色/字体
     theme: () => readXTheme(),
+    // 字体自检：对比弹窗正文与宿主 X 帖子正文的字体/字重/抗锯齿，并列出祖先链上的 transform
+    fontDiag: () => {
+      const describe = (node) => {
+        if (!node) return null;
+        const cs = getComputedStyle(node);
+        const transforms = [];
+        const faded = [];
+        for (let current = node; current && current !== document.documentElement; current = current.parentElement) {
+          const style = getComputedStyle(current);
+          const where = current.id || current.className || current.tagName;
+          if (style.transform && style.transform !== 'none') transforms.push(`${where}: ${style.transform}`);
+          // opacity / filter 同样会让文字显得单薄
+          if (style.opacity !== '1') faded.push(`${where}: opacity=${style.opacity}`);
+          if (style.filter && style.filter !== 'none') faded.push(`${where}: filter=${style.filter}`);
+        }
+        return {
+          fontFamily: cs.fontFamily,
+          fontWeight: cs.fontWeight,
+          fontSize: cs.fontSize,
+          lineHeight: cs.lineHeight,
+          letterSpacing: cs.letterSpacing,
+          color: cs.color,
+          opacity: cs.opacity,
+          webkitFontSmoothing: cs.webkitFontSmoothing,
+          textRendering: cs.textRendering,
+          transforms,
+          faded
+        };
+      };
+      const panel = document.getElementById('popup-content-panel');
+      return {
+        mine: describe(document.querySelector('#popup-content-area .pv-x-text')),
+        xTweet: describe(document.querySelector('[data-testid="tweetText"]')),
+        chirpLoaded:
+          typeof document.fonts?.check === 'function' ? document.fonts.check('15px "TwitterChirp"') : 'unsupported',
+        panelTransform: panel ? getComputedStyle(panel).transform : null
+      };
+    },
+    // 帖子级自检：各帖子正文长度 / 是否已拿全文 / 是否需要「显示更多」
+    postDiag: () => {
+      const loader = loaderManager.get('xthread');
+      return loader && typeof loader.diag === 'function' ? loader.diag() : 'no xthread loader';
+    },
     // 定位自检：面板是否被宿主页面的 transform / CSS 影响而无法居中
     positionDiag: () => {
       const panel = document.getElementById('popup-content-panel');
@@ -114,10 +157,16 @@ function installXSupport() {
       };
     }
   };
-  try {
-    win.__PV2_X__ = api;
-  } catch (err) {
-    logger.warn('[main] expose __PV2_X__ failed', err);
+  // 自检入口含 probeRaw（可用当前登录会话直接发 GraphQL 读请求），故只在调试模式下暴露：
+  // URL 带 ?pv2_debug 或设置面板开启「调试标记」。
+  if (debugEnabled()) {
+    try {
+      win.__PV2_X__ = api;
+    } catch (err) {
+      logger.warn('[main] expose __PV2_X__ failed', err);
+    }
+  } else {
+    win.__PV2_X__ = undefined;
   }
   logger.log('[PV2] X GraphQL 网络层已安装');
 }

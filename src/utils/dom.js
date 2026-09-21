@@ -28,6 +28,13 @@ const ICON_PATHS = {
   arrowRight: {
     path: '<line x1="5" y1="12" x2="19" y2="12"></line><polyline points="12 5 19 12 12 19"></polyline>'
   },
+  // 图片切换用的细箭头（无杆，X 灯箱左右两侧的样式）
+  chevronLeft: {
+    path: '<polyline points="15 18 9 12 15 6"></polyline>'
+  },
+  chevronRight: {
+    path: '<polyline points="9 18 15 12 9 6"></polyline>'
+  },
   resize: {
     path: '<polyline points="7 17 17 7"></polyline><line x1="10" y1="17" x2="17" y2="17"></line><line x1="17" y1="10" x2="17" y2="17"></line>'
   },

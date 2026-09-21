@@ -1659,6 +1659,36 @@ a.xst::after {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
+/* 正文里的 @提及 / #话题 / $代码 / 链接 */
+.pv-x-entity {
+  color: var(--pv-x-accent, #1d9bf0);
+  text-decoration: none;
+}
+.pv-x-entity:hover {
+  text-decoration: underline;
+}
+/* 正文被截断时的「显示更多」 */
+.pv-x-more-text {
+  appearance: none;
+  -webkit-appearance: none;
+  display: block;
+  margin: 2px 0 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--pv-x-accent, #1d9bf0);
+  font: inherit;
+  font-size: 15px;
+  line-height: 20px;
+  cursor: pointer;
+}
+.pv-x-more-text:hover:not(:disabled) {
+  text-decoration: underline;
+}
+.pv-x-more-text:disabled {
+  color: var(--pv-x-muted, #536471);
+  cursor: default;
+}
 .pv-x-actions {
   display: flex;
   align-items: center;
@@ -1882,49 +1912,106 @@ article.pv-x-post[data-reply-target='true'] {
 .pv-x-translation-link:hover {
   text-decoration: underline;
 }
-/* 图片放大浮层（覆盖阅读器区域） */
-.pv-x-lightbox {
+/* 图片轮播：固定窗体 + 两侧固定箭头，只有中间轨道滑动（栏内默认态与覆盖式灯箱共用） */
+.pv-x-media.pv-x-media-carousel {
+  display: flex;
+  justify-content: center;
+  aspect-ratio: auto;
+}
+.pv-x-media-stage {
+  position: relative;
+  /* 栏内：宽度铺满，高度由 inline aspect-ratio（首图比例）决定，与单图逻辑一致；
+     浮层：宽高由 JS 按浮层可用区域算出（覆盖这里的 100%） */
+  width: 100%;
+  overflow: hidden;
+  /* 不加黑底：图片按比例缩放后，留白处露出页面/浮层背景，避免出现黑边与加载时的黑块 */
+  background-color: transparent;
+  outline: none;
+  /* 横向手势交给我们，纵向留给页面/栏滚动 */
+  touch-action: pan-y;
+  user-select: none;
+  -webkit-user-select: none;
+}
+/* 栏内默认态：点图弹出覆盖式大图 */
+.pv-x-media-stage-inline {
+  cursor: zoom-in;
+}
+/* 覆盖式浮层：宽高同样由 JS 按浮层可用区域与首图比例算出 */
+.pv-x-media-stage-overlay {
+  cursor: default;
+}
+.pv-x-media-stage.pv-x-media-dragging {
+  cursor: grabbing;
+}
+/* 覆盖式大图灯箱：用磨砂玻璃层而不是黑色遮罩 —— 不压黑，同时把背景内容压下去 */
+.pv-x-media-lightbox {
   position: absolute;
   inset: 0;
-  z-index: 5;
+  z-index: 6;
   display: flex;
   align-items: center;
   justify-content: center;
-  background-color: rgba(0, 0, 0, 0.86);
+  padding: 12px;
+  background-color: rgba(128, 128, 128, 0.28);
+  -webkit-backdrop-filter: blur(14px) saturate(140%);
+  backdrop-filter: blur(14px) saturate(140%);
 }
-.pv-x-lightbox-img {
+/* 轨道：所有图并排，靠 translateX 滑动；窗体与两侧箭头固定不动 */
+.pv-x-media-track {
+  display: flex;
+  width: 100%;
+  height: 100%;
+  will-change: transform;
+}
+.pv-x-media-slide {
+  flex: 0 0 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+}
+.pv-x-media-big {
   display: block;
   max-width: 100%;
+  /* 相对所在 slide（slide 有确定高度），不再用 70vh：矮栏里图片会超出窗体被裁掉 */
   max-height: 100%;
   object-fit: contain;
+  border-radius: 12px;
+  -webkit-user-drag: none;
 }
-.pv-x-lightbox-bar {
+/* 浮层里的图再给一点投影，从磨砂背景上"浮"起来 */
+.pv-x-media-stage-overlay .pv-x-media-big {
+  box-shadow: 0 14px 44px rgba(0, 0, 0, 0.3);
+}
+.pv-x-media-bar {
   position: absolute;
   top: 0;
+  left: 0;
   right: 0;
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 10px 12px;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 10px;
 }
-.pv-x-lightbox-counter,
-.pv-x-lightbox-open {
+.pv-x-media-counter,
+.pv-x-media-open {
   color: #fff;
   font-size: 13px;
   text-decoration: none;
 }
-.pv-x-lightbox-counter {
+.pv-x-media-counter {
   opacity: 0.8;
 }
-.pv-x-lightbox-open {
+.pv-x-media-open {
   opacity: 0.85;
 }
-.pv-x-lightbox-open:hover {
+.pv-x-media-open:hover {
   opacity: 1;
   text-decoration: underline;
 }
-.pv-x-lightbox-close,
-.pv-x-lightbox-nav {
+.pv-x-media-collapse {
   appearance: none;
   -webkit-appearance: none;
   display: flex;
@@ -1937,27 +2024,57 @@ article.pv-x-post[data-reply-target='true'] {
   border-radius: 50%;
   background-color: rgba(255, 255, 255, 0.14);
   color: #fff;
+  font: inherit;
   font-size: 15px;
   line-height: 1;
   cursor: pointer;
 }
-.pv-x-lightbox-close:hover,
-.pv-x-lightbox-nav:hover {
+.pv-x-media-collapse:hover {
   background-color: rgba(255, 255, 255, 0.24);
 }
-.pv-x-lightbox-nav {
+/* 左右切换箭头：垂直居中贴在图片两侧（与 X 灯箱一致） */
+.pv-x-media-nav {
+  appearance: none;
+  -webkit-appearance: none;
   position: absolute;
   top: 50%;
   transform: translateY(-50%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
   width: 40px;
   height: 40px;
-  font-size: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background-color: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  cursor: pointer;
 }
-.pv-x-lightbox-prev {
-  left: 12px;
+.pv-x-media-nav svg {
+  display: block;
+  width: 24px;
+  height: 24px;
 }
-.pv-x-lightbox-next {
-  right: 12px;
+.pv-x-media-nav:hover:not(:disabled) {
+  background-color: rgba(0, 0, 0, 0.75);
+}
+/* 到边界时按钮不隐藏（位置固定不动），只降透明度并禁用 */
+.pv-x-media-nav:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+.pv-x-media-prev {
+  left: 10px;
+}
+.pv-x-media-next {
+  right: 10px;
+}
+/* 降低动效偏好：滑动改为直接落位（不做位移动画） */
+@media (prefers-reduced-motion: reduce) {
+  .pv-x-media-track {
+    transition: none !important;
+  }
 }
 /* 作者资料卡（悬停出现，与 X 一致） */
 .pv-x-profile-trigger {
@@ -2235,7 +2352,8 @@ article.pv-x-post[data-reply-target='true'] {
   opacity: 0;
   pointer-events: none;
   transition: opacity 0.18s ease;
-  z-index: 2;
+  /* 必须高于大图灯箱(6)与资料卡(6)：否则灯箱开着时「链接已复制」这类提示看不见 */
+  z-index: 8;
 }
 .pv-x-toast[data-visible='true'] {
   opacity: 1;
@@ -2254,7 +2372,7 @@ article.pv-x-post[data-reply-target='true'] {
 .pv-x-reply .pv-x-thread-line {
   opacity: 0.92;
 }
-/* 媒体：1-4 宫格，X 的 16px 圆角 + 1px 描边 */
+/* 媒体：固定比例马赛克（X 原生思路）。宽高比由 CSS 给定，加载前即占位，无布局跳动 */
 .pv-x-media {
   display: grid;
   gap: 2px;
@@ -2264,22 +2382,39 @@ article.pv-x-post[data-reply-target='true'] {
   border-radius: 16px;
   overflow: hidden;
 }
-.pv-x-media-1,
-.pv-x-media-2,
-.pv-x-media-3,
-.pv-x-media-4 {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-}
+/* 单图：宽高比由 JS 按原图写入，不裁切 */
 .pv-x-media-1 {
   grid-template-columns: minmax(0, 1fr);
+  max-height: 460px;
+}
+/* 2 图：并排，整体 2:1 */
+.pv-x-media-2 {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  aspect-ratio: 2 / 1;
+  max-height: 300px;
+}
+/* 3 图：左一跨两行 + 右侧两张，整体 3:2 */
+.pv-x-media-3 {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-rows: repeat(2, minmax(0, 1fr));
+  aspect-ratio: 3 / 2;
+  max-height: 380px;
 }
 .pv-x-media-3 .pv-x-media-item:first-child {
   grid-row: span 2;
+}
+/* 4 图：2×2 方阵 */
+.pv-x-media-4 {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-rows: repeat(2, minmax(0, 1fr));
+  aspect-ratio: 1 / 1;
+  max-height: 420px;
 }
 .pv-x-media-item {
   display: block;
   position: relative;
   min-width: 0;
+  min-height: 0;
   overflow: hidden;
   /* 图片项是 <button>：显式复位，避免宿主 button 样式渗入 */
   appearance: none;
@@ -2295,12 +2430,10 @@ article.pv-x-post[data-reply-target='true'] {
   display: block;
   width: 100%;
   height: 100%;
-  max-height: 420px;
   object-fit: cover;
   border: 0;
 }
 .pv-x-media-1 .pv-x-media-item img {
-  max-height: 460px;
   object-fit: contain;
 }
 .pv-x-media-video {
@@ -2309,14 +2442,18 @@ article.pv-x-post[data-reply-target='true'] {
 }
 .pv-x-video {
   display: block;
+  flex: 1;
   width: 100%;
-  max-height: 460px;
+  min-width: 0;
+  min-height: 0;
   background-color: #000;
+  object-fit: contain;
 }
 .pv-x-video-poster {
   display: block;
+  flex: 1;
   width: 100%;
-  max-height: 460px;
+  min-height: 0;
   object-fit: contain;
   border: 0;
 }
@@ -2333,25 +2470,4 @@ article.pv-x-post[data-reply-target='true'] {
   color: var(--pv-x-muted, #536471);
   font-size: 14px;
   text-align: center;
-}
-.pv-x-more {
-  display: block;
-  width: calc(100% - 32px);
-  margin: 12px 16px 16px;
-  padding: 10px;
-  border: 1px solid var(--pv-x-border, #eff3f4);
-  border-radius: 999px;
-  background-color: transparent;
-  color: var(--pv-x-accent, #1d9bf0);
-  font-family: inherit;
-  font-size: 14px;
-  font-weight: 600;
-  cursor: pointer;
-}
-.pv-x-more:hover:not(:disabled) {
-  background-color: var(--pv-x-hover, rgba(0, 0, 0, 0.03));
-}
-.pv-x-more:disabled {
-  color: var(--pv-x-muted, #536471);
-  cursor: default;
 }

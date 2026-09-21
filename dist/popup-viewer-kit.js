@@ -325,6 +325,13 @@
     arrowRight: {
       path: '<line x1="5" y1="12" x2="19" y2="12"></line><polyline points="12 5 19 12 12 19"></polyline>'
     },
+    // 图片切换用的细箭头（无杆，X 灯箱左右两侧的样式）
+    chevronLeft: {
+      path: '<polyline points="15 18 9 12 15 6"></polyline>'
+    },
+    chevronRight: {
+      path: '<polyline points="9 18 15 12 9 6"></polyline>'
+    },
     resize: {
       path: '<polyline points="7 17 17 7"></polyline><line x1="10" y1="17" x2="17" y2="17"></line><line x1="17" y1="10" x2="17" y2="17"></line>'
     },
@@ -864,9 +871,7 @@
       }
       const iframe = el("iframe", {
         id: "popup-panel-iframe",
-        sandbox: this.sandbox.buildSandboxAttrs(hostname),
-        allow: "clipboard-read; clipboard-write; fullscreen; picture-in-picture",
-        referrerpolicy: "strict-origin-when-cross-origin"
+        sandbox: this.sandbox.buildSandboxAttrs(hostname)
       });
       try {
         iframe.contentWindow.__PV2_OWN_IFRAME__ = true;
@@ -1191,12 +1196,16 @@
       this.loaders[mode] = loader;
       return loader;
     }
+    /** 按模式取加载器（未注册时返回 null，避免外部直接摸 this.loaders 内部表） */
+    get(mode) {
+      return this.loaders[mode] || null;
+    }
     /**
      * 解析应使用的加载方式。
      */
     resolveMode(url, hostname) {
       const policy = this.sandbox.policyFor(hostname);
-      if (policy.xThread) return "xthread";
+      if (policy.xThread && this.loaders.xthread) return "xthread";
       if (policy.iframe) return "iframe";
       const mode = config.loader.defaultMode;
       if (mode === "iframe") return "iframe";

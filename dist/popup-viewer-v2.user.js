@@ -763,6 +763,13 @@
     arrowRight: {
       path: '<line x1="5" y1="12" x2="19" y2="12"></line><polyline points="12 5 19 12 12 19"></polyline>'
     },
+    // 图片切换用的细箭头（无杆，X 灯箱左右两侧的样式）
+    chevronLeft: {
+      path: '<polyline points="15 18 9 12 15 6"></polyline>'
+    },
+    chevronRight: {
+      path: '<polyline points="9 18 15 12 9 6"></polyline>'
+    },
     resize: {
       path: '<polyline points="7 17 17 7"></polyline><line x1="10" y1="17" x2="17" y2="17"></line><line x1="17" y1="10" x2="17" y2="17"></line>'
     },
@@ -1288,9 +1295,7 @@
       }
       const iframe = el("iframe", {
         id: "popup-panel-iframe",
-        sandbox: this.sandbox.buildSandboxAttrs(hostname),
-        allow: "clipboard-read; clipboard-write; fullscreen; picture-in-picture",
-        referrerpolicy: "strict-origin-when-cross-origin"
+        sandbox: this.sandbox.buildSandboxAttrs(hostname)
       });
       try {
         iframe.contentWindow.__PV2_OWN_IFRAME__ = true;
@@ -1615,12 +1620,16 @@
       this.loaders[mode] = loader;
       return loader;
     }
+    /** 按模式取加载器（未注册时返回 null，避免外部直接摸 this.loaders 内部表） */
+    get(mode) {
+      return this.loaders[mode] || null;
+    }
     /**
      * 解析应使用的加载方式。
      */
     resolveMode(url, hostname) {
       const policy = this.sandbox.policyFor(hostname);
-      if (policy.xThread) return "xthread";
+      if (policy.xThread && this.loaders.xthread) return "xthread";
       if (policy.iframe) return "iframe";
       const mode = config.loader.defaultMode;
       if (mode === "iframe") return "iframe";
@@ -4382,6 +4391,36 @@ a.xst::after {\r
   white-space: pre-wrap;\r
   overflow-wrap: anywhere;\r
 }\r
+/* 正文里的 @提及 / #话题 / $代码 / 链接 */\r
+.pv-x-entity {\r
+  color: var(--pv-x-accent, #1d9bf0);\r
+  text-decoration: none;\r
+}\r
+.pv-x-entity:hover {\r
+  text-decoration: underline;\r
+}\r
+/* 正文被截断时的「显示更多」 */\r
+.pv-x-more-text {\r
+  appearance: none;\r
+  -webkit-appearance: none;\r
+  display: block;\r
+  margin: 2px 0 0;\r
+  padding: 0;\r
+  border: 0;\r
+  background: none;\r
+  color: var(--pv-x-accent, #1d9bf0);\r
+  font: inherit;\r
+  font-size: 15px;\r
+  line-height: 20px;\r
+  cursor: pointer;\r
+}\r
+.pv-x-more-text:hover:not(:disabled) {\r
+  text-decoration: underline;\r
+}\r
+.pv-x-more-text:disabled {\r
+  color: var(--pv-x-muted, #536471);\r
+  cursor: default;\r
+}\r
 .pv-x-actions {\r
   display: flex;\r
   align-items: center;\r
@@ -4605,49 +4644,106 @@ article.pv-x-post[data-reply-target='true'] {\r
 .pv-x-translation-link:hover {\r
   text-decoration: underline;\r
 }\r
-/* 图片放大浮层（覆盖阅读器区域） */\r
-.pv-x-lightbox {\r
+/* 图片轮播：固定窗体 + 两侧固定箭头，只有中间轨道滑动（栏内默认态与覆盖式灯箱共用） */\r
+.pv-x-media.pv-x-media-carousel {\r
+  display: flex;\r
+  justify-content: center;\r
+  aspect-ratio: auto;\r
+}\r
+.pv-x-media-stage {\r
+  position: relative;\r
+  /* 栏内：宽度铺满，高度由 inline aspect-ratio（首图比例）决定，与单图逻辑一致；\r
+     浮层：宽高由 JS 按浮层可用区域算出（覆盖这里的 100%） */\r
+  width: 100%;\r
+  overflow: hidden;\r
+  /* 不加黑底：图片按比例缩放后，留白处露出页面/浮层背景，避免出现黑边与加载时的黑块 */\r
+  background-color: transparent;\r
+  outline: none;\r
+  /* 横向手势交给我们，纵向留给页面/栏滚动 */\r
+  touch-action: pan-y;\r
+  user-select: none;\r
+  -webkit-user-select: none;\r
+}\r
+/* 栏内默认态：点图弹出覆盖式大图 */\r
+.pv-x-media-stage-inline {\r
+  cursor: zoom-in;\r
+}\r
+/* 覆盖式浮层：宽高同样由 JS 按浮层可用区域与首图比例算出 */\r
+.pv-x-media-stage-overlay {\r
+  cursor: default;\r
+}\r
+.pv-x-media-stage.pv-x-media-dragging {\r
+  cursor: grabbing;\r
+}\r
+/* 覆盖式大图灯箱：用磨砂玻璃层而不是黑色遮罩 —— 不压黑，同时把背景内容压下去 */\r
+.pv-x-media-lightbox {\r
   position: absolute;\r
   inset: 0;\r
-  z-index: 5;\r
+  z-index: 6;\r
   display: flex;\r
   align-items: center;\r
   justify-content: center;\r
-  background-color: rgba(0, 0, 0, 0.86);\r
+  padding: 12px;\r
+  background-color: rgba(128, 128, 128, 0.28);\r
+  -webkit-backdrop-filter: blur(14px) saturate(140%);\r
+  backdrop-filter: blur(14px) saturate(140%);\r
 }\r
-.pv-x-lightbox-img {\r
+/* 轨道：所有图并排，靠 translateX 滑动；窗体与两侧箭头固定不动 */\r
+.pv-x-media-track {\r
+  display: flex;\r
+  width: 100%;\r
+  height: 100%;\r
+  will-change: transform;\r
+}\r
+.pv-x-media-slide {\r
+  flex: 0 0 100%;\r
+  display: flex;\r
+  align-items: center;\r
+  justify-content: center;\r
+  width: 100%;\r
+  height: 100%;\r
+}\r
+.pv-x-media-big {\r
   display: block;\r
   max-width: 100%;\r
+  /* 相对所在 slide（slide 有确定高度），不再用 70vh：矮栏里图片会超出窗体被裁掉 */\r
   max-height: 100%;\r
   object-fit: contain;\r
+  border-radius: 12px;\r
+  -webkit-user-drag: none;\r
 }\r
-.pv-x-lightbox-bar {\r
+/* 浮层里的图再给一点投影，从磨砂背景上"浮"起来 */\r
+.pv-x-media-stage-overlay .pv-x-media-big {\r
+  box-shadow: 0 14px 44px rgba(0, 0, 0, 0.3);\r
+}\r
+.pv-x-media-bar {\r
   position: absolute;\r
   top: 0;\r
+  left: 0;\r
   right: 0;\r
   display: flex;\r
   align-items: center;\r
-  gap: 12px;\r
-  padding: 10px 12px;\r
+  justify-content: space-between;\r
+  gap: 10px;\r
+  padding: 8px 10px;\r
 }\r
-.pv-x-lightbox-counter,\r
-.pv-x-lightbox-open {\r
+.pv-x-media-counter,\r
+.pv-x-media-open {\r
   color: #fff;\r
   font-size: 13px;\r
   text-decoration: none;\r
 }\r
-.pv-x-lightbox-counter {\r
+.pv-x-media-counter {\r
   opacity: 0.8;\r
 }\r
-.pv-x-lightbox-open {\r
+.pv-x-media-open {\r
   opacity: 0.85;\r
 }\r
-.pv-x-lightbox-open:hover {\r
+.pv-x-media-open:hover {\r
   opacity: 1;\r
   text-decoration: underline;\r
 }\r
-.pv-x-lightbox-close,\r
-.pv-x-lightbox-nav {\r
+.pv-x-media-collapse {\r
   appearance: none;\r
   -webkit-appearance: none;\r
   display: flex;\r
@@ -4660,27 +4756,57 @@ article.pv-x-post[data-reply-target='true'] {\r
   border-radius: 50%;\r
   background-color: rgba(255, 255, 255, 0.14);\r
   color: #fff;\r
+  font: inherit;\r
   font-size: 15px;\r
   line-height: 1;\r
   cursor: pointer;\r
 }\r
-.pv-x-lightbox-close:hover,\r
-.pv-x-lightbox-nav:hover {\r
+.pv-x-media-collapse:hover {\r
   background-color: rgba(255, 255, 255, 0.24);\r
 }\r
-.pv-x-lightbox-nav {\r
+/* 左右切换箭头：垂直居中贴在图片两侧（与 X 灯箱一致） */\r
+.pv-x-media-nav {\r
+  appearance: none;\r
+  -webkit-appearance: none;\r
   position: absolute;\r
   top: 50%;\r
   transform: translateY(-50%);\r
+  display: flex;\r
+  align-items: center;\r
+  justify-content: center;\r
   width: 40px;\r
   height: 40px;\r
-  font-size: 24px;\r
+  padding: 0;\r
+  border: 0;\r
+  border-radius: 50%;\r
+  background-color: rgba(0, 0, 0, 0.55);\r
+  color: #fff;\r
+  cursor: pointer;\r
 }\r
-.pv-x-lightbox-prev {\r
-  left: 12px;\r
+.pv-x-media-nav svg {\r
+  display: block;\r
+  width: 24px;\r
+  height: 24px;\r
 }\r
-.pv-x-lightbox-next {\r
-  right: 12px;\r
+.pv-x-media-nav:hover:not(:disabled) {\r
+  background-color: rgba(0, 0, 0, 0.75);\r
+}\r
+/* 到边界时按钮不隐藏（位置固定不动），只降透明度并禁用 */\r
+.pv-x-media-nav:disabled {\r
+  opacity: 0.35;\r
+  cursor: default;\r
+}\r
+.pv-x-media-prev {\r
+  left: 10px;\r
+}\r
+.pv-x-media-next {\r
+  right: 10px;\r
+}\r
+/* 降低动效偏好：滑动改为直接落位（不做位移动画） */\r
+@media (prefers-reduced-motion: reduce) {\r
+  .pv-x-media-track {\r
+    transition: none !important;\r
+  }\r
 }\r
 /* 作者资料卡（悬停出现，与 X 一致） */\r
 .pv-x-profile-trigger {\r
@@ -4958,7 +5084,8 @@ article.pv-x-post[data-reply-target='true'] {\r
   opacity: 0;\r
   pointer-events: none;\r
   transition: opacity 0.18s ease;\r
-  z-index: 2;\r
+  /* 必须高于大图灯箱(6)与资料卡(6)：否则灯箱开着时「链接已复制」这类提示看不见 */\r
+  z-index: 8;\r
 }\r
 .pv-x-toast[data-visible='true'] {\r
   opacity: 1;\r
@@ -4977,7 +5104,7 @@ article.pv-x-post[data-reply-target='true'] {\r
 .pv-x-reply .pv-x-thread-line {\r
   opacity: 0.92;\r
 }\r
-/* 媒体：1-4 宫格，X 的 16px 圆角 + 1px 描边 */\r
+/* 媒体：固定比例马赛克（X 原生思路）。宽高比由 CSS 给定，加载前即占位，无布局跳动 */\r
 .pv-x-media {\r
   display: grid;\r
   gap: 2px;\r
@@ -4987,22 +5114,39 @@ article.pv-x-post[data-reply-target='true'] {\r
   border-radius: 16px;\r
   overflow: hidden;\r
 }\r
-.pv-x-media-1,\r
-.pv-x-media-2,\r
-.pv-x-media-3,\r
-.pv-x-media-4 {\r
-  grid-template-columns: repeat(2, minmax(0, 1fr));\r
-}\r
+/* 单图：宽高比由 JS 按原图写入，不裁切 */\r
 .pv-x-media-1 {\r
   grid-template-columns: minmax(0, 1fr);\r
+  max-height: 460px;\r
+}\r
+/* 2 图：并排，整体 2:1 */\r
+.pv-x-media-2 {\r
+  grid-template-columns: repeat(2, minmax(0, 1fr));\r
+  aspect-ratio: 2 / 1;\r
+  max-height: 300px;\r
+}\r
+/* 3 图：左一跨两行 + 右侧两张，整体 3:2 */\r
+.pv-x-media-3 {\r
+  grid-template-columns: repeat(2, minmax(0, 1fr));\r
+  grid-template-rows: repeat(2, minmax(0, 1fr));\r
+  aspect-ratio: 3 / 2;\r
+  max-height: 380px;\r
 }\r
 .pv-x-media-3 .pv-x-media-item:first-child {\r
   grid-row: span 2;\r
+}\r
+/* 4 图：2×2 方阵 */\r
+.pv-x-media-4 {\r
+  grid-template-columns: repeat(2, minmax(0, 1fr));\r
+  grid-template-rows: repeat(2, minmax(0, 1fr));\r
+  aspect-ratio: 1 / 1;\r
+  max-height: 420px;\r
 }\r
 .pv-x-media-item {\r
   display: block;\r
   position: relative;\r
   min-width: 0;\r
+  min-height: 0;\r
   overflow: hidden;\r
   /* 图片项是 <button>：显式复位，避免宿主 button 样式渗入 */\r
   appearance: none;\r
@@ -5018,12 +5162,10 @@ article.pv-x-post[data-reply-target='true'] {\r
   display: block;\r
   width: 100%;\r
   height: 100%;\r
-  max-height: 420px;\r
   object-fit: cover;\r
   border: 0;\r
 }\r
 .pv-x-media-1 .pv-x-media-item img {\r
-  max-height: 460px;\r
   object-fit: contain;\r
 }\r
 .pv-x-media-video {\r
@@ -5032,14 +5174,18 @@ article.pv-x-post[data-reply-target='true'] {\r
 }\r
 .pv-x-video {\r
   display: block;\r
+  flex: 1;\r
   width: 100%;\r
-  max-height: 460px;\r
+  min-width: 0;\r
+  min-height: 0;\r
   background-color: #000;\r
+  object-fit: contain;\r
 }\r
 .pv-x-video-poster {\r
   display: block;\r
+  flex: 1;\r
   width: 100%;\r
-  max-height: 460px;\r
+  min-height: 0;\r
   object-fit: contain;\r
   border: 0;\r
 }\r
@@ -5057,30 +5203,11 @@ article.pv-x-post[data-reply-target='true'] {\r
   font-size: 14px;\r
   text-align: center;\r
 }\r
-.pv-x-more {\r
-  display: block;\r
-  width: calc(100% - 32px);\r
-  margin: 12px 16px 16px;\r
-  padding: 10px;\r
-  border: 1px solid var(--pv-x-border, #eff3f4);\r
-  border-radius: 999px;\r
-  background-color: transparent;\r
-  color: var(--pv-x-accent, #1d9bf0);\r
-  font-family: inherit;\r
-  font-size: 14px;\r
-  font-weight: 600;\r
-  cursor: pointer;\r
-}\r
-.pv-x-more:hover:not(:disabled) {\r
-  background-color: var(--pv-x-hover, rgba(0, 0, 0, 0.03));\r
-}\r
-.pv-x-more:disabled {\r
-  color: var(--pv-x-muted, #536471);\r
-  cursor: default;\r
-}\r
 `;
 
   // src/ui/PopupPanel.js
+  var SNAP_TRANSFORM_RE = /^translate\(calc\(-50%/;
+  var isSnapTransform = (value) => SNAP_TRANSFORM_RE.test(String(value || "").trim());
   var PopupPanel = class {
     constructor() {
       gm.addStyle(style_default);
@@ -5103,6 +5230,8 @@ article.pv-x-post[data-reply-target='true'] {\r
       this.preFullScreen = {};
       this.handlers = {};
       this._onKeydownBound = null;
+      this._snapTimer = null;
+      this._centerTimer = null;
     }
     ensure() {
       if (this.panel) return this.panel;
@@ -5229,6 +5358,7 @@ article.pv-x-post[data-reply-target='true'] {\r
       this.titleTextEl.textContent = title || "查看内容";
       this.updateFooterUrl(url);
       this.panel.classList.remove("visible");
+      clearTimeout(this._centerTimer);
       const pos = this.isFullScreen ? {
         top: this.preFullScreen.top || "",
         left: this.preFullScreen.left || "",
@@ -5236,7 +5366,9 @@ article.pv-x-post[data-reply-target='true'] {\r
       } : {
         top: this.panel.style.top,
         left: this.panel.style.left,
-        transform: this.panel.style.transform
+        // 只清掉自己写的「取整位移」：它会压掉 CSS 的居中与 scale 开场动画，且尺寸变化后会过期。
+        // 用户拖动/手机模式写入的 transform（none）必须原样保留，否则 left/top 会被当成左上角坐标再叠一次 -50%。
+        transform: isSnapTransform(this.panel.style.transform) ? "" : this.panel.style.transform
       };
       Object.assign(this.panel.style, {
         width: "",
@@ -5257,12 +5389,16 @@ article.pv-x-post[data-reply-target='true'] {\r
         debugMark("panel.visible");
         if (settingsManager.get().windowMode !== "float") this.overlay.classList.add("visible");
         this._fixCentering();
+        clearTimeout(this._snapTimer);
+        this._snapTimer = setTimeout(() => this._snapTransform(), 340);
       });
     }
     close() {
       var _a, _b, _c;
       if (!this.panel) return;
       if (this.isFullScreen) this.toggleFullScreen();
+      clearTimeout(this._snapTimer);
+      clearTimeout(this._centerTimer);
       this.hideSettings();
       (_a = this.floatBtn) == null ? void 0 : _a.classList.remove("hidden");
       this.panel.classList.remove("visible");
@@ -5290,7 +5426,7 @@ article.pv-x-post[data-reply-target='true'] {\r
      * 应用设置到面板：滚动条显隐 + 窗体大小预设 + 手机模式位置记忆。
      */
     applySettings(s) {
-      var _a, _b, _c, _d, _e, _f;
+      var _a, _b, _c, _d, _e, _f, _g;
       this.ensure();
       const prevSize = this.currentPanelSize;
       const nextSize = s.panelSize || config.popup.defaultSize;
@@ -5320,7 +5456,8 @@ article.pv-x-post[data-reply-target='true'] {\r
       }
       (_d = this.panel) == null ? void 0 : _d.style.setProperty("--popup-width", width);
       (_e = this.panel) == null ? void 0 : _e.style.setProperty("--popup-height", height);
-      if (((_f = this.settingsPopover) == null ? void 0 : _f.classList.contains("visible")) && this._settingsAnchor) {
+      if ((_f = this.panel) == null ? void 0 : _f.classList.contains("visible")) this._snapTransform();
+      if (((_g = this.settingsPopover) == null ? void 0 : _g.classList.contains("visible")) && this._settingsAnchor) {
         this.showSettingsNear(this._settingsAnchor);
       }
       if (nextSize === "phone") {
@@ -5382,7 +5519,30 @@ article.pv-x-post[data-reply-target='true'] {\r
       this.panel.style.left = "";
       this.panel.style.top = "";
       this.panel.style.transform = "";
-      this._fixCentering();
+      this._snapTransform();
+      clearTimeout(this._centerTimer);
+      this._centerTimer = setTimeout(() => {
+        if (!this.panel || !this.panel.classList.contains("visible")) return;
+        this._fixCentering();
+        this._snapTransform();
+      }, 340);
+    }
+    /**
+     * 把居中位移取整到整数像素。
+     * Chrome 在图层带**非整数位移**时会关闭次像素（LCD）抗锯齿、改用灰度抗锯齿，
+     * 同样的字重看起来就更细——弹窗正文与宿主页面字体粗细不一致多半出在这里
+     * （面板宽高取视口百分比，一半常是 x.5）。取整后视觉偏移 ≤0.5px，可忽略。
+     */
+    _snapTransform() {
+      if (!this.panel || this.isFullScreen) return;
+      if (this.panel.style.left || this.panel.style.top) return;
+      const rect = this.panel.getBoundingClientRect();
+      if (!rect.width || !rect.height) return;
+      const offset = (value) => {
+        const remainder = value / 2 - Math.round(value / 2);
+        return remainder < 0 ? `- ${Math.abs(remainder)}px` : `+ ${remainder}px`;
+      };
+      this.panel.style.transform = `translate(calc(-50% ${offset(rect.width)}), calc(-50% ${offset(rect.height)}))`;
     }
     /**
      * 居中校正：挂载点已避开被 transform 的祖先，但宿主页面仍可能有别的因素让
@@ -5547,7 +5707,10 @@ article.pv-x-post[data-reply-target='true'] {\r
       window.addEventListener("resize", () => {
         var _a, _b;
         if ((_a = this.panel) == null ? void 0 : _a.classList.contains("visible")) {
-          requestAnimationFrame(() => this._clampToViewport());
+          requestAnimationFrame(() => {
+            this._clampToViewport();
+            this._snapTransform();
+          });
         }
         if (((_b = this.settingsPopover) == null ? void 0 : _b.classList.contains("visible")) && this._settingsAnchor) {
           requestAnimationFrame(() => this.showSettingsNear(this._settingsAnchor));
@@ -6416,6 +6579,7 @@ article.pv-x-post[data-reply-target='true'] {\r
   };
   var webpackRuntime = null;
   var transactionIdFn;
+  var transactionIdProbedAt = 0;
   var operationCache = /* @__PURE__ */ new Map();
   function pageWindow() {
     try {
@@ -6590,11 +6754,13 @@ article.pv-x-post[data-reply-target='true'] {\r
     }
     return null;
   }
+  var OPERATION_MISS_TTL_MS = 5e3;
   function findOperation(win, operationName) {
-    if (operationCache.has(operationName)) return operationCache.get(operationName);
+    const cached = operationCache.get(operationName);
+    if (cached && (cached.found || Date.now() - cached.at < OPERATION_MISS_TTL_MS)) return cached.found;
     const predicate = (value) => value && value.operationName === operationName && typeof value.queryId === "string";
     const found = scanRuntime(getWebpackRuntime(win), operationName, predicate) || null;
-    operationCache.set(operationName, found);
+    operationCache.set(operationName, { found, at: Date.now() });
     return found;
   }
   function findTransactionIdFunction(win) {
@@ -6656,21 +6822,30 @@ article.pv-x-post[data-reply-target='true'] {\r
     if (csrf) headers["x-csrf-token"] = csrf;
     if (requiresCsrf && !csrf) throw new Error("当前 X 登录会话缺少 CSRF 信息，请刷新后重试");
     try {
-      if (transactionIdFn === void 0) transactionIdFn = findTransactionIdFunction(win);
-      if (typeof transactionIdFn === "function") {
-        const transactionId = await transactionIdFn(win.location.host, path, method);
-        if (transactionId && !String(transactionId).startsWith("e:")) headers["x-client-transaction-id"] = transactionId;
-      }
+      const transactionId = await resolveTransactionId(win, path, method);
+      if (transactionId && !String(transactionId).startsWith("e:")) headers["x-client-transaction-id"] = transactionId;
     } catch (err) {
       logger.debug("[xBridge] transaction id unavailable", err);
     }
     return headers;
   }
+  async function resolveTransactionId(win, path, method) {
+    if (!transactionIdFn && Date.now() - transactionIdProbedAt > OPERATION_MISS_TTL_MS) {
+      transactionIdProbedAt = Date.now();
+      transactionIdFn = findTransactionIdFunction(win) || null;
+    }
+    if (typeof transactionIdFn !== "function") return null;
+    return transactionIdFn(win.location.host, path, method);
+  }
   async function readJson(response) {
     const json = await response.json().catch(() => null);
-    if (!response.ok || json && json.errors && json.errors.length) {
-      const message = json && json.errors && json.errors[0] && json.errors[0].message || `X 请求失败（${response.status}）`;
+    const errors = json && json.errors || [];
+    if (!response.ok || !json || !json.data) {
+      const message = errors[0] && errors[0].message || `X 请求失败（${response.status}）`;
       throw new Error(message);
+    }
+    if (errors.length) {
+      logger.debug(`[xBridge] ${response.status} 部分数据缺失: ${errors.map((item) => item && item.message).join("; ")}`);
     }
     return json;
   }
@@ -6853,9 +7028,10 @@ article.pv-x-post[data-reply-target='true'] {\r
     }
     return { confirmed: false };
   }
+  var installedApi = null;
   function installXBridge(win = pageWindow()) {
     if (!win) return null;
-    if (win.__PV2_X_BRIDGE__) return win.__PV2_X_BRIDGE__;
+    if (installedApi) return installedApi;
     patchFetch(win);
     patchXhr(win);
     getWebpackRuntime(win);
@@ -6870,11 +7046,7 @@ article.pv-x-post[data-reply-target='true'] {\r
       findOperation: (operationName) => findOperation(win, operationName),
       captureState: () => captureState()
     };
-    try {
-      win.__PV2_X_BRIDGE__ = api;
-    } catch (err) {
-      logger.warn("[xBridge] expose failed", err);
-    }
+    installedApi = api;
     return api;
   }
   function captureState() {
@@ -6993,8 +7165,9 @@ article.pv-x-post[data-reply-target='true'] {\r
     }
     return out;
   }
-  var isMp4 = (variant) => /video\/mp4/i.test(String(variant.contentType || "")) || /\.mp4(?:\?|$)/i.test(String(variant.url || ""));
-  var isHls = (variant) => /mpegurl/i.test(String(variant.contentType || "")) || /\.m3u8(?:\?|$)/i.test(String(variant.url || ""));
+  var variantType = (variant) => String(variant.content_type || variant.contentType || "");
+  var isMp4 = (variant) => /video\/mp4/i.test(variantType(variant)) || /\.mp4(?:\?|$)/i.test(String(variant.url || ""));
+  var isHls = (variant) => /mpegurl/i.test(variantType(variant)) || /\.m3u8(?:\?|$)/i.test(String(variant.url || ""));
   function selectMp4(variants, targetBitrate = 12e5) {
     const measured = variants.filter((variant) => Number(variant.bitrate) > 0).sort((a, b) => a.bitrate - b.bitrate);
     const within = measured.filter((variant) => variant.bitrate <= targetBitrate);
@@ -7002,7 +7175,7 @@ article.pv-x-post[data-reply-target='true'] {\r
   }
   function mediaItems(tweet, legacy) {
     const modern = Array.isArray(tweet.media) ? tweet.media : tweet.media && (tweet.media.all || tweet.media.media) || [];
-    const list = legacy.extended_entities && legacy.extended_entities.media || legacy.entities && legacy.entities.media || modern || [];
+    const list = mediaListOf(legacy, modern);
     const items = [];
     for (const raw of list) {
       const variants = variantsOf(raw);
@@ -7048,7 +7221,9 @@ article.pv-x-post[data-reply-target='true'] {\r
   function articleResult(tweet) {
     let current = tweet.article && tweet.article.article_results && tweet.article.article_results.result || tweet.article && tweet.article.result || tweet.article_results && tweet.article_results.result || tweet.article || null;
     for (let index = 0; current && index < 5; index += 1) {
-      if (current.title || current.preview_text || current.cover_media || current.cover_image) return current;
+      if (current.title || current.preview_text || current.cover_media || current.cover_image || current.content_state || current.contentState || current.plain_text || current.plainText) {
+        return current;
+      }
       if (current.result) current = current.result;
       else if (current.article) current = current.article;
       else break;
@@ -7110,19 +7285,16 @@ article.pv-x-post[data-reply-target='true'] {\r
   function articleAttachment(tweet, legacy) {
     const article = articleResult(tweet);
     if (!article) return null;
-    const cover = findNamedValue(article, ["cover_media", "cover_image", "preview_image"], 3) || article;
+    const cover = findNamedValue(article, ["cover_media", "cover_image", "preview_image"], 3);
+    const articleUrl = articleUrlFromEntities(legacy);
     return {
       type: "article",
-      url: articleUrlFromEntities(legacy),
-      sourceUrl: articleUrlFromEntities(legacy),
-      domain: "x.com",
+      url: articleUrl,
       title: String(article.title || ""),
       description: String(article.preview_text || article.description || article.summary || ""),
-      image: String(
-        findNamedValue(cover, ["original_img_url", "media_url_https", "image_url", "url"], 5) || ""
-      ),
-      imageWidth: Number(findNamedValue(cover, ["original_img_width", "width"], 5)) || 0,
-      imageHeight: Number(findNamedValue(cover, ["original_img_height", "height"], 5)) || 0,
+      image: cover ? String(findNamedValue(cover, ["original_img_url", "media_url_https", "image_url"], 5) || "") : "",
+      imageWidth: cover ? Number(findNamedValue(cover, ["original_img_width", "width"], 5)) || 0 : 0,
+      imageHeight: cover ? Number(findNamedValue(cover, ["original_img_height", "height"], 5)) || 0 : 0,
       content: articleContent(article)
     };
   }
@@ -7139,9 +7311,106 @@ article.pv-x-post[data-reply-target='true'] {\r
     if (state && Array.isArray(state.blocks) && state.blocks.length) return articleContent({ content_state: state });
     return null;
   }
+  function fullTextFromPayload(json, tweetId) {
+    const nodes = collectTweetNodes(json && json.data || json);
+    const target = String(tweetId || "");
+    for (const node of nodes) {
+      const model = liteModel(node);
+      if (model && model.id === target && model.hasFullText) {
+        return { text: model.text, entities: model.entities };
+      }
+    }
+    return null;
+  }
   function numberValue(value) {
     const n = Number(value);
     return Number.isFinite(n) ? n : 0;
+  }
+  function codePointMap(text) {
+    const map = [];
+    let codePoint = 0;
+    for (let index = 0; index < text.length; ) {
+      map[codePoint] = index;
+      const code = text.codePointAt(index);
+      index += code > 65535 ? 2 : 1;
+      codePoint += 1;
+    }
+    map[codePoint] = text.length;
+    return map;
+  }
+  function mediaListOf(legacy, modern) {
+    const candidates = [
+      legacy && legacy.extended_entities && legacy.extended_entities.media,
+      legacy && legacy.entities && legacy.entities.media,
+      modern
+    ];
+    return candidates.find((value) => Array.isArray(value) && value.length > 0) || [];
+  }
+  function firstMediaIndices(legacy) {
+    const media = mediaListOf(legacy, null);
+    const first = media[0];
+    return first && Array.isArray(first.indices) ? first.indices : null;
+  }
+  function entityRanges(entitySet, text, window_ = { start: 0, end: text.length }) {
+    const ranges = [];
+    if (!entitySet) return ranges;
+    const map = codePointMap(text);
+    const at = (index) => map[index] === void 0 ? text.length : map[index];
+    const add = (entry, kind, url, label) => {
+      const indices = entry && entry.indices;
+      if (!Array.isArray(indices) || indices.length < 2) return null;
+      const start = at(Number(indices[0]) || 0);
+      const end = at(Number(indices[1]) || 0);
+      if (end <= start) return null;
+      if (start < window_.start || end > window_.end) return null;
+      const range = { start: start - window_.start, end: end - window_.start, kind, url: url || "", label: label || "", author: null };
+      ranges.push(range);
+      return range;
+    };
+    for (const entry of entitySet.urls || []) {
+      const expanded = String(entry && (entry.expanded_url || entry.url) || "");
+      add(entry, "url", expanded, String(entry && entry.display_url || expanded));
+    }
+    for (const entry of entitySet.user_mentions || []) {
+      const handle = String(entry && entry.screen_name || "");
+      if (!handle) continue;
+      const range = add(entry, "mention", `https://x.com/${handle}`, `@${handle}`);
+      if (range) {
+        range.author = {
+          id: String(entry && (entry.id_str || entry.id) || ""),
+          name: String(entry && entry.name || handle),
+          handle,
+          avatar: "",
+          verified: false
+        };
+      }
+    }
+    for (const entry of entitySet.hashtags || []) {
+      const tag = String(entry && entry.text || "");
+      if (!tag) continue;
+      add(entry, "hashtag", `https://x.com/hashtag/${encodeURIComponent(tag)}`, `#${tag}`);
+    }
+    for (const entry of entitySet.symbols || []) {
+      const symbol = String(entry && entry.text || "");
+      if (!symbol) continue;
+      add(entry, "symbol", `https://x.com/search?q=${encodeURIComponent(`$${symbol}`)}`, `$${symbol}`);
+    }
+    return ranges.sort((a, b) => a.start - b.start || b.end - a.end);
+  }
+  function visibleWindow(legacy, fullText) {
+    const map = codePointMap(fullText);
+    const range = Array.isArray(legacy.display_text_range) ? legacy.display_text_range : null;
+    if (range && range.length === 2) {
+      const start = map[Number(range[0])] || 0;
+      const rawEnd = map[Number(range[1])];
+      return { start, end: rawEnd === void 0 ? fullText.length : rawEnd };
+    }
+    const mediaIndices = firstMediaIndices(legacy);
+    if (mediaIndices) {
+      const cut = map[Number(mediaIndices[0])];
+      if (cut !== void 0) return { start: 0, end: cut };
+    }
+    return { start: 0, end: fullText.length };
   }
   function liteModel(node) {
     const tweet = unwrapResult(node);
@@ -7155,11 +7424,23 @@ article.pv-x-post[data-reply-target='true'] {\r
     const bio = user && user.profile_bio || {};
     const noteText = tweet.note_tweet && tweet.note_tweet.note_tweet_results && tweet.note_tweet.note_tweet_results.result;
     const media = mediaItems(tweet, legacy);
+    const noteFullText = noteText && typeof noteText.text === "string" ? noteText.text : "";
+    const usingNoteText = Boolean(noteFullText);
+    const entitySet = usingNoteText && noteText.entity_set || legacy.entities || null;
+    const fullText = noteFullText || String(legacy.full_text || legacy.text || "");
+    const window_ = usingNoteText ? { start: 0, end: fullText.length } : visibleWindow(legacy, fullText);
+    const text = fullText.slice(window_.start, window_.end).replace(/[ \t]+$/, "");
+    const truncated = Boolean(legacy.truncated) || !usingNoteText && /…$/.test(fullText.trim());
     return {
       id: String(tweet.rest_id || legacy.id_str || ""),
       inReplyToId: String(legacy.in_reply_to_status_id_str || ""),
       conversationId: String(legacy.conversation_id_str || ""),
-      text: (noteText && typeof noteText.text === "string" ? noteText.text : "") || String(legacy.full_text || legacy.text || ""),
+      text,
+      // @提及 / #话题 / $代码 / 链接的可渲染区间（含码点→UTF-16 偏移换算与显示窗口裁剪）
+      entities: entityRanges(entitySet, fullText, window_),
+      // 是否已拿到全文；needsExpand 表示需要「显示更多」补全（供渲染层出按钮）
+      hasFullText: usingNoteText,
+      needsExpand: truncated && !usingNoteText,
       createdAt: String(legacy.created_at || ""),
       author: {
         id: String(user && user.rest_id || userLegacy.id_str || ""),
@@ -7193,16 +7474,16 @@ article.pv-x-post[data-reply-target='true'] {\r
       },
       media,
       mediaCount: media.length,
-      attachment: articleAttachment(tweet, legacy),
-      isNoteTweet: Boolean(noteText && typeof noteText.text === "string" && noteText.text)
+      attachment: articleAttachment(tweet, legacy)
     };
   }
-  function bottomCursor(value, seen = /* @__PURE__ */ new Set()) {
-    if (!value || typeof value !== "object" || seen.has(value)) return null;
-    seen.add(value);
+  function bottomCursor(value) {
+    if (!value || typeof value !== "object") return null;
+    const seen = /* @__PURE__ */ new Set();
     let fallback = null;
     const walk = (node) => {
-      if (!node || typeof node !== "object") return null;
+      if (!node || typeof node !== "object" || seen.has(node)) return null;
+      seen.add(node);
       const type = String(node.cursorType || "");
       if (/^Bottom$/i.test(type) && typeof node.value === "string") return node.value;
       if (/^(?:ShowMoreThreads|ShowMoreThread)$/i.test(type) && typeof node.value === "string" && !fallback) fallback = node.value;
@@ -7222,8 +7503,12 @@ article.pv-x-post[data-reply-target='true'] {\r
   }
   function parseThreadSummary(json, focalTweetId) {
     const nodes = collectTweetNodes(json && json.data || json);
-    const models = nodes.map(liteModel).filter((model) => model && model.id);
-    const byId = new Map(models.map((model) => [model.id, model]));
+    const byId = /* @__PURE__ */ new Map();
+    for (const node of nodes) {
+      const model = liteModel(node);
+      if (model && model.id) byId.set(model.id, model);
+    }
+    const models = [...byId.values()];
     const focalId = String(focalTweetId || "");
     const focal = byId.get(focalId) || null;
     const cursor = bottomCursor(json && json.data || json);
@@ -7378,10 +7663,8 @@ article.pv-x-post[data-reply-target='true'] {\r
   };
   var cache = /* @__PURE__ */ new Map();
   function xIcon(name) {
-    if (cache.has(name)) {
-      const cached = cache.get(name);
-      return cached ? cached.cloneNode(true) : null;
-    }
+    const cached = cache.get(name);
+    if (cached) return cached.cloneNode(true);
     let source = null;
     for (const selector of SELECTORS[name] || []) {
       try {
@@ -7392,10 +7675,7 @@ article.pv-x-post[data-reply-target='true'] {\r
       if (source && String(source.tagName).toLowerCase() === "svg") break;
       source = null;
     }
-    if (!source) {
-      cache.set(name, null);
-      return null;
-    }
+    if (!source) return null;
     const clone = source.cloneNode(true);
     clone.removeAttribute("width");
     clone.removeAttribute("height");
@@ -7406,6 +7686,7 @@ article.pv-x-post[data-reply-target='true'] {\r
     return clone.cloneNode(true);
   }
   function primeXIcons() {
+    cache.clear();
     for (const name of Object.keys(SELECTORS)) xIcon(name);
   }
 
@@ -7691,6 +7972,10 @@ article.pv-x-post[data-reply-target='true'] {\r
   ];
   var FLAG_BY_ACTION = { like: "liked", repost: "reposted", bookmark: "bookmarked" };
   var COUNT_BY_ACTION = { reply: "replies", repost: "reposts", like: "likes", bookmark: "bookmarks", views: "views" };
+  function countOf(model, key) {
+    if (!key) return 0;
+    return Number(model && model.counts && model.counts[key]) || 0;
+  }
   function paintAction(button, model, key) {
     if (!button) return;
     const flag = FLAG_BY_ACTION[key];
@@ -7698,13 +7983,13 @@ article.pv-x-post[data-reply-target='true'] {\r
     const countNode = button.querySelector(".pv-x-count");
     const countKey = COUNT_BY_ACTION[key];
     if (!countNode || !countKey) return;
-    const value = Number(model.counts[countKey]) || 0;
+    const value = countOf(model, countKey);
     countNode.textContent = value ? formatCount2(value) : "";
   }
   function actionsNode(model, onAction) {
     const row = el("div", { class: "pv-x-actions" });
     for (const spec of ACTIONS2) {
-      const value = spec.count ? Number(model.counts[spec.count]) || 0 : 0;
+      const value = spec.count ? countOf(model, spec.count) : 0;
       const icon = xIcon(spec.icon);
       if (!icon && !value && !spec.readonly) continue;
       if (spec.readonly && !value) continue;
@@ -7734,7 +8019,45 @@ article.pv-x-post[data-reply-target='true'] {\r
     if (!model.attachment || model.attachment.type !== "article") return text;
     return text.replace(/https?:\/\/t\.co\/\S+/g, "").trim();
   }
-  function renderTextBlock(block, model, view) {
+  function appendRichText(container, model, bindProfile) {
+    const text = displayText(model);
+    const ranges = (model.entities || []).filter((range) => range.end > range.start && range.start >= 0);
+    if (!ranges.length) {
+      container.appendChild(document.createTextNode(text));
+      return;
+    }
+    const prefixOf = { mention: "@", hashtag: "#", symbol: "$" };
+    let cursor = 0;
+    for (const range of ranges) {
+      const start = Math.max(cursor, Math.min(range.start, text.length));
+      const end = Math.max(start, Math.min(range.end, text.length));
+      if (start > cursor) container.appendChild(document.createTextNode(text.slice(cursor, start)));
+      if (end > start) {
+        const sliced = text.slice(start, end);
+        const prefix = prefixOf[range.kind];
+        const label = range.kind === "url" ? range.label || sliced : sliced;
+        const valid = range.kind === "url" ? Boolean(range.url) : !prefix || sliced.startsWith(prefix);
+        if (!range.url || !valid) {
+          container.appendChild(document.createTextNode(sliced));
+        } else {
+          const link = el("a", {
+            class: `pv-x-entity pv-x-entity-${range.kind}`,
+            href: range.url,
+            target: "_blank",
+            rel: "noreferrer",
+            text: label
+          });
+          if (range.kind === "mention" && range.author && bindProfile) {
+            bindProfile(link, { id: range.author.id, author: range.author });
+          }
+          container.appendChild(link);
+        }
+      }
+      cursor = end;
+    }
+    if (cursor < text.length) container.appendChild(document.createTextNode(text.slice(cursor)));
+  }
+  function renderTextBlock(block, model, view, bindProfile = null) {
     block.replaceChildren();
     const offered = Boolean(view && view.offered);
     const entry = view && view.entry;
@@ -7768,11 +8091,29 @@ article.pv-x-post[data-reply-target='true'] {\r
       }
       if (row.childNodes.length) block.appendChild(row);
     }
-    block.appendChild(el("div", { class: "pv-x-text", text: showing ? entry.text : displayText(model) }));
+    const body = el("div", { class: "pv-x-text" });
+    if (showing) body.textContent = entry.text;
+    else appendRichText(body, model, bindProfile);
+    block.appendChild(body);
+    if (model.needsExpand) {
+      const more = el("button", {
+        class: "pv-x-more-text",
+        type: "button",
+        text: model.expanding ? "正在加载全文…" : "显示更多",
+        disabled: model.expanding ? "" : null
+      });
+      more.addEventListener("click", (event) => {
+        var _a;
+        event.preventDefault();
+        event.stopPropagation();
+        (_a = view == null ? void 0 : view.onExpand) == null ? void 0 : _a.call(view, model);
+      });
+      block.appendChild(more);
+    }
   }
-  function textBlock(model, view) {
+  function textBlock(model, view, bindProfile) {
     const block = el("div", { class: "pv-x-translatable", "data-translation-id": model.id });
-    renderTextBlock(block, model, view);
+    renderTextBlock(block, model, view, bindProfile);
     return block;
   }
   function appendInline(container, block) {
@@ -7879,67 +8220,288 @@ article.pv-x-post[data-reply-target='true'] {\r
     card.appendChild(body);
     return card;
   }
-  function openLightbox(reader, items, index, openUrl) {
-    var _a;
-    (_a = reader.querySelector(".pv-x-lightbox")) == null ? void 0 : _a.remove();
-    if (!items.length) return () => {
-    };
-    let current = Math.max(0, Math.min(index, items.length - 1));
-    const box = el("div", { class: "pv-x-lightbox", role: "dialog", "aria-modal": "true", "aria-label": "图片查看" });
-    const image = el("img", { class: "pv-x-lightbox-img", src: items[current].url, alt: items[current].altText || "" });
-    const counter = items.length > 1 ? el("span", { class: "pv-x-lightbox-counter", text: `${current + 1} / ${items.length}` }) : null;
-    const show = (next) => {
-      current = (next + items.length) % items.length;
-      image.src = items[current].url;
-      image.alt = items[current].altText || "";
-      if (counter) counter.textContent = `${current + 1} / ${items.length}`;
-    };
-    const onKey = (event) => {
-      if (event.key === "Escape") {
-        event.stopPropagation();
-        close();
-      } else if (event.key === "ArrowRight" && items.length > 1) {
-        event.stopPropagation();
-        show(current + 1);
-      } else if (event.key === "ArrowLeft" && items.length > 1) {
-        event.stopPropagation();
-        show(current - 1);
+  function createMediaCarousel(photos, { openUrl, variant = "inline", startIndex = 0, onZoom = null, onClose = null } = {}) {
+    if (!photos.length) return null;
+    let current = Math.max(0, Math.min(startIndex, photos.length - 1));
+    const framePhoto = photos[0];
+    const stage = el("div", { class: `pv-x-media-stage pv-x-media-stage-${variant}`, tabindex: "-1" });
+    if (framePhoto.width && framePhoto.height) stage.style.aspectRatio = `${framePhoto.width} / ${framePhoto.height}`;
+    const track = el("div", { class: "pv-x-media-track" });
+    const slides = photos.map((photo) => {
+      const slide = el(
+        "div",
+        { class: "pv-x-media-slide" },
+        el("img", { class: "pv-x-media-big", src: photo.url, alt: photo.altText || "", loading: "lazy", draggable: "false" })
+      );
+      track.appendChild(slide);
+      return slide;
+    });
+    const counter = el("span", { class: "pv-x-media-counter" });
+    const closeButton = el("button", {
+      class: "pv-x-media-collapse",
+      type: "button",
+      "aria-label": variant === "overlay" ? "关闭大图" : "收起图片",
+      text: "✕"
+    });
+    const barChildren = [
+      counter,
+      el("a", { class: "pv-x-media-open", href: openUrl, target: "_blank", rel: "noreferrer", text: "在 X 打开" })
+    ];
+    if (variant === "overlay") barChildren.push(closeButton);
+    const bar = el("div", { class: "pv-x-media-bar" }, ...barChildren);
+    const prevButton = photos.length > 1 ? el(
+      "button",
+      { class: "pv-x-media-nav pv-x-media-prev", type: "button", "aria-label": "上一张" },
+      svgIcon("chevronLeft", { size: 24 })
+    ) : null;
+    const nextButton = photos.length > 1 ? el(
+      "button",
+      { class: "pv-x-media-nav pv-x-media-next", type: "button", "aria-label": "下一张" },
+      svgIcon("chevronRight", { size: 24 })
+    ) : null;
+    const reduceMotion = () => {
+      try {
+        return window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+      } catch (err) {
+        return false;
       }
     };
-    const close = () => {
-      document.removeEventListener("keydown", onKey, true);
-      box.remove();
+    const width = () => stage.clientWidth || 1;
+    const targetOf = (i) => -i * width();
+    let x = targetOf(current);
+    let velocity = 0;
+    let frame = null;
+    let lastFrameAt = 0;
+    const render = () => {
+      track.style.transform = `translateX(${x}px)`;
     };
-    const closeButton = el("button", { class: "pv-x-lightbox-close", type: "button", "aria-label": "关闭", text: "✕" });
-    closeButton.addEventListener("click", close);
-    const bar = el(
-      "div",
-      { class: "pv-x-lightbox-bar" },
-      counter,
-      el("a", { class: "pv-x-lightbox-open", href: openUrl, target: "_blank", rel: "noreferrer", text: "在 X 打开" }),
-      closeButton
-    );
-    box.appendChild(image);
-    box.appendChild(bar);
-    if (items.length > 1) {
-      const prev = el("button", { class: "pv-x-lightbox-nav pv-x-lightbox-prev", type: "button", "aria-label": "上一张", text: "‹" });
-      const next = el("button", { class: "pv-x-lightbox-nav pv-x-lightbox-next", type: "button", "aria-label": "下一张", text: "›" });
-      prev.addEventListener("click", () => show(current - 1));
-      next.addEventListener("click", () => show(current + 1));
-      box.append(prev, next);
+    const stopAnim = () => {
+      if (frame !== null) cancelAnimationFrame(frame);
+      frame = null;
+      lastFrameAt = 0;
+    };
+    const paintButtons = () => {
+      if (prevButton) prevButton.disabled = current <= 0;
+      if (nextButton) nextButton.disabled = current >= photos.length - 1;
+      counter.textContent = `${current + 1} / ${photos.length}`;
+      slides.forEach((slide, i) => slide.setAttribute("aria-hidden", String(i !== current)));
+    };
+    const settle = (targetIndex, v0 = 0) => {
+      current = Math.max(0, Math.min(targetIndex, photos.length - 1));
+      paintButtons();
+      const to = targetOf(current);
+      if (reduceMotion() || photos.length < 2) {
+        stopAnim();
+        x = to;
+        velocity = 0;
+        render();
+        return;
+      }
+      stopAnim();
+      const response = 0.34;
+      const omega = 2 * Math.PI / response;
+      const damping = Math.abs(v0) > 300 ? 0.85 : 1;
+      velocity = v0;
+      const step = (now) => {
+        const dt = lastFrameAt ? Math.min((now - lastFrameAt) / 1e3, 1 / 30) : 1 / 60;
+        lastFrameAt = now;
+        const accel = -omega * omega * (x - to) - 2 * damping * omega * velocity;
+        velocity += accel * dt;
+        x += velocity * dt;
+        if (Math.abs(x - to) < 0.5 && Math.abs(velocity) < 8) {
+          x = to;
+          velocity = 0;
+          render();
+          frame = null;
+          lastFrameAt = 0;
+          return;
+        }
+        render();
+        frame = requestAnimationFrame(step);
+      };
+      frame = requestAnimationFrame(step);
+    };
+    const show = (next) => settle(next);
+    if (prevButton) prevButton.addEventListener("click", () => show(current - 1));
+    if (nextButton) nextButton.addEventListener("click", () => show(current + 1));
+    const frameRatio = framePhoto.width && framePhoto.height ? framePhoto.height / framePhoto.width : 0;
+    const wrapper = () => stage.parentElement;
+    let resizeObserver = null;
+    let observedBox = null;
+    const syncFrame = () => {
+      if (variant !== "overlay") return;
+      const box = wrapper();
+      if (!box) return;
+      if (resizeObserver && observedBox !== box) {
+        if (observedBox) resizeObserver.unobserve(observedBox);
+        resizeObserver.observe(box);
+        observedBox = box;
+      }
+      const availableWidth = box.clientWidth - 24;
+      const availableHeight = box.clientHeight - 24;
+      if (availableWidth <= 0 || availableHeight <= 0) return;
+      let width2 = availableWidth;
+      let height = frameRatio ? width2 * frameRatio : availableHeight;
+      if (height > availableHeight) {
+        height = availableHeight;
+        width2 = frameRatio ? height / frameRatio : availableWidth;
+      }
+      stage.style.width = `${Math.round(width2)}px`;
+      stage.style.height = `${Math.round(height)}px`;
+    };
+    if (typeof ResizeObserver === "function") {
+      resizeObserver = new ResizeObserver(() => {
+        if (drag) return;
+        syncFrame();
+        x = targetOf(current);
+        render();
+      });
+      resizeObserver.observe(stage);
     }
-    box.addEventListener("click", (event) => {
-      if (event.target === box) close();
-    });
-    document.addEventListener("keydown", onKey, true);
-    reader.appendChild(box);
-    return close;
+    syncFrame();
+    const project = (v, deceleration = 0.998) => v / 1e3 * deceleration / (1 - deceleration);
+    const rubberband = (overshoot, dimension, constant = 0.55) => overshoot * dimension * constant / (dimension + constant * Math.abs(overshoot));
+    let drag = null;
+    const onPointerDown = (event) => {
+      if (photos.length < 2 || event.target.closest("button, a")) return;
+      stopAnim();
+      const now = performance.now();
+      drag = { startX: event.clientX, base: x, samples: [[now, x]] };
+      stage.classList.add("pv-x-media-dragging");
+      try {
+        stage.setPointerCapture(event.pointerId);
+      } catch (err) {
+      }
+    };
+    const onPointerMove = (event) => {
+      if (!drag) return;
+      const min = targetOf(photos.length - 1);
+      const max = 0;
+      let next = drag.base + (event.clientX - drag.startX);
+      if (next > max) next = max + rubberband(next - max, width());
+      else if (next < min) next = min - rubberband(min - next, width());
+      x = next;
+      render();
+      const now = performance.now();
+      drag.samples.push([now, x]);
+      while (drag.samples.length > 2 && now - drag.samples[0][0] > 90) drag.samples.shift();
+    };
+    const onPointerUp = () => {
+      if (!drag) return;
+      stage.classList.remove("pv-x-media-dragging");
+      const samples = drag.samples;
+      const last = samples[samples.length - 1];
+      const first = samples[0];
+      const dt = last[0] - first[0];
+      const v0 = dt > 0 ? (last[1] - first[1]) / dt * 1e3 : 0;
+      const projected = x + project(v0);
+      const targetIndex = Math.max(0, Math.min(Math.round(-projected / width()), photos.length - 1));
+      drag = null;
+      settle(targetIndex, v0);
+    };
+    const destroy = () => {
+      stopAnim();
+      resizeObserver == null ? void 0 : resizeObserver.disconnect();
+      resizeObserver = null;
+      stage.removeEventListener("keydown", onKey);
+      stage.removeEventListener("pointerdown", onPointerDown);
+      stage.removeEventListener("pointermove", onPointerMove);
+      stage.removeEventListener("pointerup", onPointerUp);
+      stage.removeEventListener("pointercancel", onPointerUp);
+    };
+    const close = () => {
+      destroy();
+      onClose == null ? void 0 : onClose();
+    };
+    function onKey(event) {
+      if (event.key === "Escape" && variant === "overlay") {
+        event.stopPropagation();
+        event.preventDefault();
+        close();
+      } else if (event.key === "ArrowRight" && photos.length > 1) {
+        event.stopPropagation();
+        event.preventDefault();
+        show(current + 1);
+      } else if (event.key === "ArrowLeft" && photos.length > 1) {
+        event.stopPropagation();
+        event.preventDefault();
+        show(current - 1);
+      }
+    }
+    closeButton.addEventListener("click", close);
+    stage.addEventListener("keydown", onKey);
+    stage.addEventListener("pointerdown", onPointerDown);
+    stage.addEventListener("pointermove", onPointerMove);
+    stage.addEventListener("pointerup", onPointerUp);
+    stage.addEventListener("pointercancel", onPointerUp);
+    if (variant === "inline" && onZoom) {
+      stage.addEventListener("click", (event) => {
+        if (event.target.closest("button, a")) return;
+        onZoom(current);
+      });
+    }
+    stage.append(track, bar);
+    if (prevButton) stage.appendChild(prevButton);
+    if (nextButton) stage.appendChild(nextButton);
+    x = targetOf(current);
+    render();
+    paintButtons();
+    return {
+      node: stage,
+      destroy,
+      // 容器是在创建之后才 append 的，调用方挂载后需要立刻调一次
+      syncFrame,
+      get index() {
+        return current;
+      }
+    };
   }
-  function mediaGrid(model, { openUrl, onMedia }) {
+  function openMediaLightbox(anchor, photos, index, openUrl) {
+    const root = anchor && anchor.closest && anchor.closest(".pv-x-reader") || anchor && anchor.parentElement;
+    if (!root || !photos.length || root.querySelector(".pv-x-media-lightbox")) return;
+    const layer = el("div", {
+      class: "pv-x-media-lightbox",
+      role: "dialog",
+      "aria-modal": "true",
+      "aria-label": "图片查看"
+    });
+    let carousel = null;
+    const close = () => {
+      carousel == null ? void 0 : carousel.destroy();
+      layer.remove();
+    };
+    carousel = createMediaCarousel(photos, { openUrl, variant: "overlay", startIndex: index, onClose: close });
+    layer.appendChild(carousel.node);
+    layer.addEventListener("click", (event) => {
+      if (event.target === layer) close();
+    });
+    root.appendChild(layer);
+    carousel.syncFrame();
+    try {
+      carousel.node.focus({ preventScroll: true });
+    } catch (err) {
+      carousel.node.focus();
+    }
+  }
+  function mediaGrid(model, { openUrl }) {
     const items = (model.media || []).slice(0, 4);
     if (!items.length) return null;
     const photos = items.filter((item) => item.type === "photo");
     const grid = el("div", { class: `pv-x-media pv-x-media-${items.length}` });
+    if (items.length > 1 && photos.length === items.length) {
+      const carousel = createMediaCarousel(photos, {
+        openUrl,
+        variant: "inline",
+        onZoom: (index) => openMediaLightbox(grid, photos, index, openUrl)
+      });
+      grid.classList.add("pv-x-media-carousel");
+      grid.appendChild(carousel.node);
+      carousel.syncFrame();
+      return grid;
+    }
+    if (items.length === 1 && items[0].width && items[0].height) {
+      grid.style.aspectRatio = `${items[0].width} / ${items[0].height}`;
+    }
     for (const item of items) {
       if (item.type === "photo") {
         const button = el(
@@ -7950,7 +8512,7 @@ article.pv-x-post[data-reply-target='true'] {\r
         button.addEventListener("click", (event) => {
           event.preventDefault();
           event.stopPropagation();
-          onMedia == null ? void 0 : onMedia(photos, photos.indexOf(item));
+          openMediaLightbox(grid, photos, photos.indexOf(item), openUrl);
         });
         grid.appendChild(button);
         continue;
@@ -7978,7 +8540,7 @@ article.pv-x-post[data-reply-target='true'] {\r
     }
     return grid;
   }
-  function renderPost(model, { threadLine = false, onAction = null, onMedia = null, translation = null, bindProfile = null, compact = false } = {}) {
+  function renderPost(model, { threadLine = false, onAction = null, translation = null, bindProfile = null, compact = false } = {}) {
     const article = el("article", { class: compact ? "pv-x-post pv-x-post-compact" : "pv-x-post" });
     article.dataset.tweetId = model.id;
     const column = avatarColumn(model, { bindProfile });
@@ -7989,9 +8551,9 @@ article.pv-x-post[data-reply-target='true'] {\r
       "div",
       { class: "pv-x-main" },
       headNode(model, bindProfile),
-      displayText(model) || !isArticle ? textBlock(model, translation) : null,
+      displayText(model) || !isArticle ? textBlock(model, translation, bindProfile) : null,
       isArticle ? compact ? articleCard(model) : articleReader(model) : null,
-      mediaGrid(model, { openUrl: openUrlOf(model), onMedia }),
+      mediaGrid(model, { openUrl: openUrlOf(model) }),
       actionsNode(model, onAction)
     );
     article.appendChild(main);
@@ -8084,7 +8646,7 @@ article.pv-x-post[data-reply-target='true'] {\r
       avatarHolder,
       el("div", { class: "pv-x-composer-body" }, targetRow, input, el("div", { class: "pv-x-composer-foot" }, hint, submit))
     );
-    return { node: section, input, setTarget, focus: () => input.focus() };
+    return { node: section, setTarget, focus: () => input.focus() };
   }
   function notify(reader, message, tone = "error") {
     if (!reader) return;
@@ -8109,7 +8671,6 @@ article.pv-x-post[data-reply-target='true'] {\r
     onAction,
     onSort,
     onSubmitReply,
-    onMedia,
     translationFor,
     bindProfile,
     composerAvatar
@@ -8121,7 +8682,6 @@ article.pv-x-post[data-reply-target='true'] {\r
         renderPost(ancestor, {
           threadLine: true,
           onAction,
-          onMedia,
           bindProfile,
           translation: translationFor == null ? void 0 : translationFor(ancestor),
           compact: true
@@ -8129,7 +8689,7 @@ article.pv-x-post[data-reply-target='true'] {\r
       );
     }
     postPane.appendChild(
-      renderPost(focal, { threadLine: true, onAction, onMedia, bindProfile, translation: translationFor == null ? void 0 : translationFor(focal) })
+      renderPost(focal, { threadLine: true, onAction, bindProfile, translation: translationFor == null ? void 0 : translationFor(focal) })
     );
     const countLabel = el("span", { class: "pv-x-reply-count", text: `评论（${replyCount}）` });
     const sort = onSort ? sortControl("relevant", onSort) : null;
@@ -8145,7 +8705,7 @@ article.pv-x-post[data-reply-target='true'] {\r
     const list = el("div", { class: "pv-x-reply-list" });
     replyPane.appendChild(list);
     reader.append(postPane, replyPane);
-    return { reader, list, replyPane, countLabel, composer: composerView, sort };
+    return { reader, list, countLabel, composer: composerView, sort };
   }
 
   // src/loaders/XThreadLoader.js
@@ -8165,10 +8725,10 @@ article.pv-x-post[data-reply-target='true'] {\r
   }
   var XThreadLoader = class {
     /**
-     * @param {Object} ctx { url, container, onError, onLoad, loadingSelector? }
+     * @param {Object} ctx { url, container, onError, onLoad }
      * @returns {Function} abort
      */
-    load({ url, container, onError, onLoad, loadingSelector = "#popup-panel-loading" }) {
+    load({ url, container, onError, onLoad }) {
       const tweetId = postIdFromUrl(url);
       if (!tweetId) {
         onError("无法从链接解析出 X 帖子 ID。");
@@ -8201,7 +8761,6 @@ article.pv-x-post[data-reply-target='true'] {\r
       let sentinel = null;
       let profileCard = null;
       let replyTarget = null;
-      const autoTranslate = true;
       const translationCache = /* @__PURE__ */ new Map();
       const translationDisplay = /* @__PURE__ */ new Map();
       const translationQueue = [];
@@ -8221,7 +8780,6 @@ article.pv-x-post[data-reply-target='true'] {\r
         profileCard == null ? void 0 : profileCard.reposition();
       };
       const cleanup = () => {
-        var _a;
         aborted = true;
         stopThemeWatch();
         resizeObserver == null ? void 0 : resizeObserver.disconnect();
@@ -8232,22 +8790,48 @@ article.pv-x-post[data-reply-target='true'] {\r
         translationObserver = null;
         profileCard == null ? void 0 : profileCard.destroy();
         profileCard = null;
+        translationQueue.length = 0;
+        queuedKeys.clear();
+        translationCache.clear();
+        this.lastThread = null;
         container.classList.remove("pv-x-reader-mode");
         panel == null ? void 0 : panel.classList.remove("pv-x-skin");
-        (_a = container.querySelector(loadingSelector)) == null ? void 0 : _a.remove();
+      };
+      const expandPost = async (model) => {
+        if (!model || model.expanding) return;
+        model.expanding = true;
+        refreshTranslation(model.id);
+        try {
+          const json = await bridge.readArticle(model.id);
+          if (aborted) return;
+          const full = fullTextFromPayload(json, model.id);
+          if (!full) {
+            model.needsExpand = false;
+            notify(readerEl, "这条帖子没有更长的正文", "ok");
+            return;
+          }
+          model.text = full.text;
+          model.entities = full.entities;
+          model.needsExpand = false;
+          translationCache.delete(translationKey(model));
+        } catch (err) {
+          logger.warn("[XThreadLoader] expand full text failed", err);
+          notify(readerEl, `展开全文失败：${err && err.message ? err.message : err}（可点「在 X 打开」看原文）`, "error");
+        } finally {
+          model.expanding = false;
+          refreshTranslation(model.id);
+        }
       };
       const hydrateArticle = async (model) => {
-        if (!model || !model.attachment || model.attachment.type !== "article") return false;
-        if (model.attachment.content && model.attachment.content.blocks.length) return false;
+        var _a;
+        if (!model || !model.attachment || model.attachment.type !== "article") return;
+        if ((((_a = model.attachment.content) == null ? void 0 : _a.blocks) || []).length) return;
         try {
           const json = await bridge.readArticle(model.id);
           const content = articleContentFromPayload(json);
-          if (!content) return false;
-          model.attachment.content = content;
-          return true;
+          if (content) model.attachment.content = content;
         } catch (err) {
-          logger.debug("[XThreadLoader] article hydrate failed", err);
-          return false;
+          logger.warn("[XThreadLoader] article hydrate failed", err);
         }
       };
       const translationKey = (model) => `${model.id}:${TARGET_LANGUAGE}`;
@@ -8256,20 +8840,23 @@ article.pv-x-post[data-reply-target='true'] {\r
         const model = modelsById.get(id);
         if (!model) return;
         for (const block of readerEl.querySelectorAll(`.pv-x-translatable[data-translation-id="${id}"]`)) {
-          renderTextBlock(block, model, translationFor(model));
+          renderTextBlock(block, model, translationFor(model), bindProfile);
         }
       };
       const translationFor = (model) => ({
         offered: shouldOfferTranslation(model.text),
         entry: translationCache.get(translationKey(model)),
-        display: translationDisplay.get(model.id) || (autoTranslate ? "translation" : "original"),
+        // 默认自动显示译文（尚无「关闭自动翻译」设置项，用户可用「显示原文」逐条切回）
+        display: translationDisplay.get(model.id) || "translation",
         onToggle: (next) => {
           translationDisplay.set(model.id, next);
           refreshTranslation(model.id);
         },
-        onRetry: () => enqueueTranslation(model, true, true)
+        onRetry: () => enqueueTranslation(model, true, true),
+        onExpand: expandPost
       });
       const pumpTranslations = () => {
+        if (aborted) return;
         while (activeTranslations < MAX_TRANSLATION_CONCURRENCY && translationQueue.length) {
           const model = translationQueue.shift();
           const key = translationKey(model);
@@ -8278,6 +8865,7 @@ article.pv-x-post[data-reply-target='true'] {\r
           translationCache.set(key, { status: "loading" });
           refreshTranslation(model.id);
           bridge.translateTweet(model.id, TARGET_LANGUAGE).then((result) => {
+            if (aborted) return;
             const text = String(result && result.text || "").trim();
             if (!text || text === String(model.text || "").trim()) {
               translationCache.set(key, { status: "unavailable" });
@@ -8291,9 +8879,11 @@ article.pv-x-post[data-reply-target='true'] {\r
               destinationLanguage: String(result.destinationLanguage || TARGET_LANGUAGE)
             });
           }).catch((error) => {
+            if (aborted) return;
             translationCache.set(key, { status: "error", message: error && error.message ? error.message : "翻译失败" });
           }).finally(() => {
             activeTranslations -= 1;
+            if (aborted) return;
             refreshTranslation(model.id);
             pumpTranslations();
           });
@@ -8368,8 +8958,9 @@ article.pv-x-post[data-reply-target='true'] {\r
       const sortedReplies = () => {
         if (sortMode === "relevant") return replies;
         const copy = [...replies];
+        const likesOf = (model) => Number(model && model.counts && model.counts.likes) || 0;
         if (sortMode === "latest") copy.sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
-        else copy.sort((a, b) => (Number(b.counts.likes) || 0) - (Number(a.counts.likes) || 0));
+        else copy.sort((a, b) => likesOf(b) - likesOf(a));
         return copy;
       };
       const updateCount = () => {
@@ -8387,7 +8978,6 @@ article.pv-x-post[data-reply-target='true'] {\r
           replyList.appendChild(
             renderReply(reply, {
               onAction: handleAction,
-              onMedia: handleMedia,
               bindProfile,
               translation: translationFor(reply)
             })
@@ -8431,10 +9021,6 @@ article.pv-x-post[data-reply-target='true'] {\r
         markReplyTarget();
         composerView == null ? void 0 : composerView.focus();
       };
-      const handleMedia = (photos, index) => {
-        if (!readerEl || !photos.length) return;
-        openLightbox(readerEl, photos, index < 0 ? 0 : index, openUrlOf(modelsById.get(tweetId) || { id: tweetId }));
-      };
       const handleAction = async (key, model, button) => {
         if (key === "reply") {
           setReplyTarget(model);
@@ -8476,6 +9062,7 @@ article.pv-x-post[data-reply-target='true'] {\r
       const submitReply = async (text, target) => {
         const inReplyTo = target && target.id ? String(target.id) : tweetId;
         await bridge.createReply(inReplyTo, text);
+        if (aborted) return;
         const local = {
           id: `local-${Date.now()}`,
           text,
@@ -8539,6 +9126,8 @@ article.pv-x-post[data-reply-target='true'] {\r
             modelsById.set(reply.id, reply);
           }
           await hydrateArticle(summary.focal);
+          if (aborted) return;
+          this.lastThread = { tweetId, models: modelsById };
           profileCard = createProfileCard({
             getRoot: () => readerEl,
             onToggleFollow: async (author, nextActive) => {
@@ -8556,7 +9145,6 @@ article.pv-x-post[data-reply-target='true'] {\r
             onAction: handleAction,
             onSort: handleSort,
             onSubmitReply: submitReply,
-            onMedia: handleMedia,
             translationFor,
             bindProfile,
             composerAvatar: account.avatar
@@ -8574,15 +9162,35 @@ article.pv-x-post[data-reply-target='true'] {\r
           }
           updateCount();
           renderReplies();
-          onLoad == null ? void 0 : onLoad();
         } catch (err) {
           if (aborted) return;
           logger.warn("[XThreadLoader] read thread failed", err);
           container.classList.remove("pv-x-reader-mode");
           onError == null ? void 0 : onError(`${err && err.message ? err.message : err}（X 的接口会变动，可点下方按钮改用新标签页打开）`);
+          return;
         }
-      })();
+        if (!aborted) onLoad == null ? void 0 : onLoad();
+      })().catch((err) => {
+        logger.warn("[XThreadLoader] unexpected failure", err);
+      });
       return cleanup;
+    }
+    /**
+     * 自检：当前阅读器里各帖子的正文状态。
+     * 排查「长贴没显示全 / 该出『显示更多』却没出」时用它看真实数据。
+     */
+    diag() {
+      const thread = this.lastThread;
+      if (!thread) return "no thread loaded";
+      const rows = [...thread.models.values()].slice(0, 12).map((model) => ({
+        id: model.id,
+        textLength: String(model.text || "").length,
+        hasFullText: Boolean(model.hasFullText),
+        needsExpand: Boolean(model.needsExpand),
+        entities: (model.entities || []).length,
+        tail: String(model.text || "").slice(-16)
+      }));
+      return { focalId: thread.tweetId, rows };
     }
   };
 
@@ -8613,6 +9221,48 @@ article.pv-x-post[data-reply-target='true'] {\r
       hasOperation: (name) => Boolean(bridge.findOperation(name)),
       // 观感令牌自检：看 X 皮肤实际拿到的颜色/字体
       theme: () => readXTheme(),
+      // 字体自检：对比弹窗正文与宿主 X 帖子正文的字体/字重/抗锯齿，并列出祖先链上的 transform
+      fontDiag: () => {
+        var _a;
+        const describe = (node) => {
+          if (!node) return null;
+          const cs = getComputedStyle(node);
+          const transforms = [];
+          const faded = [];
+          for (let current = node; current && current !== document.documentElement; current = current.parentElement) {
+            const style = getComputedStyle(current);
+            const where = current.id || current.className || current.tagName;
+            if (style.transform && style.transform !== "none") transforms.push(`${where}: ${style.transform}`);
+            if (style.opacity !== "1") faded.push(`${where}: opacity=${style.opacity}`);
+            if (style.filter && style.filter !== "none") faded.push(`${where}: filter=${style.filter}`);
+          }
+          return {
+            fontFamily: cs.fontFamily,
+            fontWeight: cs.fontWeight,
+            fontSize: cs.fontSize,
+            lineHeight: cs.lineHeight,
+            letterSpacing: cs.letterSpacing,
+            color: cs.color,
+            opacity: cs.opacity,
+            webkitFontSmoothing: cs.webkitFontSmoothing,
+            textRendering: cs.textRendering,
+            transforms,
+            faded
+          };
+        };
+        const panel = document.getElementById("popup-content-panel");
+        return {
+          mine: describe(document.querySelector("#popup-content-area .pv-x-text")),
+          xTweet: describe(document.querySelector('[data-testid="tweetText"]')),
+          chirpLoaded: typeof ((_a = document.fonts) == null ? void 0 : _a.check) === "function" ? document.fonts.check('15px "TwitterChirp"') : "unsupported",
+          panelTransform: panel ? getComputedStyle(panel).transform : null
+        };
+      },
+      // 帖子级自检：各帖子正文长度 / 是否已拿全文 / 是否需要「显示更多」
+      postDiag: () => {
+        const loader = loaderManager.get("xthread");
+        return loader && typeof loader.diag === "function" ? loader.diag() : "no xthread loader";
+      },
       // 定位自检：面板是否被宿主页面的 transform / CSS 影响而无法居中
       positionDiag: () => {
         const panel = document.getElementById("popup-content-panel");
@@ -8670,10 +9320,14 @@ article.pv-x-post[data-reply-target='true'] {\r
         };
       }
     };
-    try {
-      win.__PV2_X__ = api;
-    } catch (err) {
-      logger.warn("[main] expose __PV2_X__ failed", err);
+    if (debugEnabled()) {
+      try {
+        win.__PV2_X__ = api;
+      } catch (err) {
+        logger.warn("[main] expose __PV2_X__ failed", err);
+      }
+    } else {
+      win.__PV2_X__ = void 0;
     }
     logger.log("[PV2] X GraphQL 网络层已安装");
   }

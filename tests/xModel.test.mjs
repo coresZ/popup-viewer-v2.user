@@ -12,7 +12,8 @@ import {
   replyCursorAfterPage,
   shouldOfferTranslation,
   sourceLanguageLabel,
-  articleContentFromPayload
+  articleContentFromPayload,
+  fullTextFromPayload
 } from '../src/x/xModel.js';
 
 const user = (id, name, handle, extra = {}) => ({
@@ -392,6 +393,310 @@ check('X 长文：正文缺失时可用 articleContentFromPayload 从响应里�
 check('非长文帖没有 attachment', () => {
   const summary = parseThreadSummary(fixture, '100');
   assert.equal(summary.focal.attachment, null);
+});
+
+check('实体区间：@提及 / #话题 / 链接（含 emoji 的码点偏移换算）', () => {
+  // X 的 indices 按码点计，字符串里有 emoji（代理对）时直接切片会整体错位
+  const full = 'hi 😀 @alice 你好 #tag https://t.co/abc';
+  const withEntities = tweet('300', { text: full, user: user('u30', 'A', 'a') });
+  withEntities.legacy.entities = {
+    user_mentions: [{ screen_name: 'alice', name: 'Alice', id_str: '999', indices: [5, 11] }],
+    hashtags: [{ text: 'tag', indices: [15, 19] }],
+    urls: [
+      { url: 'https://t.co/abc', expanded_url: 'https://example.com/x', display_url: 'example.com/x', indices: [20, 36] }
+    ]
+  };
+  const payload = {
+    data: { threaded_conversation_with_injections_v2: { instructions: [{ entries: [entry('300', withEntities)] }] } }
+  };
+  const model = parseThreadSummary(payload, '300').focal;
+  assert.equal(model.entities.length, 3);
+  const [mention, hashtag, link] = model.entities;
+  assert.equal(full.slice(mention.start, mention.end), '@alice');
+  assert.equal(mention.kind, 'mention');
+  assert.equal(mention.url, 'https://x.com/alice');
+  assert.equal(mention.author.id, '999');
+  assert.equal(mention.author.handle, 'alice');
+  assert.equal(mention.author.name, 'Alice');
+  assert.equal(full.slice(hashtag.start, hashtag.end), '#tag');
+  assert.equal(hashtag.url, 'https://x.com/hashtag/tag');
+  assert.equal(full.slice(link.start, link.end), 'https://t.co/abc');
+  assert.equal(link.url, 'https://example.com/x');
+});
+
+check('可见正文：display_text_range 排除媒体帖末尾的 t.co 链接', () => {
+  const withRange = tweet('310', { text: '看图 😀 https://t.co/pic', user: user('u31', 'B', 'b') });
+  withRange.legacy.display_text_range = [0, 5];
+  withRange.legacy.entities = {
+    media: [{ type: 'photo', media_url_https: 'https://pbs.twimg.com/p.jpg', indices: [5, 20] }]
+  };
+  const payload = {
+    data: { threaded_conversation_with_injections_v2: { instructions: [{ entries: [entry('310', withRange)] }] } }
+  };
+  const model = parseThreadSummary(payload, '310').focal;
+  assert.equal(model.text, '看图 😀');
+  assert.equal(model.mediaCount, 1);
+});
+
+check('可见正文：无 display_text_range 时按首个媒体实体截断', () => {
+  const withMedia = tweet('320', { text: '一张图 https://t.co/pic', user: user('u32', 'C', 'c') });
+  withMedia.legacy.entities = {
+    media: [{ type: 'photo', media_url_https: 'https://pbs.twimg.com/q.jpg', indices: [4, 18] }]
+  };
+  const payload = {
+    data: { threaded_conversation_with_injections_v2: { instructions: [{ entries: [entry('320', withMedia)] }] } }
+  };
+  assert.equal(parseThreadSummary(payload, '320').focal.text, '一张图');
+});
+
+check('实体区间：$代码 也识别为可点链接', () => {
+  const withSymbol = tweet('330', { text: 'buy $AAPL now', user: user('u33', 'D', 'd') });
+  withSymbol.legacy.entities = { symbols: [{ text: 'AAPL', indices: [4, 9] }] };
+  const payload = {
+    data: { threaded_conversation_with_injections_v2: { instructions: [{ entries: [entry('330', withSymbol)] }] } }
+  };
+  const range = parseThreadSummary(payload, '330').focal.entities[0];
+  assert.equal(range.kind, 'symbol');
+  assert.equal(range.url, 'https://x.com/search?q=%24AAPL');
+});
+
+check('显示窗口起点不为 0：被跳过的开头 @提及 不得残留为链接', () => {
+  // 回归：X 的回复帖会把开头的 @提及 从显示文本里跳掉（display_text_range 起点 > 0）。
+  // 若实体索引仍按原文坐标使用，就会把无关字符渲染成提及链接（帖子里没有 @ 却出现标记）。
+  const reply = tweet('340', { text: '@bob 这是回复正文', replyTo: '100', user: user('u34', 'E', 'e') });
+  reply.legacy.display_text_range = [5, 11];
+  reply.legacy.entities = {
+    user_mentions: [{ screen_name: 'bob', name: 'Bob', id_str: '777', indices: [0, 4] }]
+  };
+  const payload = { data: { threaded_conversation_with_injections_v2: { instructions: [{ entries: [entry('340', reply)] }] } } };
+  const model = parseThreadSummary(payload, '340').focal;
+  assert.equal(model.text, '这是回复正文');
+  assert.equal(model.entities.length, 0);
+});
+
+check('显示窗口起点不为 0：窗口内的实体偏移被正确平移', () => {
+  const reply = tweet('350', { text: '@bob 你好 @alice', replyTo: '100', user: user('u35', 'F', 'f') });
+  reply.legacy.display_text_range = [5, 14];
+  reply.legacy.entities = {
+    user_mentions: [
+      { screen_name: 'bob', name: 'Bob', id_str: '777', indices: [0, 4] },
+      { screen_name: 'alice', name: 'Alice', id_str: '888', indices: [8, 14] }
+    ]
+  };
+  const payload = { data: { threaded_conversation_with_injections_v2: { instructions: [{ entries: [entry('350', reply)] }] } } };
+  const model = parseThreadSummary(payload, '350').focal;
+  assert.equal(model.text, '你好 @alice');
+  assert.equal(model.entities.length, 1);
+  assert.equal(model.entities[0].kind, 'mention');
+  assert.equal(model.text.slice(model.entities[0].start, model.entities[0].end), '@alice');
+});
+
+check('正文截断：legacy.truncated 且无 note_tweet 时标记 needsExpand', () => {
+  const cut = tweet('360', { text: '这是一条很长的帖子，X 在时间线里把它截断了…', user: user('u36', 'G', 'g') });
+  cut.legacy.truncated = true;
+  const payload = { data: { threaded_conversation_with_injections_v2: { instructions: [{ entries: [entry('360', cut)] }] } } };
+  const model = parseThreadSummary(payload, '360').focal;
+  assert.equal(model.needsExpand, true);
+  assert.equal(model.hasFullText, false);
+});
+
+check('正文截断：note_tweet 已带全文时不出现「显示更多」', () => {
+  const long = tweet('370', { text: '截断版…', user: user('u37', 'H', 'h') });
+  long.legacy.truncated = true;
+  long.note_tweet = { note_tweet_results: { result: { text: '这是完整正文，没有被截断', entity_set: {} } } };
+  const payload = { data: { threaded_conversation_with_injections_v2: { instructions: [{ entries: [entry('370', long)] }] } } };
+  const model = parseThreadSummary(payload, '370').focal;
+  assert.equal(model.text, '这是完整正文，没有被截断');
+  assert.equal(model.hasFullText, true);
+  assert.equal(model.needsExpand, false);
+});
+
+check('fullTextFromPayload：从补全响应里取出全文与实体', () => {
+  const payload = {
+    data: {
+      tweetResult: {
+        result: {
+          rest_id: '380',
+          legacy: { full_text: '截断版…', truncated: true },
+          note_tweet: {
+            note_tweet_results: {
+              result: {
+                text: '补全后的完整正文 @alice',
+                entity_set: { user_mentions: [{ screen_name: 'alice', name: 'Alice', id_str: '1', indices: [9, 15] }] }
+              }
+            }
+          }
+        }
+      }
+    }
+  };
+  const full = fullTextFromPayload(payload, '380');
+  assert.equal(full.text, '补全后的完整正文 @alice');
+  assert.equal(full.entities.length, 1);
+  assert.equal(full.entities[0].kind, 'mention');
+  assert.equal(fullTextFromPayload(payload, '999'), null);
+});
+
+check('长贴全文不得被 legacy 的 display_text_range 截断（回归）', () => {
+  // 回归：display_text_range 是截断版 legacy 文本的坐标，套到 note 全文上会把全文再截一刀，
+  // 表现为长贴「没显示全」，且因为已拿到全文而不出「显示更多」按钮。
+  const long = tweet('390', { text: '截断版开头…', user: user('u39', 'I', 'i') });
+  long.legacy.truncated = true;
+  long.legacy.display_text_range = [0, 6];
+  long.note_tweet = {
+    note_tweet_results: {
+      result: {
+        text: '这是完整的长贴正文，远远超过 legacy 截断版那六个字，必须完整显示出来',
+        entity_set: {}
+      }
+    }
+  };
+  const payload = { data: { threaded_conversation_with_injections_v2: { instructions: [{ entries: [entry('390', long)] }] } } };
+  const model = parseThreadSummary(payload, '390').focal;
+  assert.equal(model.text, '这是完整的长贴正文，远远超过 legacy 截断版那六个字，必须完整显示出来');
+  assert.equal(model.hasFullText, true);
+  assert.equal(model.needsExpand, false);
+});
+
+check('长贴：note 文本存在时实体用 entity_set 而非 legacy.entities', () => {
+  const long = tweet('395', { text: '@wrong legacy', user: user('u40', 'J', 'j') });
+  long.legacy.entities = { user_mentions: [{ screen_name: 'wrong', name: 'W', id_str: '1', indices: [0, 6] }] };
+  long.note_tweet = {
+    note_tweet_results: {
+      result: {
+        text: '全文里提到 @right 一次',
+        entity_set: { user_mentions: [{ screen_name: 'right', name: 'R', id_str: '2', indices: [6, 12] }] }
+      }
+    }
+  };
+  const payload = { data: { threaded_conversation_with_injections_v2: { instructions: [{ entries: [entry('395', long)] }] } } };
+  const model = parseThreadSummary(payload, '395').focal;
+  assert.equal(model.entities.length, 1);
+  assert.equal(model.entities[0].author.handle, 'right');
+  assert.equal(model.text.slice(model.entities[0].start, model.entities[0].end), '@right');
+});
+
+// ---- 评审回归：以下用例都能拦住实际发生过的 bug ----
+
+check('媒体变体用 content_type（下划线）且 URL 无扩展名时仍能取到播放地址', () => {
+  // 回归：代码原先读 variant.contentType，而 X 发的是 content_type →
+  // content-type 分支是死的，只剩 URL 后缀判据，无扩展名的变体会丢掉地址。
+  // 原有断言恰好因为 fixture URL 都带 .mp4 后缀而通过，属于过拟合。
+  const media = [
+    {
+      id_str: 'm1',
+      type: 'video',
+      media_url_https: 'https://pbs.twimg.com/poster.jpg',
+      video_info: {
+        variants: [
+          { content_type: 'video/mp4', bitrate: 800000, url: 'https://video.twimg.com/play' },
+          { content_type: 'application/x-mpegURL', url: 'https://video.twimg.com/playlist' }
+        ]
+      }
+    }
+  ];
+  const payload = { data: { threaded_conversation_with_injections_v2: { instructions: [{ entries: [entry('600', tweet('600', { text: '视频', user: user('u60', 'K', 'k'), media }))] }] } } };
+  const item = parseThreadSummary(payload, '600').focal.media[0];
+  assert.equal(item.type, 'video');
+  assert.equal(item.videoUrl, 'https://video.twimg.com/play');
+  assert.equal(item.hlsUrl, 'https://video.twimg.com/playlist');
+});
+
+check('媒体变体：所有码率都超过目标时取最低档', () => {
+  const media = [
+    {
+      id_str: 'm2',
+      type: 'video',
+      media_url_https: 'https://pbs.twimg.com/poster.jpg',
+      video_info: {
+        variants: [
+          { content_type: 'video/mp4', bitrate: 5000000, url: 'https://video.twimg.com/hi.mp4' },
+          { content_type: 'video/mp4', bitrate: 2000000, url: 'https://video.twimg.com/lo.mp4' }
+        ]
+      }
+    }
+  ];
+  const payload = { data: { threaded_conversation_with_injections_v2: { instructions: [{ entries: [entry('610', tweet('610', { text: '视频', user: user('u61', 'L', 'l'), media }))] }] } } };
+  assert.equal(parseThreadSummary(payload, '610').focal.media[0].videoUrl, 'https://video.twimg.com/lo.mp4');
+});
+
+check('长文只有 content_state（无标题无封面）时仍识别为长文，且不偷正文图当封面', () => {
+  // 回归：articleResult 原先只认 title/preview_text/cover_*，这类长文 attachment === null 被整个丢掉
+  const art = tweet('620', { text: 'https://t.co/x', user: user('u62', 'M', 'm') });
+  art.article = {
+    article_results: {
+      result: {
+        content_state: {
+          blocks: [
+            { key: 'a', type: 'unstyled', text: '只有正文没有标题' },
+            { key: 'b', type: 'atomic', text: ' ', entityRanges: [{ offset: 0, length: 1, key: '1' }] }
+          ],
+          entityMap: { 1: { type: 'IMAGE', data: { src: 'https://pbs.twimg.com/inline.jpg', width: 800, height: 400 } } }
+        }
+      }
+    }
+  };
+  const payload = { data: { threaded_conversation_with_injections_v2: { instructions: [{ entries: [entry('620', art)] }] } } };
+  const model = parseThreadSummary(payload, '620').focal;
+  assert.notEqual(model.attachment, null);
+  assert.equal(model.attachment.content.blocks.length, 2);
+  // 没有封面节点：不得把正文内联图当封面
+  assert.equal(model.attachment.image, '');
+  assert.equal(model.attachment.imageWidth, 0);
+});
+
+check('重复出现的同一条帖子按 id 去重', () => {
+  // 回归：X 会在推荐模块里重复同一条帖子，未去重会让节点数与评论数虚高
+  const dup = { data: { threaded_conversation_with_injections_v2: { instructions: [{ entries: [entry('630', tweet('630', { text: '主帖', user: user('u63', 'N', 'n') }))] }] } } };
+  dup.data.threaded_conversation_with_injections_v2.instructions[0].entries.push(
+    entry('630b', tweet('630', { text: '主帖（重复）', replyTo: '630', user: user('u63', 'N', 'n') }))
+  );
+  const summary = parseThreadSummary(dup, '630');
+  assert.equal(summary.nodeCount, 1);
+  assert.equal(summary.replyCount, 0);
+  assert.equal(summary.focalFound, true);
+});
+
+check('空/畸形响应不抛错（fail-closed）', () => {
+  for (const input of [null, undefined, {}, { data: null }]) {
+    const summary = parseThreadSummary(input, '1');
+    assert.equal(summary.focalFound, false);
+    assert.equal(summary.focal, null);
+    assert.equal(summary.replyCount, 0);
+  }
+});
+
+check('链接实体：文字取 display_url（不是正文里的 t.co），href 取 expanded_url', () => {
+  // 回归：X 正文里放的是 t.co 短链，界面显示的是 display_url；
+  // 渲染层若直接用切片文字，弹窗里就只剩短链。
+  const post = tweet('640', { text: '看看这个 https://t.co/abc123', user: user('u64', 'O', 'o') });
+  post.legacy.entities = {
+    urls: [
+      {
+        url: 'https://t.co/abc123',
+        display_url: 'github.com/foo/bar',
+        expanded_url: 'https://github.com/foo/bar',
+        indices: [5, 24]
+      }
+    ]
+  };
+  const payload = { data: { threaded_conversation_with_injections_v2: { instructions: [{ entries: [entry('640', post)] }] } } };
+  const model = parseThreadSummary(payload, '640').focal;
+  assert.equal(model.entities.length, 1);
+  assert.equal(model.entities[0].kind, 'url');
+  assert.equal(model.entities[0].label, 'github.com/foo/bar');
+  assert.equal(model.entities[0].url, 'https://github.com/foo/bar');
+  // 切片仍是正文里的 t.co（偏移用它定位），换文字是渲染层的职责
+  assert.equal(model.text.slice(model.entities[0].start, model.entities[0].end), 'https://t.co/abc123');
+});
+
+check('链接实体：没有 display_url 时退回 expanded_url', () => {
+  const post = tweet('645', { text: 'https://t.co/xyz', user: user('u65', 'P', 'p') });
+  post.legacy.entities = { urls: [{ url: 'https://t.co/xyz', expanded_url: 'https://example.com/a/b', indices: [0, 17] }] };
+  const payload = { data: { threaded_conversation_with_injections_v2: { instructions: [{ entries: [entry('645', post)] }] } } };
+  const model = parseThreadSummary(payload, '645').focal;
+  assert.equal(model.entities[0].label, 'https://example.com/a/b');
+  assert.equal(model.entities[0].url, 'https://example.com/a/b');
 });
 
 console.log(`\n${passed} passed${process.exitCode ? ', some failed' : ''}`);

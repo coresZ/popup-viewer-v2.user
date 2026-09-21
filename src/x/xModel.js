@@ -77,7 +77,7 @@ export function unwrapResult(value) {
  * 深度收集 payload 里所有 tweet 结果节点。
  * 命中即返回、不再下钻（引用帖只存在于 quoted_status_result 内，不会混进平铺列表）。
  */
-export function collectTweetNodes(value, out = [], seen = new Set()) {
+function collectTweetNodes(value, out = [], seen = new Set()) {
   if (!value || typeof value !== 'object' || seen.has(value)) return out;
   seen.add(value);
   const result = (value.tweet_results && value.tweet_results.result) || (value.tweetResult && value.tweetResult.result) || null;
@@ -101,7 +101,7 @@ export function collectTweetNodes(value, out = [], seen = new Set()) {
  * 取出用户节点。不能复用 unwrapResult：X 的用户节点已迁移到 core/avatar 结构，
  * 很多不带 legacy，而 unwrapResult 要求 legacy + rest_id 同时存在（否则整条作者信息全空）。
  */
-export function unwrapUser(value) {
+function unwrapUser(value) {
   let current = value && typeof value === 'object' ? value : null;
   for (let index = 0; current && index < 4; index += 1) {
     const legacy = current.legacy;
@@ -146,8 +146,11 @@ function variantsOf(item) {
   return out;
 }
 
-const isMp4 = (variant) => /video\/mp4/i.test(String(variant.contentType || '')) || /\.mp4(?:\?|$)/i.test(String(variant.url || ''));
-const isHls = (variant) => /mpegurl/i.test(String(variant.contentType || '')) || /\.m3u8(?:\?|$)/i.test(String(variant.url || ''));
+// X 的变体用 content_type（下划线）；驼峰写法一并兼容，否则只剩 URL 后缀这一条判据，
+// 无扩展名的变体（如 https://video.twimg.com/xxx）会直接丢掉播放地址
+const variantType = (variant) => String(variant.content_type || variant.contentType || '');
+const isMp4 = (variant) => /video\/mp4/i.test(variantType(variant)) || /\.mp4(?:\?|$)/i.test(String(variant.url || ''));
+const isHls = (variant) => /mpegurl/i.test(variantType(variant)) || /\.m3u8(?:\?|$)/i.test(String(variant.url || ''));
 
 /** 选一档 MP4：优先不超过目标码率的最高档，否则取最低档（避免直接拉最高码率） */
 function selectMp4(variants, targetBitrate = 1200000) {
@@ -159,11 +162,7 @@ function selectMp4(variants, targetBitrate = 1200000) {
 /** 提取媒体（图片 / 视频 / GIF），图片与视频海报都保留，供渲染层使用 */
 function mediaItems(tweet, legacy) {
   const modern = Array.isArray(tweet.media) ? tweet.media : (tweet.media && (tweet.media.all || tweet.media.media)) || [];
-  const list =
-    (legacy.extended_entities && legacy.extended_entities.media) ||
-    (legacy.entities && legacy.entities.media) ||
-    modern ||
-    [];
+  const list = mediaListOf(legacy, modern);
   const items = [];
   for (const raw of list) {
     const variants = variantsOf(raw);
@@ -218,7 +217,20 @@ function articleResult(tweet) {
     tweet.article ||
     null;
   for (let index = 0; current && index < 5; index += 1) {
-    if (current.title || current.preview_text || current.cover_media || current.cover_image) return current;
+    // 判定「这就是长文主体」：标题/摘要/封面之外，只有正文块（content_state / plain_text）也算，
+    // 否则「有正文但没有标题封面」的长文会被整个丢掉
+    if (
+      current.title ||
+      current.preview_text ||
+      current.cover_media ||
+      current.cover_image ||
+      current.content_state ||
+      current.contentState ||
+      current.plain_text ||
+      current.plainText
+    ) {
+      return current;
+    }
     if (current.result) current = current.result;
     else if (current.article) current = current.article;
     else break;
@@ -295,19 +307,18 @@ function articleUrlFromEntities(legacy) {
 function articleAttachment(tweet, legacy) {
   const article = articleResult(tweet);
   if (!article) return null;
-  const cover = findNamedValue(article, ['cover_media', 'cover_image', 'preview_image'], 3) || article;
+  // 封面只在真正的封面节点里找：回退到「整个 article」会把正文内联图、甚至链接 URL 当成封面，
+  // 还会带上无关的宽高。找不到封面节点就不给封面。
+  const cover = findNamedValue(article, ['cover_media', 'cover_image', 'preview_image'], 3);
+  const articleUrl = articleUrlFromEntities(legacy);
   return {
     type: 'article',
-    url: articleUrlFromEntities(legacy),
-    sourceUrl: articleUrlFromEntities(legacy),
-    domain: 'x.com',
+    url: articleUrl,
     title: String(article.title || ''),
     description: String(article.preview_text || article.description || article.summary || ''),
-    image: String(
-      findNamedValue(cover, ['original_img_url', 'media_url_https', 'image_url', 'url'], 5) || ''
-    ),
-    imageWidth: Number(findNamedValue(cover, ['original_img_width', 'width'], 5)) || 0,
-    imageHeight: Number(findNamedValue(cover, ['original_img_height', 'height'], 5)) || 0,
+    image: cover ? String(findNamedValue(cover, ['original_img_url', 'media_url_https', 'image_url'], 5) || '') : '',
+    imageWidth: cover ? Number(findNamedValue(cover, ['original_img_width', 'width'], 5)) || 0 : 0,
+    imageHeight: cover ? Number(findNamedValue(cover, ['original_img_height', 'height'], 5)) || 0 : 0,
     content: articleContent(article)
   };
 }
@@ -331,10 +342,142 @@ export function articleContentFromPayload(json) {
   return null;
 }
 
+/**
+ * 从补全响应里取出指定帖子的全文（含实体）。
+ * 用于「显示更多」：TweetDetail 给的是截断版，TweetResultByRestId 通常带 note_tweet 全文。
+ * 取不到全文返回 null（调用方据此降级）。
+ */
+export function fullTextFromPayload(json, tweetId) {
+  const nodes = collectTweetNodes((json && json.data) || json);
+  const target = String(tweetId || '');
+  for (const node of nodes) {
+    const model = liteModel(node);
+    if (model && model.id === target && model.hasFullText) {
+      return { text: model.text, entities: model.entities };
+    }
+  }
+  return null;
+}
+
 /** 数值兜底：非有限数一律归 0 */
 function numberValue(value) {
   const n = Number(value);
   return Number.isFinite(n) ? n : 0;
+}
+
+/**
+ * X 的 entities.indices 以「码点」计数，而 JS 字符串是 UTF-16。
+ * 含 emoji（代理对）的帖子若直接拿 indices 切片，偏移会整体错位——必须先建映射表。
+ */
+function codePointMap(text) {
+  const map = [];
+  let codePoint = 0;
+  for (let index = 0; index < text.length; ) {
+    map[codePoint] = index;
+    const code = text.codePointAt(index);
+    index += code > 0xffff ? 2 : 1;
+    codePoint += 1;
+  }
+  map[codePoint] = text.length;
+  return map;
+}
+
+/**
+ * 取媒体列表：在多个候选位置里选**第一个非空**的。
+ * 坑：`extended_entities.media` 可能是空数组，用 `||` 串联会因为空数组是真值而短路，
+ * 从而漏掉 `entities.media` 里的媒体。
+ */
+function mediaListOf(legacy, modern) {
+  const candidates = [
+    legacy && legacy.extended_entities && legacy.extended_entities.media,
+    legacy && legacy.entities && legacy.entities.media,
+    modern
+  ];
+  return candidates.find((value) => Array.isArray(value) && value.length > 0) || [];
+}
+
+/** 取首个媒体实体的 indices（用于把媒体帖末尾那条 t.co 链接排除在可见文本之外） */
+function firstMediaIndices(legacy) {
+  const media = mediaListOf(legacy, null);
+  const first = media[0];
+  return first && Array.isArray(first.indices) ? first.indices : null;
+}
+
+/**
+ * 把 legacy.entities / note_tweet.entity_set 转成可渲染的区间。
+ * 覆盖 @提及、#话题、$代码、普通链接；@提及额外带上作者信息（供悬停资料卡使用）。
+ *
+ * 关键：区间在**全文**坐标系上计算，再裁到可见窗口内并平移到窗口坐标系。
+ * 否则当 display_text_range 起点不为 0（回复帖会跳过开头的 @提及）时，
+ * 所有实体索引都会错位，把无关字符渲染成提及链接。
+ */
+function entityRanges(entitySet, text, window_ = { start: 0, end: text.length }) {
+  const ranges = [];
+  if (!entitySet) return ranges;
+  const map = codePointMap(text);
+  const at = (index) => (map[index] === undefined ? text.length : map[index]);
+  const add = (entry, kind, url, label) => {
+    const indices = entry && entry.indices;
+    if (!Array.isArray(indices) || indices.length < 2) return null;
+    const start = at(Number(indices[0]) || 0);
+    const end = at(Number(indices[1]) || 0);
+    if (end <= start) return null;
+    // 只保留完全落在可见窗口内的实体（被窗口裁掉的，例如 display_text_range 跳过的开头提及）
+    if (start < window_.start || end > window_.end) return null;
+    const range = { start: start - window_.start, end: end - window_.start, kind, url: url || '', label: label || '', author: null };
+    ranges.push(range);
+    return range;
+  };
+  for (const entry of entitySet.urls || []) {
+    const expanded = String((entry && (entry.expanded_url || entry.url)) || '');
+    add(entry, 'url', expanded, String((entry && entry.display_url) || expanded));
+  }
+  for (const entry of entitySet.user_mentions || []) {
+    const handle = String((entry && entry.screen_name) || '');
+    if (!handle) continue;
+    const range = add(entry, 'mention', `https://x.com/${handle}`, `@${handle}`);
+    if (range) {
+      range.author = {
+        id: String((entry && (entry.id_str || entry.id)) || ''),
+        name: String((entry && entry.name) || handle),
+        handle,
+        avatar: '',
+        verified: false
+      };
+    }
+  }
+  for (const entry of entitySet.hashtags || []) {
+    const tag = String((entry && entry.text) || '');
+    if (!tag) continue;
+    add(entry, 'hashtag', `https://x.com/hashtag/${encodeURIComponent(tag)}`, `#${tag}`);
+  }
+  for (const entry of entitySet.symbols || []) {
+    const symbol = String((entry && entry.text) || '');
+    if (!symbol) continue;
+    add(entry, 'symbol', `https://x.com/search?q=${encodeURIComponent(`$${symbol}`)}`, `$${symbol}`);
+  }
+  return ranges.sort((a, b) => a.start - b.start || b.end - a.end);
+}
+
+/**
+ * 可见正文窗口（UTF-16 偏移区间）。
+ * 优先用 display_text_range（媒体帖末尾的 t.co、回复帖开头的 @提及 都在范围之外），
+ * 没有该字段时按首个媒体实体的起点截断。
+ */
+function visibleWindow(legacy, fullText) {
+  const map = codePointMap(fullText);
+  const range = Array.isArray(legacy.display_text_range) ? legacy.display_text_range : null;
+  if (range && range.length === 2) {
+    const start = map[Number(range[0])] || 0;
+    const rawEnd = map[Number(range[1])];
+    return { start, end: rawEnd === undefined ? fullText.length : rawEnd };
+  }
+  const mediaIndices = firstMediaIndices(legacy);
+  if (mediaIndices) {
+    const cut = map[Number(mediaIndices[0])];
+    if (cut !== undefined) return { start: 0, end: cut };
+  }
+  return { start: 0, end: fullText.length };
 }
 
 /** C1 用的轻量字段抽取（C2 会被完整 tweetModel 取代） */
@@ -350,11 +493,32 @@ function liteModel(node) {
   const bio = (user && user.profile_bio) || {};
   const noteText = tweet.note_tweet && tweet.note_tweet.note_tweet_results && tweet.note_tweet.note_tweet_results.result;
   const media = mediaItems(tweet, legacy);
+  // 长贴（note tweet）的实体在 entity_set 里，普通帖在 legacy.entities。
+  // 两者必须与各自对应的正文配对，否则索引会错位。
+  const noteFullText = noteText && typeof noteText.text === 'string' ? noteText.text : '';
+  const usingNoteText = Boolean(noteFullText);
+  const entitySet = (usingNoteText && noteText.entity_set) || legacy.entities || null;
+  const fullText = noteFullText || String(legacy.full_text || legacy.text || '');
+  /**
+   * 显示窗口必须与正文来源配对：
+   * `legacy.display_text_range` 是**截断版 legacy 文本**的坐标，而 note 文本本身就是全文。
+   * 若把它套到 note 全文上，会把全文按 legacy 的范围（约 280 字）再截一刀——
+   * 表现为长贴「没显示全」，且因为已拿到全文而不出「显示更多」按钮。
+   */
+  const window_ = usingNoteText ? { start: 0, end: fullText.length } : visibleWindow(legacy, fullText);
+  const text = fullText.slice(window_.start, window_.end).replace(/[ \t]+$/, '');
+  // 正文是否被 X 截断：note_tweet 已带全文时无需处理，否则需要「显示更多」去补全
+  const truncated = Boolean(legacy.truncated) || (!usingNoteText && /…$/.test(fullText.trim()));
   return {
     id: String(tweet.rest_id || legacy.id_str || ''),
     inReplyToId: String(legacy.in_reply_to_status_id_str || ''),
     conversationId: String(legacy.conversation_id_str || ''),
-    text: (noteText && typeof noteText.text === 'string' ? noteText.text : '') || String(legacy.full_text || legacy.text || ''),
+    text,
+    // @提及 / #话题 / $代码 / 链接的可渲染区间（含码点→UTF-16 偏移换算与显示窗口裁剪）
+    entities: entityRanges(entitySet, fullText, window_),
+    // 是否已拿到全文；needsExpand 表示需要「显示更多」补全（供渲染层出按钮）
+    hasFullText: usingNoteText,
+    needsExpand: truncated && !usingNoteText,
     createdAt: String(legacy.created_at || ''),
     author: {
       id: String((user && user.rest_id) || userLegacy.id_str || ''),
@@ -388,18 +552,19 @@ function liteModel(node) {
     },
     media,
     mediaCount: media.length,
-    attachment: articleAttachment(tweet, legacy),
-    isNoteTweet: Boolean(noteText && typeof noteText.text === 'string' && noteText.text)
+    attachment: articleAttachment(tweet, legacy)
   };
 }
 
 /** 找到 cursorType 为 Bottom 的游标（回退 ShowMoreThreads/ShowMoreThread） */
-export function bottomCursor(value, seen = new Set()) {
-  if (!value || typeof value !== 'object' || seen.has(value)) return null;
-  seen.add(value);
+export function bottomCursor(value) {
+  if (!value || typeof value !== 'object') return null;
+  const seen = new Set();
   let fallback = null;
   const walk = (node) => {
-    if (!node || typeof node !== 'object') return null;
+    // seen 真正生效：避免畸形/自引用 payload 造成无限递归
+    if (!node || typeof node !== 'object' || seen.has(node)) return null;
+    seen.add(node);
     const type = String(node.cursorType || '');
     if (/^Bottom$/i.test(type) && typeof node.value === 'string') return node.value;
     if (/^(?:ShowMoreThreads|ShowMoreThread)$/i.test(type) && typeof node.value === 'string' && !fallback) fallback = node.value;
@@ -424,8 +589,14 @@ export function bottomCursor(value, seen = new Set()) {
  */
 export function parseThreadSummary(json, focalTweetId) {
   const nodes = collectTweetNodes((json && json.data) || json);
-  const models = nodes.map(liteModel).filter((model) => model && model.id);
-  const byId = new Map(models.map((model) => [model.id, model]));
+  // 按 id 去重：X 会在「推荐/发现更多」等模块里重复同一条帖子，
+  // 不去重会让评论数与节点数虚高
+  const byId = new Map();
+  for (const node of nodes) {
+    const model = liteModel(node);
+    if (model && model.id) byId.set(model.id, model);
+  }
+  const models = [...byId.values()];
   const focalId = String(focalTweetId || '');
   const focal = byId.get(focalId) || null;
   const cursor = bottomCursor((json && json.data) || json);
