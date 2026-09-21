@@ -817,6 +817,9 @@ function quoteCard(model, { bindProfile = null } = {}) {
   const quote = model.quote;
   if (!quote) return null;
   const url = openUrlOf(quote);
+  // 被引用的可能是 X 长文：正文往往只剩一条 t.co（displayText 会去掉），
+  // 标题与封面在 attachment 里，media 是空的 —— 需要单独走一条分支
+  const article = quote.attachment && quote.attachment.type === 'article' ? quote.attachment : null;
   const card = el('div', { class: 'pv-x-quote', role: 'link', tabindex: '0', 'aria-label': '在新窗口打开引用的帖子' });
 
   const main = el('div', { class: 'pv-x-quote-main' });
@@ -834,17 +837,27 @@ function quoteCard(model, { bindProfile = null } = {}) {
   head.appendChild(nameRow);
   main.appendChild(head);
 
-  if (displayText(quote)) {
+  if (article) {
+    const titleRow = el('div', { class: 'pv-x-quote-title' });
+    titleRow.appendChild(el('span', { class: 'pv-x-quote-tag', text: '长文' }));
+    titleRow.appendChild(
+      el('span', { class: 'pv-x-quote-title-text', text: article.title || article.description || '（无标题长文）' })
+    );
+    main.appendChild(titleRow);
+    if (article.title && article.description) {
+      main.appendChild(el('div', { class: 'pv-x-quote-text', text: article.description }));
+    }
+  } else if (displayText(quote)) {
     const body = el('div', { class: 'pv-x-quote-text' });
     appendRichText(body, quote, bindProfile);
     main.appendChild(body);
   }
   card.appendChild(main);
 
-  // 缩略图放右侧：比通栏大图省得多的高度
-  const photo = (quote.media || [])[0];
-  if (photo && photo.url) {
-    card.appendChild(el('img', { class: 'pv-x-quote-media', src: photo.url, alt: photo.altText || '', loading: 'lazy' }));
+  // 缩略图放右侧：长文用封面，普通帖用首图（视频则是它的海报）
+  const thumb = article ? article.image : (quote.media || [])[0] && (quote.media || [])[0].url;
+  if (thumb) {
+    card.appendChild(el('img', { class: 'pv-x-quote-media', src: thumb, alt: '', loading: 'lazy' }));
   }
 
   const open = () => window.open(url, '_blank', 'noopener');

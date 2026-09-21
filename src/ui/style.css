@@ -2146,6 +2146,33 @@ article.pv-x-post[data-reply-target='true'] {
   overflow-wrap: anywhere;
   white-space: pre-wrap;
 }
+/* 被引用的是 X 长文：显示「长文」标签 + 标题（摘要另起一行） */
+.pv-x-quote-title {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  margin-top: 2px;
+  font-size: 14px;
+  line-height: 19px;
+}
+.pv-x-quote-tag {
+  flex: none;
+  padding: 0 5px;
+  border-radius: 4px;
+  background-color: var(--pv-x-hover, rgba(0, 0, 0, 0.06));
+  color: var(--pv-x-muted, #536471);
+  font-size: 11px;
+  line-height: 16px;
+}
+.pv-x-quote-title-text {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  color: var(--pv-x-fg, #0f1419);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
 .pv-x-quote-media {
   flex: none;
   width: 56px;

@@ -4878,6 +4878,33 @@ article.pv-x-post[data-reply-target='true'] {\r
   overflow-wrap: anywhere;\r
   white-space: pre-wrap;\r
 }\r
+/* 被引用的是 X 长文：显示「长文」标签 + 标题（摘要另起一行） */\r
+.pv-x-quote-title {\r
+  display: flex;\r
+  align-items: baseline;\r
+  gap: 6px;\r
+  margin-top: 2px;\r
+  font-size: 14px;\r
+  line-height: 19px;\r
+}\r
+.pv-x-quote-tag {\r
+  flex: none;\r
+  padding: 0 5px;\r
+  border-radius: 4px;\r
+  background-color: var(--pv-x-hover, rgba(0, 0, 0, 0.06));\r
+  color: var(--pv-x-muted, #536471);\r
+  font-size: 11px;\r
+  line-height: 16px;\r
+}\r
+.pv-x-quote-title-text {\r
+  display: -webkit-box;\r
+  -webkit-box-orient: vertical;\r
+  -webkit-line-clamp: 2;\r
+  overflow: hidden;\r
+  color: var(--pv-x-fg, #0f1419);\r
+  font-weight: 600;\r
+  overflow-wrap: anywhere;\r
+}\r
 .pv-x-quote-media {\r
   flex: none;\r
   width: 56px;\r
@@ -8632,6 +8659,7 @@ article.pv-x-post[data-reply-target='true'] {\r
     const quote = model.quote;
     if (!quote) return null;
     const url = openUrlOf(quote);
+    const article = quote.attachment && quote.attachment.type === "article" ? quote.attachment : null;
     const card = el("div", { class: "pv-x-quote", role: "link", tabindex: "0", "aria-label": "在新窗口打开引用的帖子" });
     const main = el("div", { class: "pv-x-quote-main" });
     const head = el("div", { class: "pv-x-quote-head" });
@@ -8647,15 +8675,25 @@ article.pv-x-post[data-reply-target='true'] {\r
     if (quote.author.handle) nameRow.appendChild(el("span", { class: "pv-x-quote-handle", text: `@${quote.author.handle}` }));
     head.appendChild(nameRow);
     main.appendChild(head);
-    if (displayText(quote)) {
+    if (article) {
+      const titleRow = el("div", { class: "pv-x-quote-title" });
+      titleRow.appendChild(el("span", { class: "pv-x-quote-tag", text: "长文" }));
+      titleRow.appendChild(
+        el("span", { class: "pv-x-quote-title-text", text: article.title || article.description || "（无标题长文）" })
+      );
+      main.appendChild(titleRow);
+      if (article.title && article.description) {
+        main.appendChild(el("div", { class: "pv-x-quote-text", text: article.description }));
+      }
+    } else if (displayText(quote)) {
       const body = el("div", { class: "pv-x-quote-text" });
       appendRichText(body, quote, bindProfile);
       main.appendChild(body);
     }
     card.appendChild(main);
-    const photo = (quote.media || [])[0];
-    if (photo && photo.url) {
-      card.appendChild(el("img", { class: "pv-x-quote-media", src: photo.url, alt: photo.altText || "", loading: "lazy" }));
+    const thumb = article ? article.image : (quote.media || [])[0] && (quote.media || [])[0].url;
+    if (thumb) {
+      card.appendChild(el("img", { class: "pv-x-quote-media", src: thumb, alt: "", loading: "lazy" }));
     }
     const open = () => window.open(url, "_blank", "noopener");
     card.addEventListener("click", (event) => {

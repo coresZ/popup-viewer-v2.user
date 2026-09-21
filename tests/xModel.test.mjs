@@ -751,4 +751,34 @@ check('引用帖：没有引用时 quote 为 null', () => {
   assert.equal(parseThreadSummary(payload, '720').focal.quote, null);
 });
 
+check('引用帖：被引用的是 X 长文时，带出标题与封面（正文只剩 t.co）', () => {
+  const inner = tweet('800', { text: 'https://t.co/art', user: user('u80', 'Art', 'art') });
+  inner.article = {
+    article_results: {
+      result: {
+        title: '文章标题',
+        preview_text: '文章摘要',
+        cover_media: {
+          original_img_url: 'https://pbs.twimg.com/cover.jpg',
+          original_img_width: 1000,
+          original_img_height: 500
+        }
+      }
+    }
+  };
+  const outer = tweet('801', { text: '看这篇长文', user: user('u81', 'Out', 'out') });
+  outer.quoted_status_result = { result: inner };
+  const payload = { data: { threaded_conversation_with_injections_v2: { instructions: [{ entries: [entry('801', outer)] }] } } };
+  const model = parseThreadSummary(payload, '801').focal;
+
+  assert.notEqual(model.quote, null);
+  assert.equal(model.quote.attachment && model.quote.attachment.type, 'article');
+  assert.equal(model.quote.attachment.title, '文章标题');
+  assert.equal(model.quote.attachment.description, '文章摘要');
+  assert.equal(model.quote.attachment.image, 'https://pbs.twimg.com/cover.jpg');
+  // 被引用长文的正文通常只剩一条 t.co（渲染层会去掉它，改用标题）
+  assert.equal(model.quote.text, 'https://t.co/art');
+  assert.equal(model.quote.media.length, 0);
+});
+
 console.log(`\n${passed} passed${process.exitCode ? ', some failed' : ''}`);
