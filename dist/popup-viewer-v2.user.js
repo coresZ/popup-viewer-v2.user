@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name          页内弹窗打开新帖
 // @namespace     http://tampermonkey.net/
-// @version       2.1.0
+// @version       2.1.1
 // @description   点击论坛帖子链接，在弹窗中加载内容 (插件化架构 V2)
 // @author        cores
 // @include       *://*/*
@@ -48,7 +48,7 @@
     if (!DEBUG) return;
     try {
       var d = document.createElement("div");
-      d.textContent = "[PV2] boot v" + (true ? "2.1.0" : "?");
+      d.textContent = "[PV2] boot v" + (true ? "2.1.1" : "?");
       d.style.cssText = "position:fixed;top:12px;left:12px;z-index:2147483647;background:#7c3aed;color:#fff;padding:6px 12px;font-size:12px;border-radius:6px;font-family:sans-serif";
       (document.body || document.documentElement).appendChild(d);
     } catch (e) {
@@ -4808,6 +4808,85 @@ article.pv-x-post[data-reply-target='true'] {\r
     transition: none !important;\r
   }\r
 }\r
+/* 引用帖卡片（紧凑版）：作者行 + 正文截两行 + 右侧小缩略图，整卡可点开新窗口 */\r
+.pv-x-quote {\r
+  display: flex;\r
+  align-items: flex-start;\r
+  gap: 10px;\r
+  margin-top: 10px;\r
+  padding: 8px 10px;\r
+  border: 1px solid var(--pv-x-border, #eff3f4);\r
+  border-radius: 12px;\r
+  cursor: pointer;\r
+  transition: background-color 0.15s ease;\r
+}\r
+.pv-x-quote:hover {\r
+  background-color: var(--pv-x-hover, rgba(0, 0, 0, 0.03));\r
+}\r
+.pv-x-quote:focus-visible {\r
+  outline: 2px solid var(--pv-x-accent, #1d9bf0);\r
+  outline-offset: 1px;\r
+}\r
+.pv-x-quote-main {\r
+  flex: 1;\r
+  min-width: 0;\r
+}\r
+.pv-x-quote-head {\r
+  display: flex;\r
+  align-items: center;\r
+  gap: 6px;\r
+  min-width: 0;\r
+}\r
+.pv-x-quote-avatar {\r
+  flex: none;\r
+  width: 18px;\r
+  height: 18px;\r
+  border-radius: 50%;\r
+  object-fit: cover;\r
+}\r
+.pv-x-quote-name {\r
+  display: flex;\r
+  align-items: center;\r
+  gap: 4px;\r
+  min-width: 0;\r
+  font-size: 14px;\r
+  line-height: 18px;\r
+}\r
+.pv-x-quote-author {\r
+  overflow: hidden;\r
+  font-weight: 700;\r
+  color: var(--pv-x-fg, #0f1419);\r
+  text-overflow: ellipsis;\r
+  white-space: nowrap;\r
+}\r
+.pv-x-quote-handle {\r
+  overflow: hidden;\r
+  color: var(--pv-x-muted, #536471);\r
+  text-overflow: ellipsis;\r
+  white-space: nowrap;\r
+}\r
+/* 正文只留两行，超出省略 —— 引用卡不能占太多高度 */\r
+.pv-x-quote-text {\r
+  display: -webkit-box;\r
+  -webkit-box-orient: vertical;\r
+  -webkit-line-clamp: 2;\r
+  overflow: hidden;\r
+  margin-top: 2px;\r
+  color: var(--pv-x-fg, #0f1419);\r
+  font-size: 14px;\r
+  line-height: 19px;\r
+  overflow-wrap: anywhere;\r
+  white-space: pre-wrap;\r
+}\r
+.pv-x-quote-media {\r
+  flex: none;\r
+  width: 56px;\r
+  height: 56px;\r
+  border: 1px solid var(--pv-x-border, #eff3f4);\r
+  border-radius: 8px;\r
+  object-fit: cover;\r
+}\r
+\r
 /* 作者资料卡（悬停出现，与 X 一致） */\r
 .pv-x-profile-trigger {\r
   cursor: pointer;\r
@@ -7412,7 +7491,14 @@ article.pv-x-post[data-reply-target='true'] {\r
     }
     return { start: 0, end: fullText.length };
   }
-  function liteModel(node) {
+  function quotedModel(tweet) {
+    const holder = tweet.quoted_status_result || tweet.quoted_tweet_results || tweet.quoted_tweet;
+    if (!holder || typeof holder !== "object") return null;
+    const node = holder.result || holder.tweet || holder;
+    const quoted = unwrapResult(node);
+    return quoted ? liteModel(quoted, false) : null;
+  }
+  function liteModel(node, withQuote = true) {
     const tweet = unwrapResult(node);
     if (!tweet) return null;
     const legacy = tweet.legacy || {};
@@ -7474,7 +7560,9 @@ article.pv-x-post[data-reply-target='true'] {\r
       },
       media,
       mediaCount: media.length,
-      attachment: articleAttachment(tweet, legacy)
+      attachment: articleAttachment(tweet, legacy),
+      // 被引用的帖子（一层）；没有引用时为 null
+      quote: withQuote ? quotedModel(tweet) : null
     };
   }
   function bottomCursor(value) {
@@ -8540,6 +8628,48 @@ article.pv-x-post[data-reply-target='true'] {\r
     }
     return grid;
   }
+  function quoteCard(model, { bindProfile = null } = {}) {
+    const quote = model.quote;
+    if (!quote) return null;
+    const url = openUrlOf(quote);
+    const card = el("div", { class: "pv-x-quote", role: "link", tabindex: "0", "aria-label": "在新窗口打开引用的帖子" });
+    const main = el("div", { class: "pv-x-quote-main" });
+    const head = el("div", { class: "pv-x-quote-head" });
+    if (quote.author.avatar) {
+      head.appendChild(el("img", { class: "pv-x-quote-avatar", src: quote.author.avatar, alt: "", loading: "lazy" }));
+    }
+    const nameRow = el("div", { class: "pv-x-quote-name" });
+    nameRow.appendChild(el("span", { class: "pv-x-quote-author", text: quote.author.name || quote.author.handle || "" }));
+    if (quote.author.verified) {
+      const badge2 = xIcon("verified");
+      if (badge2) nameRow.appendChild(el("span", { class: "pv-x-badge" }, badge2));
+    }
+    if (quote.author.handle) nameRow.appendChild(el("span", { class: "pv-x-quote-handle", text: `@${quote.author.handle}` }));
+    head.appendChild(nameRow);
+    main.appendChild(head);
+    if (displayText(quote)) {
+      const body = el("div", { class: "pv-x-quote-text" });
+      appendRichText(body, quote, bindProfile);
+      main.appendChild(body);
+    }
+    card.appendChild(main);
+    const photo = (quote.media || [])[0];
+    if (photo && photo.url) {
+      card.appendChild(el("img", { class: "pv-x-quote-media", src: photo.url, alt: photo.altText || "", loading: "lazy" }));
+    }
+    const open = () => window.open(url, "_blank", "noopener");
+    card.addEventListener("click", (event) => {
+      if (event.target.closest("a, button")) return;
+      event.preventDefault();
+      open();
+    });
+    card.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter" && event.key !== " ") return;
+      event.preventDefault();
+      open();
+    });
+    return card;
+  }
   function renderPost(model, { threadLine = false, onAction = null, translation = null, bindProfile = null, compact = false } = {}) {
     const article = el("article", { class: compact ? "pv-x-post pv-x-post-compact" : "pv-x-post" });
     article.dataset.tweetId = model.id;
@@ -8554,6 +8684,8 @@ article.pv-x-post[data-reply-target='true'] {\r
       displayText(model) || !isArticle ? textBlock(model, translation, bindProfile) : null,
       isArticle ? compact ? articleCard(model) : articleReader(model) : null,
       mediaGrid(model, { openUrl: openUrlOf(model) }),
+      // 引用卡放最后：不夹在正文与图片之间
+      quoteCard(model, { bindProfile }),
       actionsNode(model, onAction)
     );
     article.appendChild(main);

@@ -699,4 +699,56 @@ check('链接实体：没有 display_url 时退回 expanded_url', () => {
   assert.equal(model.entities[0].url, 'https://example.com/a/b');
 });
 
+check('引用帖：解出被引用帖子的作者/正文/媒体，且只解一层', () => {
+  const inner = tweet('700', {
+    text: '被引用的正文 @inner',
+    user: user('u70', 'Inner', 'inner'),
+    media: [
+      {
+        id_str: 'q1',
+        type: 'photo',
+        media_url_https: 'https://pbs.twimg.com/q.jpg',
+        original_info: { width: 1200, height: 800 }
+      }
+    ]
+  });
+  inner.legacy.entities = { user_mentions: [{ screen_name: 'inner', name: 'Inner', id_str: 'u70', indices: [6, 12] }] };
+  // 引用帖自己又引用了别人：X 界面只显示一层，我们也只解一层
+  const deepest = tweet('699', { text: '更深一层', user: user('u69', 'Deep', 'deep') });
+  inner.quoted_status_result = { result: deepest };
+
+  const outer = tweet('701', { text: '看这个引用 https://t.co/z', user: user('u71', 'Outer', 'outer') });
+  outer.quoted_status_result = { result: inner };
+  const payload = { data: { threaded_conversation_with_injections_v2: { instructions: [{ entries: [entry('701', outer)] }] } } };
+  const model = parseThreadSummary(payload, '701').focal;
+
+  assert.notEqual(model.quote, null);
+  assert.equal(model.quote.id, '700');
+  assert.equal(model.quote.author.handle, 'inner');
+  assert.equal(model.quote.author.name, 'Inner');
+  assert.equal(model.quote.text, '被引用的正文 @inner');
+  assert.equal(model.quote.entities.length, 1);
+  assert.equal(model.quote.media.length, 1);
+  assert.equal(model.quote.media[0].url, 'https://pbs.twimg.com/q.jpg');
+  // 只解一层
+  assert.equal(model.quote.quote, null);
+  // 被引用的帖子不能混进评论/节点统计
+  assert.equal(parseThreadSummary(payload, '701').nodeCount, 1);
+});
+
+check('引用帖：TweetWithVisibilityResults 包装也能解出', () => {
+  const inner = tweet('710', { text: '可见性包装里的正文', user: user('u71', 'W', 'w') });
+  const outer = tweet('711', { text: '引用', user: user('u72', 'X', 'x') });
+  outer.quoted_status_result = { result: { __typename: 'TweetWithVisibilityResults', tweet: inner } };
+  const payload = { data: { threaded_conversation_with_injections_v2: { instructions: [{ entries: [entry('711', outer)] }] } } };
+  const model = parseThreadSummary(payload, '711').focal;
+  assert.equal(model.quote && model.quote.id, '710');
+  assert.equal(model.quote.text, '可见性包装里的正文');
+});
+
+check('引用帖：没有引用时 quote 为 null', () => {
+  const payload = { data: { threaded_conversation_with_injections_v2: { instructions: [{ entries: [entry('720', tweet('720', { text: '普通帖', user: user('u73', 'Y', 'y') }))] }] } } };
+  assert.equal(parseThreadSummary(payload, '720').focal.quote, null);
+});
+
 console.log(`\n${passed} passed${process.exitCode ? ', some failed' : ''}`);

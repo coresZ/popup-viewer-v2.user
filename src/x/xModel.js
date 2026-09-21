@@ -481,7 +481,19 @@ function visibleWindow(legacy, fullText) {
 }
 
 /** C1 用的轻量字段抽取（C2 会被完整 tweetModel 取代） */
-function liteModel(node) {
+/**
+ * 引用帖：X 把它放在 quoted_status_result.result 里（也可能包一层 TweetWithVisibilityResults）。
+ * 只解一层——引用帖自己再引用别人时，X 界面同样只显示一层，避免递归展开。
+ */
+function quotedModel(tweet) {
+  const holder = tweet.quoted_status_result || tweet.quoted_tweet_results || tweet.quoted_tweet;
+  if (!holder || typeof holder !== 'object') return null;
+  const node = holder.result || holder.tweet || holder;
+  const quoted = unwrapResult(node);
+  return quoted ? liteModel(quoted, false) : null;
+}
+
+function liteModel(node, withQuote = true) {
   const tweet = unwrapResult(node);
   if (!tweet) return null;
   const legacy = tweet.legacy || {};
@@ -552,7 +564,9 @@ function liteModel(node) {
     },
     media,
     mediaCount: media.length,
-    attachment: articleAttachment(tweet, legacy)
+    attachment: articleAttachment(tweet, legacy),
+    // 被引用的帖子（一层）；没有引用时为 null
+    quote: withQuote ? quotedModel(tweet) : null
   };
 }
 

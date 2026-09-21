@@ -809,6 +809,59 @@ function mediaGrid(model, { openUrl }) {
 // ---------- 帖子 / 评论 ----------
 
 /** 渲染一条帖子/评论；threadLine 为真时在头像下方画出 X 的竖线 */
+/**
+ * 引用帖卡片（紧凑版）：作者行 + 正文（截两行）+ 右侧小缩略图。
+ * 整卡可点，在**新窗口**打开被引用帖；卡内的 @提及/链接保持各自可点。
+ */
+function quoteCard(model, { bindProfile = null } = {}) {
+  const quote = model.quote;
+  if (!quote) return null;
+  const url = openUrlOf(quote);
+  const card = el('div', { class: 'pv-x-quote', role: 'link', tabindex: '0', 'aria-label': '在新窗口打开引用的帖子' });
+
+  const main = el('div', { class: 'pv-x-quote-main' });
+  const head = el('div', { class: 'pv-x-quote-head' });
+  if (quote.author.avatar) {
+    head.appendChild(el('img', { class: 'pv-x-quote-avatar', src: quote.author.avatar, alt: '', loading: 'lazy' }));
+  }
+  const nameRow = el('div', { class: 'pv-x-quote-name' });
+  nameRow.appendChild(el('span', { class: 'pv-x-quote-author', text: quote.author.name || quote.author.handle || '' }));
+  if (quote.author.verified) {
+    const badge = xIcon('verified');
+    if (badge) nameRow.appendChild(el('span', { class: 'pv-x-badge' }, badge));
+  }
+  if (quote.author.handle) nameRow.appendChild(el('span', { class: 'pv-x-quote-handle', text: `@${quote.author.handle}` }));
+  head.appendChild(nameRow);
+  main.appendChild(head);
+
+  if (displayText(quote)) {
+    const body = el('div', { class: 'pv-x-quote-text' });
+    appendRichText(body, quote, bindProfile);
+    main.appendChild(body);
+  }
+  card.appendChild(main);
+
+  // 缩略图放右侧：比通栏大图省得多的高度
+  const photo = (quote.media || [])[0];
+  if (photo && photo.url) {
+    card.appendChild(el('img', { class: 'pv-x-quote-media', src: photo.url, alt: photo.altText || '', loading: 'lazy' }));
+  }
+
+  const open = () => window.open(url, '_blank', 'noopener');
+  card.addEventListener('click', (event) => {
+    // 卡内的 @提及 / 链接等交互优先，不触发整卡跳转
+    if (event.target.closest('a, button')) return;
+    event.preventDefault();
+    open();
+  });
+  card.addEventListener('keydown', (event) => {
+    if (event.key !== 'Enter' && event.key !== ' ') return;
+    event.preventDefault();
+    open();
+  });
+  return card;
+}
+
 export function renderPost(
   model,
   { threadLine = false, onAction = null, translation = null, bindProfile = null, compact = false } = {}
@@ -827,6 +880,8 @@ export function renderPost(
     displayText(model) || !isArticle ? textBlock(model, translation, bindProfile) : null,
     isArticle ? (compact ? articleCard(model) : articleReader(model)) : null,
     mediaGrid(model, { openUrl: openUrlOf(model) }),
+    // 引用卡放最后：不夹在正文与图片之间
+    quoteCard(model, { bindProfile }),
     actionsNode(model, onAction)
   );
   article.appendChild(main);
