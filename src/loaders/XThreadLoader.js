@@ -20,6 +20,7 @@ import {
 import { applyXSkin, watchXTheme } from '../x/xTheme.js';
 import { primeXIcons } from '../x/xIcons.js';
 import { createProfileCard } from '../x/xProfileCard.js';
+import { createCommentCard } from '../x/xCommentCard.js';
 import {
   renderReader,
   renderReply,
@@ -113,6 +114,8 @@ export class XThreadLoader {
       readerEl.classList.toggle('pv-x-single', container.clientWidth < SINGLE_COLUMN_WIDTH);
       // 窗体尺寸变化后资料卡位置会失效，重新贴回锚点
       profileCard?.reposition();
+      // 评论卡同理：重新按右栏算一次位置并夹紧
+      commentCard?.reposition();
     };
 
     const cleanup = () => {
@@ -126,6 +129,8 @@ export class XThreadLoader {
       translationObserver = null;
       profileCard?.destroy();
       profileCard = null;
+      // 评论卡挂在阅读器内、键盘监听在自己身上，随 DOM 回收；这里清缓存与 window 级监听
+      commentCard?.destroy();
       // 翻译队列必须清空：否则关闭弹窗后在途请求的 finally 会继续出队、继续发请求
       translationQueue.length = 0;
       queuedKeys.clear();
@@ -362,6 +367,8 @@ export class XThreadLoader {
           renderReply(reply, {
             onAction: handleAction,
             bindProfile,
+            // 评论列表里的每条评论都要有 💬 入口：点它看这条评论自己的回复
+            onOpenComments: openCommentsFor,
             translation: translationFor(reply)
           })
         );
@@ -451,6 +458,35 @@ export class XThreadLoader {
       sortMode = next;
       paintSort(group, next);
       renderReplies();
+    };
+
+    // ---------- 小巧评论卡：点时间右侧的 💬 图标打开 ----------
+    // 必须放在 handleAction 之后：这里会直接引用它（const 有 TDZ，提前引用会 ReferenceError）
+
+    const commentCard = createCommentCard({
+      getRoot: () => readerEl,
+      // 卡片只在右栏内活动：位置由右栏 rect 反算并夹紧，结构上不会压到左侧主贴
+      getPane: () => readerEl?.querySelector('.pv-x-pane-replies') || null,
+      bindProfile,
+      onAction: handleAction,
+      load: async (id) => {
+        const json = await bridge.readThread(String(id));
+        const summary = parseThreadSummary(json, String(id));
+        if (!summary.focalFound || !summary.focal) throw new Error('X 没有返回这条评论');
+        modelsById.set(summary.focal.id, summary.focal);
+        for (const reply of summary.replies) modelsById.set(reply.id, reply);
+        return { post: summary.focal, replies: summary.replies, url: openUrlOf(summary.focal) };
+      }
+    });
+
+    /** 帖子头部 💬 图标：打开这条的评论卡（同一条再点是关闭） */
+    const openCommentsFor = (model, anchor) => {
+      if (!model || !model.id) return;
+      if (commentCard.isOpen() && commentCard.current() === String(model.id)) {
+        commentCard.close();
+        return;
+      }
+      commentCard.open(model, anchor);
     };
 
     const submitReply = async (text, target) => {
@@ -568,6 +604,10 @@ export class XThreadLoader {
         }
         updateCount();
         renderReplies();
+        // 评论卡贴着图标定位：栏一滚动锚点就跑了，直接关掉（卡片是"随手看一眼"的东西）
+        readerEl.querySelector('.pv-x-pane-replies')?.addEventListener('scroll', () => commentCard.close(), {
+          passive: true
+        });
       } catch (err) {
         if (aborted) return;
         logger.warn('[XThreadLoader] read thread failed', err);

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name          页内弹窗打开新帖
 // @namespace     http://tampermonkey.net/
-// @version       2.1.2
+// @version       2.2.0
 // @description   点击论坛帖子链接，在弹窗中加载内容 (插件化架构 V2)
 // @author        cores
 // @include       *://*/*
@@ -48,7 +48,7 @@
     if (!DEBUG) return;
     try {
       var d = document.createElement("div");
-      d.textContent = "[PV2] boot v" + (true ? "2.1.2" : "?");
+      d.textContent = "[PV2] boot v" + (true ? "2.2.0" : "?");
       d.style.cssText = "position:fixed;top:12px;left:12px;z-index:2147483647;background:#7c3aed;color:#fff;padding:6px 12px;font-size:12px;border-radius:6px;font-family:sans-serif";
       (document.body || document.documentElement).appendChild(d);
     } catch (e) {
@@ -4679,7 +4679,8 @@ article.pv-x-post[data-reply-target='true'] {\r
 .pv-x-media-lightbox {\r
   position: absolute;\r
   inset: 0;\r
-  z-index: 6;\r
+  /* 必须在评论抽屉(7)之上：否则在抽屉里点图，灯箱会开在抽屉背后 */\r
+  z-index: 9;\r
   display: flex;\r
   align-items: center;\r
   justify-content: center;\r
@@ -4914,6 +4915,217 @@ article.pv-x-post[data-reply-target='true'] {\r
   object-fit: cover;\r
 }\r
 \r
+/* 时间右侧的「查看评论」入口：图标沿用 X 的回复图标 + 数量 */\r
+.pv-x-comment-entry {\r
+  appearance: none;\r
+  -webkit-appearance: none;\r
+  display: inline-flex;\r
+  align-items: center;\r
+  gap: 3px;\r
+  flex: none;\r
+  margin-left: 2px;\r
+  padding: 1px 5px;\r
+  border: 0;\r
+  border-radius: 6px;\r
+  background: none;\r
+  color: var(--pv-x-muted, #536471);\r
+  font: inherit;\r
+  font-size: 13px;\r
+  line-height: 18px;\r
+  cursor: pointer;\r
+}\r
+.pv-x-comment-entry:hover {\r
+  background-color: rgba(29, 155, 240, 0.1);\r
+  color: var(--pv-x-accent, #1d9bf0);\r
+}\r
+.pv-x-comment-entry svg {\r
+  display: block;\r
+  width: 15px;\r
+  height: 15px;\r
+}\r
+/* 数字用等宽，避免计数变化时左右抖动 */\r
+.pv-x-comment-count {\r
+  font-variant-numeric: tabular-nums;\r
+}\r
+\r
+/* 小巧评论卡：只在右侧评论栏内活动（位置由 JS 按栏 rect 反算并夹紧），\r
+   有覆盖层但不遮左侧主贴；非模态，无遮罩 */\r
+.pv-x-card-layer {\r
+  position: absolute;\r
+  inset: 0;\r
+  z-index: 7;\r
+  pointer-events: none;\r
+}\r
+.pv-x-card {\r
+  position: absolute;\r
+  display: flex;\r
+  flex-direction: column;\r
+  max-height: 340px;\r
+  pointer-events: auto;\r
+  border: 1px solid #e3e8ea;\r
+  border-radius: 14px;\r
+  background-color: var(--pv-x-bg, #fff);\r
+  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.16), 0 2px 6px rgba(0, 0, 0, 0.06);\r
+  outline: none;\r
+  opacity: 0;\r
+  transform: scale(0.97);\r
+  transform-origin: top right;\r
+  /* 轻量出现：淡入 + 极小缩放（比滑入轻，符合"小巧"） */\r
+  transition: opacity 0.14s ease, transform 0.16s cubic-bezier(0.16, 1, 0.3, 1);\r
+}\r
+.pv-x-card.visible {\r
+  opacity: 1;\r
+  transform: scale(1);\r
+}\r
+/* 指向图标的箭头：只有锚点确实在栏内时才出现（JS 用 data-arrow 控制） */\r
+.pv-x-card[data-arrow='up']::before,\r
+.pv-x-card[data-arrow='down']::before {\r
+  content: '';\r
+  position: absolute;\r
+  left: var(--pv-card-arrow-left, 24px);\r
+  width: 10px;\r
+  height: 10px;\r
+  background-color: var(--pv-x-bg, #fff);\r
+  transform: rotate(45deg);\r
+}\r
+.pv-x-card[data-arrow='up']::before {\r
+  top: -6px;\r
+  border-left: 1px solid #e3e8ea;\r
+  border-top: 1px solid #e3e8ea;\r
+}\r
+.pv-x-card[data-arrow='down']::before {\r
+  bottom: -6px;\r
+  border-right: 1px solid #e3e8ea;\r
+  border-bottom: 1px solid #e3e8ea;\r
+}\r
+.pv-x-card-head {\r
+  display: flex;\r
+  align-items: center;\r
+  gap: 4px;\r
+  flex: 0 0 auto;\r
+  padding: 7px 8px 7px 10px;\r
+  border-bottom: 1px solid var(--pv-x-border, #eff3f4);\r
+}\r
+.pv-x-card-title {\r
+  flex: 1;\r
+  min-width: 0;\r
+  overflow: hidden;\r
+  color: var(--pv-x-fg, #0f1419);\r
+  font-size: 12.5px;\r
+  text-overflow: ellipsis;\r
+  white-space: nowrap;\r
+}\r
+.pv-x-card-title b {\r
+  font-weight: 700;\r
+}\r
+.pv-x-card-when {\r
+  margin-left: 4px;\r
+  color: var(--pv-x-muted, #536471);\r
+  font-weight: 400;\r
+}\r
+.pv-x-card-btn {\r
+  appearance: none;\r
+  -webkit-appearance: none;\r
+  display: flex;\r
+  align-items: center;\r
+  justify-content: center;\r
+  flex: none;\r
+  width: 22px;\r
+  height: 22px;\r
+  padding: 0;\r
+  border: 0;\r
+  border-radius: 50%;\r
+  background: none;\r
+  color: var(--pv-x-muted, #536471);\r
+  font: inherit;\r
+  font-size: 12px;\r
+  line-height: 1;\r
+  cursor: pointer;\r
+}\r
+.pv-x-card-btn:hover {\r
+  background-color: var(--pv-x-hover, rgba(0, 0, 0, 0.06));\r
+  color: var(--pv-x-accent, #1d9bf0);\r
+}\r
+/* 刷新中：图标转起来，按钮禁点 */\r
+.pv-x-card-btn.pv-x-card-busy {\r
+  pointer-events: none;\r
+  animation: pv-x-card-spin 0.9s linear infinite;\r
+}\r
+@keyframes pv-x-card-spin {\r
+  to {\r
+    transform: rotate(360deg);\r
+  }\r
+}\r
+.pv-x-card-body {\r
+  flex: 1;\r
+  min-height: 0;\r
+  overflow-y: auto;\r
+  overscroll-behavior: contain;\r
+  padding: 4px 10px 6px;\r
+  scrollbar-width: none;\r
+}\r
+.pv-x-card-body::-webkit-scrollbar {\r
+  display: none;\r
+}\r
+.pv-x-card-state {\r
+  padding: 18px 4px;\r
+  color: var(--pv-x-muted, #536471);\r
+  font-size: 12.5px;\r
+  text-align: center;\r
+}\r
+.pv-x-card-state-error {\r
+  padding: 8px 4px;\r
+  color: #c0272d;\r
+}\r
+.pv-x-card-foot {\r
+  display: block;\r
+  flex: 0 0 auto;\r
+  padding: 6px 10px;\r
+  border-top: 1px solid var(--pv-x-border, #eff3f4);\r
+  color: var(--pv-x-accent, #1d9bf0);\r
+  font-size: 12.5px;\r
+  text-decoration: none;\r
+}\r
+.pv-x-card-foot:hover {\r
+  background-color: var(--pv-x-hover, rgba(0, 0, 0, 0.03));\r
+}\r
+/* 卡片里的帖子走紧凑排版：头像/字号都小一号 */\r
+.pv-x-card-body .pv-x-post {\r
+  padding: 6px 0;\r
+  border-bottom: 1px solid var(--pv-x-border, #eff3f4);\r
+}\r
+.pv-x-card-body .pv-x-post:last-child {\r
+  border-bottom: 0;\r
+}\r
+.pv-x-card-body .pv-x-avatar-col {\r
+  width: 26px;\r
+}\r
+.pv-x-card-body .pv-x-avatar {\r
+  width: 26px;\r
+  height: 26px;\r
+}\r
+.pv-x-card-body .pv-x-text {\r
+  font-size: 13px;\r
+  line-height: 18px;\r
+}\r
+.pv-x-card-body .pv-x-head {\r
+  font-size: 12.5px;\r
+}\r
+.pv-x-card-body .pv-x-actions {\r
+  gap: 14px;\r
+  margin-top: 4px;\r
+  font-size: 11.5px;\r
+}\r
+/* 降低动效偏好：卡片直接出现/消失 */\r
+@media (prefers-reduced-motion: reduce) {\r
+  .pv-x-card {\r
+    transition: none;\r
+  }\r
+  .pv-x-card-btn.pv-x-card-busy {\r
+    animation: none;\r
+  }\r
+}\r
+\r
 /* 作者资料卡（悬停出现，与 X 一致） */\r
 .pv-x-profile-trigger {\r
   cursor: pointer;\r
@@ -4921,7 +5133,8 @@ article.pv-x-post[data-reply-target='true'] {\r
 .pv-x-profile-card {\r
   /* 相对 .pv-x-reader 绝对定位：面板带 transform，fixed 的包含块会变成面板而非视口 */\r
   position: absolute;\r
-  z-index: 6;\r
+  /* 高于评论抽屉(7)：在抽屉里悬停作者时资料卡不能被抽屉盖住 */\r
+  z-index: 8;\r
   width: 300px;\r
   padding: 16px;\r
   box-sizing: border-box;\r
@@ -5190,8 +5403,8 @@ article.pv-x-post[data-reply-target='true'] {\r
   opacity: 0;\r
   pointer-events: none;\r
   transition: opacity 0.18s ease;\r
-  /* 必须高于大图灯箱(6)与资料卡(6)：否则灯箱开着时「链接已复制」这类提示看不见 */\r
-  z-index: 8;\r
+  /* 最上层：抽屉(7)/资料卡(8)/大图灯箱(9) 都开着时，「链接已复制」这类提示也要可见 */\r
+  z-index: 10;\r
 }\r
 .pv-x-toast[data-visible='true'] {\r
   opacity: 1;\r
@@ -8051,7 +8264,27 @@ article.pv-x-post[data-reply-target='true'] {\r
     if (link) bindProfile == null ? void 0 : bindProfile(avatar, model);
     return column;
   }
-  function headNode(model, bindProfile = null) {
+  function commentEntry(model, onOpenComments) {
+    if (!onOpenComments) return null;
+    const count = Number(model.counts && model.counts.replies) || 0;
+    if (!count) return null;
+    const button = el("button", {
+      class: "pv-x-comment-entry",
+      type: "button",
+      title: count ? `查看这条的 ${count} 条评论` : "查看这条的评论",
+      "aria-label": count ? `查看这条的 ${count} 条评论` : "查看这条的评论"
+    });
+    const icon = xIcon("reply");
+    if (icon) button.appendChild(icon);
+    if (count) button.appendChild(el("span", { class: "pv-x-comment-count", text: formatCount2(count) }));
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      onOpenComments(model, button);
+    });
+    return button;
+  }
+  function headNode(model, bindProfile = null, onOpenComments = null) {
     const head = el("div", { class: "pv-x-head" });
     const nameLink = el("a", {
       class: "pv-x-name",
@@ -8075,6 +8308,8 @@ article.pv-x-post[data-reply-target='true'] {\r
       head.appendChild(el("span", { class: "pv-x-dot", text: "·" }));
       head.appendChild(el("time", { class: "pv-x-time", text: formatDate(model.createdAt) }));
     }
+    const entry = commentEntry(model, onOpenComments);
+    if (entry) head.appendChild(entry);
     return head;
   }
   var ACTIONS2 = [
@@ -8708,7 +8943,14 @@ article.pv-x-post[data-reply-target='true'] {\r
     });
     return card;
   }
-  function renderPost(model, { threadLine = false, onAction = null, translation = null, bindProfile = null, compact = false } = {}) {
+  function renderPost(model, {
+    threadLine = false,
+    onAction = null,
+    translation = null,
+    bindProfile = null,
+    compact = false,
+    onOpenComments = null
+  } = {}) {
     const article = el("article", { class: compact ? "pv-x-post pv-x-post-compact" : "pv-x-post" });
     article.dataset.tweetId = model.id;
     const column = avatarColumn(model, { bindProfile });
@@ -8718,7 +8960,7 @@ article.pv-x-post[data-reply-target='true'] {\r
     const main = el(
       "div",
       { class: "pv-x-main" },
-      headNode(model, bindProfile),
+      headNode(model, bindProfile, onOpenComments),
       displayText(model) || !isArticle ? textBlock(model, translation, bindProfile) : null,
       isArticle ? compact ? articleCard(model) : articleReader(model) : null,
       mediaGrid(model, { openUrl: openUrlOf(model) }),
@@ -8878,6 +9120,270 @@ article.pv-x-post[data-reply-target='true'] {\r
     return { reader, list, countLabel, composer: composerView, sort };
   }
 
+  // src/x/xCommentCard.js
+  function sinceLabel(at) {
+    if (!at) return "";
+    const seconds = Math.max(0, Math.round((Date.now() - at) / 1e3));
+    if (seconds < 45) return "刚刚更新";
+    const minutes = Math.round(seconds / 60);
+    if (minutes < 60) return `${minutes} 分钟前更新`;
+    const hours = Math.round(minutes / 60);
+    if (hours < 24) return `${hours} 小时前更新`;
+    return `${Math.round(hours / 24)} 天前更新`;
+  }
+  var CARD_WIDTH = 340;
+  var CARD_GAP = 8;
+  var CARD_MAX_HEIGHT = 340;
+  function createCommentCard({ getRoot, getPane, load, onAction = null, bindProfile = null, onOpenExternal = null }) {
+    let layer = null;
+    let card = null;
+    let body = null;
+    let head = null;
+    let refreshButton = null;
+    let anchorNode = null;
+    let currentId = "";
+    let refreshing = false;
+    const cache2 = /* @__PURE__ */ new Map();
+    const isOpen = () => Boolean(card);
+    const current = () => currentId;
+    const place = () => {
+      if (!card || !layer) return;
+      const root = getRoot();
+      const pane = getPane && getPane();
+      if (!root || !pane) return;
+      const rootRect = root.getBoundingClientRect();
+      const paneRect = pane.getBoundingClientRect();
+      const paneWidth = paneRect.width;
+      if (!paneWidth) return;
+      const width = Math.max(180, Math.min(CARD_WIDTH, paneWidth - CARD_GAP * 2));
+      card.style.width = `${Math.round(width)}px`;
+      card.style.maxHeight = `${CARD_MAX_HEIGHT}px`;
+      const paneLeft = paneRect.left - rootRect.left;
+      const paneRight = paneRect.right - rootRect.left;
+      const right = Math.max(rootRect.width - paneRight + CARD_GAP, CARD_GAP);
+      card.style.right = `${Math.round(right)}px`;
+      card.style.left = "auto";
+      const measured = card.offsetHeight || 220;
+      const paneTop = paneRect.top - rootRect.top;
+      const paneBottom = paneRect.bottom - rootRect.top;
+      let top = paneTop + 8;
+      let arrow = null;
+      if (anchorNode && anchorNode.isConnected) {
+        const anchorRect = anchorNode.getBoundingClientRect();
+        const anchorCenter = anchorRect.left + anchorRect.width / 2 - rootRect.left;
+        const anchorBottom = anchorRect.bottom - rootRect.top;
+        const anchorTop = anchorRect.top - rootRect.top;
+        const below = anchorBottom + 6;
+        const above = anchorTop - 6 - measured;
+        if (below + measured <= paneBottom - 8) {
+          top = below;
+          arrow = "up";
+        } else if (above >= paneTop + 8) {
+          top = above;
+          arrow = "down";
+        } else {
+          top = Math.max(paneTop + 8, Math.min(below, paneBottom - 8 - measured));
+        }
+        const cardLeft = paneRight - right - width;
+        const arrowLeft = Math.max(14, Math.min(anchorCenter - cardLeft, width - 14));
+        card.style.setProperty("--pv-card-arrow-left", `${Math.round(arrowLeft)}px`);
+      }
+      const maxTop = paneBottom - 8 - Math.min(measured, CARD_MAX_HEIGHT);
+      card.style.top = `${Math.round(Math.max(paneTop + 8, Math.min(top, maxTop)))}px`;
+      card.dataset.arrow = arrow || "none";
+    };
+    const paintHead = (data) => {
+      if (!head) return;
+      head.replaceChildren();
+      const count = data ? data.replies.length : 0;
+      const title = el("span", { class: "pv-x-card-title" });
+      title.appendChild(el("b", { text: count ? `${count} 条回复` : "暂无回复" }));
+      if (data && data.at) title.appendChild(el("span", { class: "pv-x-card-when", text: `· ${sinceLabel(data.at)}` }));
+      head.appendChild(title);
+      refreshButton = el("button", {
+        class: "pv-x-card-btn pv-x-card-refresh",
+        type: "button",
+        title: "重新读取",
+        "aria-label": "重新读取"
+      });
+      const icon = svgIcon("refresh", { size: 13 });
+      if (icon) refreshButton.appendChild(icon);
+      refreshButton.addEventListener("click", () => refresh());
+      head.appendChild(refreshButton);
+      const closeButton = el("button", {
+        class: "pv-x-card-btn pv-x-card-close",
+        type: "button",
+        title: "关闭",
+        "aria-label": "关闭",
+        text: "✕"
+      });
+      closeButton.addEventListener("click", close);
+      head.appendChild(closeButton);
+    };
+    const paintBody = (data, error) => {
+      if (!body) return;
+      body.replaceChildren();
+      if (error) {
+        body.appendChild(el("div", { class: "pv-x-card-state", text: `读取失败：${error.message || error}` }));
+        return;
+      }
+      if (!data) return;
+      if (!data.replies.length) {
+        body.appendChild(el("div", { class: "pv-x-card-state", text: "这条还没有回复" }));
+        return;
+      }
+      for (const reply of data.replies) {
+        body.appendChild(renderReply(reply, { onAction, bindProfile, compact: true }));
+      }
+    };
+    const paintFoot = (data) => {
+      if (!card) return;
+      const old = card.querySelector(".pv-x-card-foot");
+      if (old) old.remove();
+      const url = data && data.url;
+      if (!url) return;
+      const foot = el("a", {
+        class: "pv-x-card-foot",
+        href: url,
+        target: "_blank",
+        rel: "noreferrer",
+        text: "在 X 打开 ›"
+      });
+      if (onOpenExternal) {
+        foot.addEventListener("click", () => onOpenExternal(url));
+      }
+      card.appendChild(foot);
+    };
+    async function open(model, anchor) {
+      const id = String(model && model.id || "");
+      if (!id) return;
+      anchorNode = anchor || null;
+      currentId = id;
+      if (!card) mount();
+      if (!card) return;
+      place();
+      const cached = cache2.get(id);
+      if (cached) {
+        paintHead(cached);
+        paintBody(cached);
+        paintFoot(cached);
+        place();
+        return;
+      }
+      paintHead(null);
+      body.replaceChildren(el("div", { class: "pv-x-card-state", text: "正在读取…" }));
+      paintFoot(null);
+      place();
+      try {
+        const data = await fetchData(id);
+        if (currentId !== id) return;
+        paintHead(data);
+        paintBody(data);
+        paintFoot(data);
+        place();
+      } catch (err) {
+        logger.warn("[xCommentCard] load failed", err);
+        if (currentId === id) paintBody(null, err);
+      }
+    }
+    async function fetchData(id) {
+      const result = await load(id);
+      const data = {
+        at: Date.now(),
+        post: result.post,
+        replies: result.replies || [],
+        url: result.url || ""
+      };
+      cache2.set(id, data);
+      return data;
+    }
+    async function refresh() {
+      const id = currentId;
+      if (!id || refreshing) return;
+      refreshing = true;
+      refreshButton == null ? void 0 : refreshButton.classList.add("pv-x-card-busy");
+      try {
+        const data = await fetchData(id);
+        if (currentId !== id || !card) return;
+        paintHead(data);
+        paintBody(data);
+        paintFoot(data);
+        place();
+      } catch (err) {
+        logger.warn("[xCommentCard] refresh failed", err);
+        if (currentId === id) {
+          const note = el("div", { class: "pv-x-card-state pv-x-card-state-error", text: `刷新失败：${err.message || err}` });
+          body.prepend(note);
+        }
+      } finally {
+        refreshing = false;
+        refreshButton == null ? void 0 : refreshButton.classList.remove("pv-x-card-busy");
+      }
+    }
+    const onKeydown = (event) => {
+      if (event.key !== "Escape") return;
+      event.stopPropagation();
+      event.preventDefault();
+      close();
+    };
+    const onDocPointer = (event) => {
+      if (!card) return;
+      if (card.contains(event.target)) return;
+      if (anchorNode && anchorNode.contains(event.target)) return;
+      close();
+    };
+    function mount() {
+      const root = getRoot();
+      if (!root) return;
+      layer = el("div", { class: "pv-x-card-layer" });
+      card = el("div", { class: "pv-x-card", role: "dialog", "aria-label": "评论", tabindex: "-1" });
+      head = el("div", { class: "pv-x-card-head" });
+      body = el("div", { class: "pv-x-card-body" });
+      card.append(head, body);
+      card.addEventListener("keydown", onKeydown);
+      card.addEventListener("click", (event) => event.stopPropagation());
+      layer.appendChild(card);
+      root.appendChild(layer);
+      document.addEventListener("pointerdown", onDocPointer, true);
+      requestAnimationFrame(() => card && card.classList.add("visible"));
+      try {
+        card.focus({ preventScroll: true });
+      } catch (err) {
+        card.focus();
+      }
+    }
+    function close() {
+      if (!card) return;
+      const cardNode = card;
+      const layerNode = layer;
+      card = null;
+      body = null;
+      head = null;
+      refreshButton = null;
+      currentId = "";
+      anchorNode = null;
+      layer = null;
+      document.removeEventListener("pointerdown", onDocPointer, true);
+      cardNode.classList.remove("visible");
+      setTimeout(() => {
+        cardNode.remove();
+        if (layerNode) layerNode.remove();
+      }, 160);
+    }
+    return {
+      open,
+      close,
+      isOpen,
+      current: () => currentId,
+      /** 面板尺寸/布局变化后由调用方通知，重新夹紧位置 */
+      reposition: place,
+      destroy() {
+        cache2.clear();
+        close();
+      }
+    };
+  }
+
   // src/loaders/XThreadLoader.js
   var SINGLE_COLUMN_WIDTH = 640;
   var COUNT_BY_ACTION2 = { reply: "replies", repost: "reposts", like: "likes", bookmark: "bookmarks" };
@@ -8948,6 +9454,7 @@ article.pv-x-post[data-reply-target='true'] {\r
         if (!readerEl) return;
         readerEl.classList.toggle("pv-x-single", container.clientWidth < SINGLE_COLUMN_WIDTH);
         profileCard == null ? void 0 : profileCard.reposition();
+        commentCard == null ? void 0 : commentCard.reposition();
       };
       const cleanup = () => {
         aborted = true;
@@ -8960,6 +9467,7 @@ article.pv-x-post[data-reply-target='true'] {\r
         translationObserver = null;
         profileCard == null ? void 0 : profileCard.destroy();
         profileCard = null;
+        commentCard == null ? void 0 : commentCard.destroy();
         translationQueue.length = 0;
         queuedKeys.clear();
         translationCache.clear();
@@ -9149,6 +9657,8 @@ article.pv-x-post[data-reply-target='true'] {\r
             renderReply(reply, {
               onAction: handleAction,
               bindProfile,
+              // 评论列表里的每条评论都要有 💬 入口：点它看这条评论自己的回复
+              onOpenComments: openCommentsFor,
               translation: translationFor(reply)
             })
           );
@@ -9229,6 +9739,29 @@ article.pv-x-post[data-reply-target='true'] {\r
         paintSort(group, next);
         renderReplies();
       };
+      const commentCard = createCommentCard({
+        getRoot: () => readerEl,
+        // 卡片只在右栏内活动：位置由右栏 rect 反算并夹紧，结构上不会压到左侧主贴
+        getPane: () => (readerEl == null ? void 0 : readerEl.querySelector(".pv-x-pane-replies")) || null,
+        bindProfile,
+        onAction: handleAction,
+        load: async (id) => {
+          const json = await bridge.readThread(String(id));
+          const summary = parseThreadSummary(json, String(id));
+          if (!summary.focalFound || !summary.focal) throw new Error("X 没有返回这条评论");
+          modelsById.set(summary.focal.id, summary.focal);
+          for (const reply of summary.replies) modelsById.set(reply.id, reply);
+          return { post: summary.focal, replies: summary.replies, url: openUrlOf(summary.focal) };
+        }
+      });
+      const openCommentsFor = (model, anchor) => {
+        if (!model || !model.id) return;
+        if (commentCard.isOpen() && commentCard.current() === String(model.id)) {
+          commentCard.close();
+          return;
+        }
+        commentCard.open(model, anchor);
+      };
       const submitReply = async (text, target) => {
         const inReplyTo = target && target.id ? String(target.id) : tweetId;
         await bridge.createReply(inReplyTo, text);
@@ -9282,6 +9815,7 @@ article.pv-x-post[data-reply-target='true'] {\r
         }
       };
       (async () => {
+        var _a;
         try {
           const json = await bridge.readThread(tweetId);
           if (aborted) return;
@@ -9332,6 +9866,9 @@ article.pv-x-post[data-reply-target='true'] {\r
           }
           updateCount();
           renderReplies();
+          (_a = readerEl.querySelector(".pv-x-pane-replies")) == null ? void 0 : _a.addEventListener("scroll", () => commentCard.close(), {
+            passive: true
+          });
         } catch (err) {
           if (aborted) return;
           logger.warn("[XThreadLoader] read thread failed", err);

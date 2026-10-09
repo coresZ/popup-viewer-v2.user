@@ -55,7 +55,33 @@ function avatarColumn(model, { link = true, bindProfile = null } = {}) {
   return column;
 }
 
-function headNode(model, bindProfile = null) {
+/**
+ * 时间右侧的「查看评论」入口（只给评论列表里的评论）：图标沿用 X 自己的回复图标，后面跟数量。
+ * **没有回复就不显示**（计数为 0 的评论不出图标，列表更干净）。
+ * 点它弹出小巧评论卡 —— 看这条评论自己的回复。不做"点整行"，避免选中文字时误触。
+ */
+function commentEntry(model, onOpenComments) {
+  if (!onOpenComments) return null;
+  const count = Number(model.counts && model.counts.replies) || 0;
+  if (!count) return null;
+  const button = el('button', {
+    class: 'pv-x-comment-entry',
+    type: 'button',
+    title: count ? `查看这条的 ${count} 条评论` : '查看这条的评论',
+    'aria-label': count ? `查看这条的 ${count} 条评论` : '查看这条的评论'
+  });
+  const icon = xIcon('reply');
+  if (icon) button.appendChild(icon);
+  if (count) button.appendChild(el('span', { class: 'pv-x-comment-count', text: formatCount(count) }));
+  button.addEventListener('click', (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    onOpenComments(model, button);
+  });
+  return button;
+}
+
+function headNode(model, bindProfile = null, onOpenComments = null) {
   const head = el('div', { class: 'pv-x-head' });
   const nameLink = el('a', {
     class: 'pv-x-name',
@@ -79,6 +105,8 @@ function headNode(model, bindProfile = null) {
     head.appendChild(el('span', { class: 'pv-x-dot', text: '·' }));
     head.appendChild(el('time', { class: 'pv-x-time', text: formatDate(model.createdAt) }));
   }
+  const entry = commentEntry(model, onOpenComments);
+  if (entry) head.appendChild(entry);
   return head;
 }
 
@@ -877,7 +905,14 @@ function quoteCard(model, { bindProfile = null } = {}) {
 
 export function renderPost(
   model,
-  { threadLine = false, onAction = null, translation = null, bindProfile = null, compact = false } = {}
+  {
+    threadLine = false,
+    onAction = null,
+    translation = null,
+    bindProfile = null,
+    compact = false,
+    onOpenComments = null
+  } = {}
 ) {
   const article = el('article', { class: compact ? 'pv-x-post pv-x-post-compact' : 'pv-x-post' });
   // 供「正在回复这条」的高亮与定位使用
@@ -889,7 +924,7 @@ export function renderPost(
   const main = el(
     'div',
     { class: 'pv-x-main' },
-    headNode(model, bindProfile),
+    headNode(model, bindProfile, onOpenComments),
     displayText(model) || !isArticle ? textBlock(model, translation, bindProfile) : null,
     isArticle ? (compact ? articleCard(model) : articleReader(model)) : null,
     mediaGrid(model, { openUrl: openUrlOf(model) }),
@@ -1038,6 +1073,7 @@ export function renderReader({
   const reader = el('div', { class: 'pv-x-reader' });
   const postPane = el('section', { class: 'pv-x-pane pv-x-pane-post' });
   // 回复上下文：只展示被点开那条之前的对话链
+  // （💬 入口只给评论列表里的评论，主贴与对话链不给 —— 主贴的评论就在右栏，没必要再来一个入口）
   for (const ancestor of ancestors) {
     postPane.appendChild(
       renderPost(ancestor, {
