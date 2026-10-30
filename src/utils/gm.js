@@ -54,6 +54,17 @@ function localSet(key, value) {
 }
 
 export const gm = {
+  /** 油猴菜单命令；无 GM 环境时返回 false（调用方保留悬浮齿轮作为入口）。 */
+  registerMenuCommand(caption, onClick) {
+    const fn = gmApi('GM_registerMenuCommand');
+    if (!fn) return false;
+    try {
+      fn(caption, onClick);
+      return true;
+    } catch {
+      return false;
+    }
+  },
   addStyle(css) {
     // 两条路并行注入：CSP 宽松的站点靠 <style>，CSP 拦内联样式的站点靠构造式样式表。
     // 规则完全相同，重复应用无副作用（同值覆盖），换取「任何 CSP 下都有样式」。
@@ -80,9 +91,14 @@ export const gm = {
   xmlhttpRequest(options) {
     const fn = gmApi('GM_xmlhttpRequest');
     if (fn) {
+      // GM 的超时走 ontimeout 而不是 onerror：调用方只写了 onerror 时，超时会让加载页一直转圈。
+      // 这里统一转成 onerror，并带上可识别的 { timeout: true }
+      const onTimeout =
+        options.ontimeout || (options.onerror ? () => options.onerror({ timeout: true, error: '请求超时' }) : undefined);
       return fn({
         timeout: options.timeout || 15e3,
-        ...options
+        ...options,
+        ontimeout: onTimeout
       });
     }
     // fetch 回退（无 GM 环境，如 iOS Userscripts）：带超时中止与 .abort()
@@ -106,9 +122,16 @@ export const gm = {
       })
       .catch((err) => {
         clearTimer();
-        options.onerror?.(err);
+        if (aborted) return; // 调用方主动取消：不再回调，避免旧请求的错误盖住新内容
+        if (err && err.name === 'AbortError') options.onerror?.({ timeout: true, error: '请求超时' });
+        else options.onerror?.(err);
       });
-    if (controller) promise.abort = () => controller.abort();
+    let aborted = false;
+    if (controller)
+      promise.abort = () => {
+        aborted = true;
+        controller.abort();
+      };
     return promise;
   },
   getValue(key, fallback) {

@@ -570,6 +570,40 @@ function liteModel(node, withQuote = true) {
   };
 }
 
+/**
+ * CreateTweet 的响应 → 帖子模型（data.create_tweet.tweet_results.result）。
+ * 取不到完整推文时返回 null，调用方再退回本地占位。
+ */
+export function tweetFromCreateResponse(json) {
+  const data = (json && json.data) || json;
+  if (!data || typeof data !== 'object') return null;
+  const direct = data.create_tweet && data.create_tweet.tweet_results && data.create_tweet.tweet_results.result;
+  const node = direct || collectTweetNodes(data)[0] || null;
+  const model = node ? liteModel(node) : null;
+  return model && model.id ? model : null;
+}
+
+/**
+ * 同一条推文全阅读器只保留一个模型对象：新数据就地并入旧对象（列表、评论卡、点赞状态共用一份）。
+ * 作者对象也就地合并，保持引用不变（资料卡绑的是它）。
+ * depth 是「相对某个主帖」的视图属性，不跟着合并。
+ */
+export function mergeModel(target, fresh) {
+  if (!target || !fresh || target === fresh) return target || fresh || null;
+  const { depth, author, ...rest } = fresh;
+  Object.assign(target, rest);
+  if (author) {
+    if (target.author && typeof target.author === 'object') Object.assign(target.author, author);
+    else target.author = { ...author };
+  }
+  return target;
+}
+
+/** 线程竖线：下一条（按显示顺序）是这一条的直接回复时才画，避免竖线悬空 */
+export function threadContinues(model, next) {
+  return Boolean(model && next && model.id && String(next.inReplyToId || '') === String(model.id));
+}
+
 /** 找到 cursorType 为 Bottom 的游标（回退 ShowMoreThreads/ShowMoreThread） */
 export function bottomCursor(value) {
   if (!value || typeof value !== 'object') return null;

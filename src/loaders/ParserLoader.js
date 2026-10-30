@@ -37,7 +37,7 @@ export class ParserLoader {
       },
       onerror: (error) => {
         logger.error('[ParserLoader] request error', error);
-        onError('网络请求失败');
+        onError(error && error.timeout ? '请求超时' : '网络请求失败');
       }
     });
     return () => {
@@ -57,7 +57,7 @@ export class ParserLoader {
         } catch {}
       });
     });
-    const openNewTab = linkIntercept !== undefined ? linkIntercept : settingsManager.get().linkIntercept !== false;
+    const openNewTab = linkIntercept !== undefined ? linkIntercept : settingsManager.get().popupLinksNewTab !== false;
     doc.querySelectorAll('a[href]').forEach((link) => {
       if (openNewTab) {
         link.target = '_blank';

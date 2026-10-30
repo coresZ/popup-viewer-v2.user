@@ -4,7 +4,7 @@
   var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "symbol" ? key + "" : key, value);
 
   // src/kit/kit.css
-  var kit_default = "/* PopupKit 独立样式：pvk- 前缀，与 popup-viewer-v2 主脚本（popup-/pv-）\r\n   及 page-picker-kit（ppk-）完全隔离，避免同页多脚本 ID/CSS 冲突。\r\n   自包含 loading/error/spinner，不依赖主脚本 Loading.js/ErrorView.js 的样式。 */\r\n@layer pvk-reset {\r\n  #pvk-panel,\r\n  #pvk-panel *,\r\n  #pvk-overlay,\r\n  #pvk-loading,\r\n  #pvk-loading *,\r\n  #pvk-error,\r\n  #pvk-error *,\r\n  .pvk-btn {\r\n    box-sizing: border-box;\r\n    margin: 0;\r\n    padding: 0;\r\n    border: 0;\r\n    outline: 0;\r\n    background: transparent;\r\n    vertical-align: baseline;\r\n    text-decoration: none;\r\n    text-shadow: none;\r\n    font-family: inherit;\r\n    font-size: inherit;\r\n    font-weight: inherit;\r\n    font-style: inherit;\r\n    line-height: inherit;\r\n    letter-spacing: inherit;\r\n    color: inherit;\r\n    text-align: left;\r\n  }\r\n}\r\n\r\n#pvk-panel {\r\n  box-sizing: border-box;\r\n}\r\n\r\n:root {\r\n  --pvk-accent: #2563eb;\r\n  --pvk-accent-hover: #1d4ed8;\r\n  --pvk-accent-soft: rgba(37, 99, 235, 0.1);\r\n  --pvk-danger: #dc2626;\r\n  --pvk-danger-soft: rgba(220, 38, 38, 0.1);\r\n  --pvk-header-bg: #fafbfc;\r\n  --pvk-border: #e4e7ec;\r\n  --pvk-text: #1a2233;\r\n  --pvk-muted: #64748b;\r\n  --pvk-faint: #94a3b8;\r\n  --pvk-bg: #ffffff;\r\n  --pvk-surface: #ffffff;\r\n  --pvk-btn-bg: rgba(15, 23, 42, 0.07);\r\n  --pvk-btn-hover: rgba(15, 23, 42, 0.12);\r\n  --pvk-btn-active: rgba(15, 23, 42, 0.17);\r\n  --pvk-focus-ring: rgba(37, 99, 235, 0.4);\r\n  --pvk-shadow:\r\n    0 0 0 1px rgba(15, 23, 42, 0.04),\r\n    0 24px 60px -18px rgba(15, 23, 42, 0.28),\r\n    0 8px 24px -12px rgba(15, 23, 42, 0.16);\r\n  --pvk-overlay: rgba(15, 23, 42, 0.28);\r\n}\r\n\r\n@media (prefers-color-scheme: dark) {\r\n  :root {\r\n    --pvk-accent: #60a5fa;\r\n    --pvk-accent-hover: #93c5fd;\r\n    --pvk-accent-soft: rgba(96, 165, 250, 0.14);\r\n    --pvk-danger: #f87171;\r\n    --pvk-danger-soft: rgba(248, 113, 113, 0.14);\r\n    --pvk-header-bg: #121a2b;\r\n    --pvk-border: #263247;\r\n    --pvk-text: #e2e8f0;\r\n    --pvk-muted: #94a3b8;\r\n    --pvk-faint: #64748b;\r\n    --pvk-bg: #0f172a;\r\n    --pvk-surface: #151e30;\r\n    --pvk-btn-bg: rgba(148, 163, 184, 0.14);\r\n    --pvk-btn-hover: rgba(148, 163, 184, 0.22);\r\n    --pvk-btn-active: rgba(148, 163, 184, 0.28);\r\n    --pvk-focus-ring: rgba(96, 165, 250, 0.5);\r\n    --pvk-shadow:\r\n      0 0 0 1px rgba(255, 255, 255, 0.04),\r\n      0 28px 70px -20px rgba(0, 0, 0, 0.72),\r\n      0 10px 28px -14px rgba(0, 0, 0, 0.5);\r\n    --pvk-overlay: rgba(0, 0, 0, 0.52);\r\n  }\r\n}\r\n\r\n/* 面板核心 */\r\n#pvk-panel {\r\n  position: fixed;\r\n  z-index: 10000;\r\n  width: 50%;\r\n  height: 75%;\r\n  max-width: min(2560px, calc(100vw - 24px));\r\n  max-height: min(1440px, calc(100vh - 24px));\r\n  max-height: min(1440px, calc(100dvh - 24px));\r\n  top: 50%;\r\n  left: 50%;\r\n  overscroll-behavior: contain;\r\n  transform: translate(-50%, -50%) scale(0.96);\r\n  transform-origin: center;\r\n  background-color: var(--pvk-surface);\r\n  color: var(--pvk-text);\r\n  box-shadow: var(--pvk-shadow);\r\n  border: 1px solid var(--pvk-border);\r\n  border-radius: 12px;\r\n  overflow: hidden;\r\n  display: flex;\r\n  flex-direction: column;\r\n  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',\r\n    'Microsoft YaHei', Roboto, 'Helvetica Neue', Arial, sans-serif;\r\n  opacity: 0;\r\n  pointer-events: none;\r\n  transition: opacity 0.25s ease, transform 0.3s cubic-bezier(0.16, 1, 0.3, 1);\r\n}\r\n#pvk-panel.visible {\r\n  opacity: 1;\r\n  pointer-events: auto;\r\n  transform: translate(-50%, -50%) scale(1);\r\n}\r\n\r\n/* 头部 */\r\n#pvk-header {\r\n  display: flex;\r\n  align-items: center;\r\n  justify-content: space-between;\r\n  gap: 12px;\r\n  padding: 0 10px 0 14px;\r\n  background-color: var(--pvk-header-bg);\r\n  border-bottom: 1px solid var(--pvk-border);\r\n  height: 46px;\r\n  min-height: 46px;\r\n  flex: 0 0 auto;\r\n  cursor: grab;\r\n  user-select: none;\r\n  touch-action: none;\r\n}\r\n#pvk-header:active {\r\n  cursor: grabbing;\r\n}\r\n#pvk-title {\r\n  display: flex;\r\n  align-items: center;\r\n  gap: 9px;\r\n  min-width: 0;\r\n  flex: 1;\r\n}\r\n.pvk-title-mark {\r\n  flex: 0 0 auto;\r\n  width: 26px;\r\n  height: 26px;\r\n  border-radius: 8px;\r\n  background: var(--pvk-accent-soft);\r\n  color: var(--pvk-accent);\r\n  display: flex;\r\n  align-items: center;\r\n  justify-content: center;\r\n}\r\n.pvk-title-mark svg {\r\n  width: 15px;\r\n  height: 15px;\r\n  fill: none;\r\n  stroke: currentColor;\r\n}\r\n.pvk-title-text {\r\n  font-size: 14px;\r\n  font-weight: 600;\r\n  letter-spacing: 0.1px;\r\n  color: var(--pvk-text);\r\n  white-space: nowrap;\r\n  overflow: hidden;\r\n  text-overflow: ellipsis;\r\n}\r\n#pvk-actions {\r\n  display: flex;\r\n  align-items: center;\r\n  gap: 4px;\r\n  flex: 0 0 auto;\r\n}\r\n.pvk-btn {\r\n  width: 32px;\r\n  height: 32px;\r\n  padding: 0;\r\n  border: 1px solid transparent;\r\n  border-radius: 9px;\r\n  background-color: var(--pvk-btn-bg);\r\n  color: var(--pvk-muted);\r\n  cursor: pointer;\r\n  display: flex;\r\n  align-items: center;\r\n  justify-content: center;\r\n  flex: 0 0 auto;\r\n  transition: background-color 0.15s ease, color 0.15s ease, transform 0.1s ease;\r\n}\r\n.pvk-btn svg {\r\n  width: 16px;\r\n  height: 16px;\r\n  fill: none;\r\n  stroke: currentColor;\r\n  pointer-events: none;\r\n}\r\n.pvk-btn:hover {\r\n  background-color: var(--pvk-btn-hover);\r\n  color: var(--pvk-text);\r\n}\r\n.pvk-btn:active {\r\n  transform: scale(0.92);\r\n}\r\n.pvk-btn:focus-visible {\r\n  outline: 2px solid var(--pvk-focus-ring);\r\n  outline-offset: 1px;\r\n}\r\n#pvk-close:hover {\r\n  color: var(--pvk-danger);\r\n  background-color: var(--pvk-danger-soft);\r\n}\r\n#pvk-actions .pvk-btn:hover {\r\n  color: var(--pvk-accent);\r\n  background-color: var(--pvk-accent-soft);\r\n}\r\n\r\n/* 内容区 */\r\n#pvk-content {\r\n  flex: 1;\r\n  overflow-y: auto;\r\n  overscroll-behavior: contain;\r\n  position: relative;\r\n  background-color: var(--pvk-bg);\r\n  padding: 20px;\r\n  box-sizing: border-box;\r\n  scroll-behavior: smooth;\r\n  scrollbar-width: thin;\r\n  scrollbar-color: var(--pvk-faint) transparent;\r\n}\r\n#pvk-content::-webkit-scrollbar {\r\n  width: 8px;\r\n}\r\n#pvk-content::-webkit-scrollbar-thumb {\r\n  background-color: var(--pvk-faint);\r\n  border-radius: 8px;\r\n  border: 2px solid transparent;\r\n  background-clip: padding-box;\r\n}\r\n#pvk-content.iframe-direct-load {\r\n  padding: 0;\r\n}\r\n#pvk-iframe {\r\n  width: 100%;\r\n  height: 100%;\r\n  border: none;\r\n  background-color: #fff;\r\n}\r\n\r\n/* 遮罩 */\r\n#pvk-overlay {\r\n  position: fixed;\r\n  inset: 0;\r\n  z-index: 9998;\r\n  background-color: var(--pvk-overlay);\r\n  opacity: 0;\r\n  pointer-events: none;\r\n  transition: opacity 0.3s ease-in-out;\r\n  backdrop-filter: blur(6px);\r\n  -webkit-backdrop-filter: blur(6px);\r\n}\r\n#pvk-overlay.visible {\r\n  opacity: 1;\r\n  pointer-events: auto;\r\n}\r\n\r\n/* 加载状态 */\r\n#pvk-loading {\r\n  display: flex;\r\n  flex-direction: column;\r\n  align-items: center;\r\n  justify-content: center;\r\n  height: 100%;\r\n  color: var(--pvk-muted);\r\n  padding: 25px;\r\n}\r\n.pvk-spinner {\r\n  width: 38px;\r\n  height: 38px;\r\n  margin-bottom: 20px;\r\n  border: 3px solid var(--pvk-accent-soft);\r\n  border-radius: 50%;\r\n  border-top: 3px solid var(--pvk-accent);\r\n  animation: pvk-spin 0.8s linear infinite;\r\n}\r\n@keyframes pvk-spin {\r\n  0% {\r\n    transform: rotate(0deg);\r\n  }\r\n  100% {\r\n    transform: rotate(360deg);\r\n  }\r\n}\r\n.pvk-loading-hint {\r\n  font-size: 15px;\r\n  font-weight: 500;\r\n  color: var(--pvk-text);\r\n}\r\n.pvk-loading-sub {\r\n  margin-top: 8px;\r\n  font-size: 13px;\r\n  color: var(--pvk-faint);\r\n}\r\n\r\n/* 错误状态 */\r\n#pvk-error {\r\n  padding: 35px;\r\n  color: var(--pvk-text);\r\n  text-align: center;\r\n  display: flex;\r\n  flex-direction: column;\r\n  align-items: center;\r\n  justify-content: center;\r\n  height: 100%;\r\n  box-sizing: border-box;\r\n}\r\n#pvk-error .pvk-error-icon {\r\n  color: var(--pvk-danger);\r\n  margin-bottom: 6px;\r\n}\r\n#pvk-error h3 {\r\n  margin-top: 16px;\r\n  margin-bottom: 10px;\r\n  font-weight: 600;\r\n  font-size: 1.15em;\r\n}\r\n#pvk-error p {\r\n  margin-bottom: 24px;\r\n  color: var(--pvk-muted);\r\n  max-width: 420px;\r\n  line-height: 1.6;\r\n  word-break: break-all;\r\n}\r\n#pvk-error button {\r\n  padding: 10px 20px;\r\n  background: var(--pvk-accent);\r\n  color: #fff;\r\n  border: none;\r\n  border-radius: 8px;\r\n  cursor: pointer;\r\n  font-weight: 500;\r\n  font-size: 14px;\r\n  transition: background 0.15s ease-in-out, transform 0.1s ease-in-out;\r\n}\r\n#pvk-error button:hover {\r\n  background: var(--pvk-accent-hover);\r\n}\r\n#pvk-error button:active {\r\n  transform: scale(0.97);\r\n}\r\n\r\n/* 拖拽反馈（共享 setupDrag 会添加 pv-dragging 类） */\r\n#pvk-panel.pv-dragging {\r\n  user-select: none;\r\n  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.4), 0 28px 70px -20px rgba(0, 0, 0, 0.5);\r\n}\r\n\r\n@media (prefers-reduced-motion: reduce) {\r\n  #pvk-panel,\r\n  #pvk-overlay {\r\n    transition: none;\r\n  }\r\n  .pvk-spinner {\r\n    animation-duration: 1.6s;\r\n  }\r\n}\r\n@media (max-width: 560px), (max-height: 560px) {\r\n  #pvk-panel {\r\n    max-width: calc(100vw - 16px);\r\n    max-height: calc(100vh - 16px);\r\n  }\r\n}\r\n\r\n/* 触屏适配：加大按钮触控目标；小屏触屏铺近全屏 */\r\n@media (pointer: coarse) {\r\n  .pvk-btn {\r\n    min-width: 44px;\r\n    min-height: 44px;\r\n  }\r\n}\r\n@media (pointer: coarse) and (max-width: 560px), (pointer: coarse) and (max-height: 560px) {\r\n  #pvk-panel {\r\n    width: calc(100vw - 12px);\r\n    height: calc(100vh - 12px);\r\n    height: calc(100dvh - 12px);\r\n  }\r\n}\r\n";
+  var kit_default = "/* PopupKit 独立样式：pvk- 前缀，与 popup-viewer-v2 主脚本（popup-/pv-）\r\n   及 page-picker-kit（ppk-）完全隔离，避免同页多脚本 ID/CSS 冲突。\r\n   自包含 loading/error/spinner，不依赖主脚本 Loading.js/ErrorView.js 的样式。 */\r\n@layer pvk-reset {\r\n  #pvk-panel,\r\n  #pvk-panel *,\r\n  #pvk-overlay,\r\n  #pvk-loading,\r\n  #pvk-loading *,\r\n  #pvk-error,\r\n  #pvk-error *,\r\n  .pvk-btn {\r\n    box-sizing: border-box;\r\n    margin: 0;\r\n    padding: 0;\r\n    border: 0;\r\n    background: transparent;\r\n    vertical-align: baseline;\r\n    text-decoration: none;\r\n    text-shadow: none;\r\n    font-family: inherit;\r\n    font-size: inherit;\r\n    font-weight: inherit;\r\n    font-style: inherit;\r\n    line-height: inherit;\r\n    letter-spacing: inherit;\r\n    color: inherit;\r\n    text-align: left;\r\n  }\r\n}\r\n\r\n#pvk-panel {\r\n  box-sizing: border-box;\r\n}\r\n\r\n:root {\r\n  --pvk-accent: #2563eb;\r\n  --pvk-accent-hover: #1d4ed8;\r\n  --pvk-accent-soft: rgba(37, 99, 235, 0.1);\r\n  --pvk-danger: #dc2626;\r\n  --pvk-danger-soft: rgba(220, 38, 38, 0.1);\r\n  --pvk-header-bg: #fafbfc;\r\n  --pvk-border: #e4e7ec;\r\n  --pvk-text: #1a2233;\r\n  --pvk-muted: #64748b;\r\n  --pvk-faint: #94a3b8;\r\n  --pvk-bg: #ffffff;\r\n  --pvk-surface: #ffffff;\r\n  --pvk-btn-bg: rgba(15, 23, 42, 0.07);\r\n  --pvk-btn-hover: rgba(15, 23, 42, 0.12);\r\n  --pvk-btn-active: rgba(15, 23, 42, 0.17);\r\n  --pvk-focus-ring: rgba(37, 99, 235, 0.4);\r\n  --pvk-shadow:\r\n    0 0 0 1px rgba(15, 23, 42, 0.04),\r\n    0 24px 60px -18px rgba(15, 23, 42, 0.28),\r\n    0 8px 24px -12px rgba(15, 23, 42, 0.16);\r\n  --pvk-overlay: rgba(15, 23, 42, 0.28);\r\n}\r\n\r\n@media (prefers-color-scheme: dark) {\r\n  :root {\r\n    --pvk-on-accent: #0f172a; /* 浅蓝底上的文字用深色（白字只有 2.5:1） */\r\n    --pvk-accent: #60a5fa;\r\n    --pvk-accent-hover: #93c5fd;\r\n    --pvk-accent-soft: rgba(96, 165, 250, 0.14);\r\n    --pvk-danger: #f87171;\r\n    --pvk-danger-soft: rgba(248, 113, 113, 0.14);\r\n    --pvk-header-bg: #121a2b;\r\n    --pvk-border: #263247;\r\n    --pvk-text: #e2e8f0;\r\n    --pvk-muted: #94a3b8;\r\n    --pvk-faint: #64748b;\r\n    --pvk-bg: #0f172a;\r\n    --pvk-surface: #151e30;\r\n    --pvk-btn-bg: rgba(148, 163, 184, 0.14);\r\n    --pvk-btn-hover: rgba(148, 163, 184, 0.22);\r\n    --pvk-btn-active: rgba(148, 163, 184, 0.28);\r\n    --pvk-focus-ring: rgba(96, 165, 250, 0.5);\r\n    --pvk-shadow:\r\n      0 0 0 1px rgba(255, 255, 255, 0.04),\r\n      0 28px 70px -20px rgba(0, 0, 0, 0.72),\r\n      0 10px 28px -14px rgba(0, 0, 0, 0.5);\r\n    --pvk-overlay: rgba(0, 0, 0, 0.52);\r\n  }\r\n}\r\n\r\n/* 面板核心 */\r\n#pvk-panel {\r\n  position: fixed;\r\n  z-index: 10000;\r\n  width: 50%;\r\n  height: 75%;\r\n  max-width: min(2560px, calc(100vw - 24px));\r\n  max-height: min(1440px, calc(100vh - 24px));\r\n  max-height: min(1440px, calc(100dvh - 24px));\r\n  top: 50%;\r\n  left: 50%;\r\n  overscroll-behavior: contain;\r\n  transform: translate(-50%, -50%) scale(0.96);\r\n  transform-origin: center;\r\n  background-color: var(--pvk-surface);\r\n  color: var(--pvk-text);\r\n  box-shadow: var(--pvk-shadow);\r\n  border: 1px solid var(--pvk-border);\r\n  border-radius: 12px;\r\n  overflow: hidden;\r\n  display: flex;\r\n  flex-direction: column;\r\n  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',\r\n    'Microsoft YaHei', Roboto, 'Helvetica Neue', Arial, sans-serif;\r\n  opacity: 0;\r\n  pointer-events: none;\r\n  transition: opacity 0.25s ease, transform 0.3s cubic-bezier(0.16, 1, 0.3, 1);\r\n}\r\n#pvk-panel.visible {\r\n  opacity: 1;\r\n  pointer-events: auto;\r\n  transform: translate(-50%, -50%) scale(1);\r\n}\r\n\r\n/* 头部 */\r\n#pvk-header {\r\n  display: flex;\r\n  align-items: center;\r\n  justify-content: space-between;\r\n  gap: 12px;\r\n  padding: 0 10px 0 14px;\r\n  background-color: var(--pvk-header-bg);\r\n  border-bottom: 1px solid var(--pvk-border);\r\n  height: 46px;\r\n  min-height: 46px;\r\n  flex: 0 0 auto;\r\n  cursor: grab;\r\n  user-select: none;\r\n  touch-action: none;\r\n}\r\n#pvk-header:active {\r\n  cursor: grabbing;\r\n}\r\n#pvk-title {\r\n  display: flex;\r\n  align-items: center;\r\n  gap: 9px;\r\n  min-width: 0;\r\n  flex: 1;\r\n}\r\n.pvk-title-mark {\r\n  flex: 0 0 auto;\r\n  width: 26px;\r\n  height: 26px;\r\n  border-radius: 8px;\r\n  background: var(--pvk-accent-soft);\r\n  color: var(--pvk-accent);\r\n  display: flex;\r\n  align-items: center;\r\n  justify-content: center;\r\n}\r\n.pvk-title-mark svg {\r\n  width: 15px;\r\n  height: 15px;\r\n  fill: none;\r\n  stroke: currentColor;\r\n}\r\n.pvk-title-text {\r\n  font-size: 14px;\r\n  font-weight: 600;\r\n  letter-spacing: 0.1px;\r\n  color: var(--pvk-text);\r\n  white-space: nowrap;\r\n  overflow: hidden;\r\n  text-overflow: ellipsis;\r\n}\r\n#pvk-actions {\r\n  display: flex;\r\n  align-items: center;\r\n  gap: 4px;\r\n  flex: 0 0 auto;\r\n}\r\n.pvk-btn {\r\n  width: 32px;\r\n  height: 32px;\r\n  padding: 0;\r\n  border: 1px solid transparent;\r\n  border-radius: 9px;\r\n  background-color: var(--pvk-btn-bg);\r\n  color: var(--pvk-muted);\r\n  cursor: pointer;\r\n  display: flex;\r\n  align-items: center;\r\n  justify-content: center;\r\n  flex: 0 0 auto;\r\n  transition: background-color 0.15s ease, color 0.15s ease, transform 0.1s ease;\r\n}\r\n.pvk-btn svg {\r\n  width: 16px;\r\n  height: 16px;\r\n  fill: none;\r\n  stroke: currentColor;\r\n  pointer-events: none;\r\n}\r\n.pvk-btn:hover {\r\n  background-color: var(--pvk-btn-hover);\r\n  color: var(--pvk-text);\r\n}\r\n.pvk-btn:active {\r\n  transform: scale(0.92);\r\n}\r\n/* 实色焦点框（半透明焦点环对背景不足 3:1） */\r\n.pvk-btn:focus-visible,\r\n#pvk-error button:focus-visible {\r\n  outline: 2px solid var(--pvk-accent);\r\n  outline-offset: 2px;\r\n}\r\n#pvk-close:hover {\r\n  color: var(--pvk-danger);\r\n  background-color: var(--pvk-danger-soft);\r\n}\r\n#pvk-actions .pvk-btn:hover {\r\n  color: var(--pvk-accent);\r\n  background-color: var(--pvk-accent-soft);\r\n}\r\n\r\n/* 内容区 */\r\n#pvk-content {\r\n  flex: 1;\r\n  overflow-y: auto;\r\n  overscroll-behavior: contain;\r\n  position: relative;\r\n  background-color: var(--pvk-bg);\r\n  padding: 20px;\r\n  box-sizing: border-box;\r\n  scroll-behavior: smooth;\r\n  scrollbar-width: thin;\r\n  scrollbar-color: var(--pvk-faint) transparent;\r\n}\r\n#pvk-content::-webkit-scrollbar {\r\n  width: 8px;\r\n}\r\n#pvk-content::-webkit-scrollbar-thumb {\r\n  background-color: var(--pvk-faint);\r\n  border-radius: 8px;\r\n  border: 2px solid transparent;\r\n  background-clip: padding-box;\r\n}\r\n#pvk-content.iframe-direct-load {\r\n  padding: 0;\r\n}\r\n#pvk-iframe {\r\n  width: 100%;\r\n  height: 100%;\r\n  border: none;\r\n  background-color: #fff;\r\n}\r\n\r\n/* 遮罩 */\r\n#pvk-overlay {\r\n  position: fixed;\r\n  inset: 0;\r\n  z-index: 9998;\r\n  background-color: var(--pvk-overlay);\r\n  opacity: 0;\r\n  pointer-events: none;\r\n  transition: opacity 0.3s ease-in-out;\r\n  backdrop-filter: blur(6px);\r\n  -webkit-backdrop-filter: blur(6px);\r\n}\r\n#pvk-overlay.visible {\r\n  opacity: 1;\r\n  pointer-events: auto;\r\n}\r\n\r\n/* 加载状态 */\r\n#pvk-loading {\r\n  display: flex;\r\n  flex-direction: column;\r\n  align-items: center;\r\n  justify-content: center;\r\n  height: 100%;\r\n  color: var(--pvk-muted);\r\n  padding: 25px;\r\n}\r\n.pvk-spinner {\r\n  width: 38px;\r\n  height: 38px;\r\n  margin-bottom: 20px;\r\n  border: 3px solid var(--pvk-accent-soft);\r\n  border-radius: 50%;\r\n  border-top: 3px solid var(--pvk-accent);\r\n  animation: pvk-spin 0.8s linear infinite;\r\n}\r\n@keyframes pvk-spin {\r\n  0% {\r\n    transform: rotate(0deg);\r\n  }\r\n  100% {\r\n    transform: rotate(360deg);\r\n  }\r\n}\r\n.pvk-loading-hint {\r\n  font-size: 15px;\r\n  font-weight: 500;\r\n  color: var(--pvk-text);\r\n}\r\n.pvk-loading-sub {\r\n  margin-top: 8px;\r\n  font-size: 13px;\r\n  color: var(--pvk-faint);\r\n}\r\n\r\n/* 错误状态 */\r\n#pvk-error {\r\n  padding: 35px;\r\n  color: var(--pvk-text);\r\n  text-align: center;\r\n  display: flex;\r\n  flex-direction: column;\r\n  align-items: center;\r\n  justify-content: center;\r\n  height: 100%;\r\n  box-sizing: border-box;\r\n}\r\n#pvk-error .pvk-error-icon {\r\n  color: var(--pvk-danger);\r\n  margin-bottom: 6px;\r\n}\r\n#pvk-error h3 {\r\n  margin-top: 16px;\r\n  margin-bottom: 10px;\r\n  font-weight: 600;\r\n  font-size: 1.15em;\r\n}\r\n#pvk-error p {\r\n  margin-bottom: 24px;\r\n  color: var(--pvk-muted);\r\n  max-width: 420px;\r\n  line-height: 1.6;\r\n  word-break: break-all;\r\n}\r\n#pvk-error button {\r\n  padding: 10px 20px;\r\n  background: var(--pvk-accent);\r\n  color: var(--pvk-on-accent, #fff);\r\n  border: none;\r\n  border-radius: 8px;\r\n  cursor: pointer;\r\n  font-weight: 500;\r\n  font-size: 14px;\r\n  transition: background 0.15s ease-in-out, transform 0.1s ease-in-out;\r\n}\r\n#pvk-error button:hover {\r\n  background: var(--pvk-accent-hover);\r\n}\r\n#pvk-error button:active {\r\n  transform: scale(0.97);\r\n}\r\n\r\n/* 拖拽反馈（共享 setupDrag 会添加 pv-dragging 类） */\r\n#pvk-panel.pv-dragging {\r\n  user-select: none;\r\n  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.4), 0 28px 70px -20px rgba(0, 0, 0, 0.5);\r\n}\r\n\r\n@media (prefers-reduced-motion: reduce) {\r\n  #pvk-panel,\r\n  #pvk-overlay {\r\n    transition: none;\r\n  }\r\n  .pvk-spinner {\r\n    animation-duration: 1.6s;\r\n  }\r\n}\r\n@media (max-width: 560px), (max-height: 560px) {\r\n  #pvk-panel {\r\n    max-width: calc(100vw - 16px);\r\n    max-height: calc(100vh - 16px);\r\n  }\r\n}\r\n\r\n/* 触屏适配：加大按钮触控目标；小屏触屏铺近全屏 */\r\n@media (pointer: coarse) {\r\n  .pvk-btn {\r\n    min-width: 44px;\r\n    min-height: 44px;\r\n  }\r\n}\r\n@media (pointer: coarse) and (max-width: 560px), (pointer: coarse) and (max-height: 560px) {\r\n  #pvk-panel {\r\n    width: calc(100vw - 12px);\r\n    height: calc(100vh - 12px);\r\n    height: calc(100dvh - 12px);\r\n  }\r\n}\r\n";
 
   // src/utils/gm.js
   function gmApi(name) {
@@ -49,6 +49,17 @@
     }
   }
   var gm = {
+    /** 油猴菜单命令；无 GM 环境时返回 false（调用方保留悬浮齿轮作为入口）。 */
+    registerMenuCommand(caption, onClick) {
+      const fn = gmApi("GM_registerMenuCommand");
+      if (!fn) return false;
+      try {
+        fn(caption, onClick);
+        return true;
+      } catch {
+        return false;
+      }
+    },
     addStyle(css) {
       let node = null;
       const fn = gmApi("GM_addStyle");
@@ -72,9 +83,11 @@
     xmlhttpRequest(options) {
       const fn = gmApi("GM_xmlhttpRequest");
       if (fn) {
+        const onTimeout = options.ontimeout || (options.onerror ? () => options.onerror({ timeout: true, error: "请求超时" }) : void 0);
         return fn({
           timeout: options.timeout || 15e3,
-          ...options
+          ...options,
+          ontimeout: onTimeout
         });
       }
       const controller = typeof AbortController !== "undefined" ? new AbortController() : null;
@@ -95,11 +108,18 @@
           finalUrl: res.url
         });
       }).catch((err) => {
-        var _a;
+        var _a, _b;
         clearTimer();
-        (_a = options.onerror) == null ? void 0 : _a.call(options, err);
+        if (aborted) return;
+        if (err && err.name === "AbortError") (_a = options.onerror) == null ? void 0 : _a.call(options, { timeout: true, error: "请求超时" });
+        else (_b = options.onerror) == null ? void 0 : _b.call(options, err);
       });
-      if (controller) promise.abort = () => controller.abort();
+      let aborted = false;
+      if (controller)
+        promise.abort = () => {
+          aborted = true;
+          controller.abort();
+        };
       return promise;
     },
     getValue(key, fallback) {
@@ -204,7 +224,11 @@
       historyKey: "pv2:history",
       favoritesKey: "pv2:favorites"
     },
-    maxHistoryEntries: 100
+    maxHistoryEntries: 100,
+    ui: {
+      // 外壳挂进 Shadow DOM（隔离宿主网站 CSS）；false = 退回 v2.2 的页面内挂载
+      shadow: true
+    }
   };
 
   // src/utils/logger.js
@@ -390,6 +414,42 @@
     while (node.firstChild) node.removeChild(node.firstChild);
     return node;
   }
+  function eventPath(event) {
+    if (event && typeof event.composedPath === "function") {
+      const path = event.composedPath();
+      if (path && path.length) return path;
+    }
+    const out = [];
+    for (let node = event && event.target; node; node = node.parentNode || node.host) out.push(node);
+    return out;
+  }
+  function eventTarget(event) {
+    for (const node of eventPath(event)) if (node && node.nodeType === 1) return node;
+    return event ? event.target : null;
+  }
+  function closestInPath(event, selector) {
+    for (const node of eventPath(event)) {
+      if (node && node.nodeType === 1 && typeof node.matches === "function") {
+        try {
+          if (node.matches(selector)) return node;
+        } catch {
+          return null;
+        }
+      }
+    }
+    return null;
+  }
+  var EDITABLE_INPUT_TYPES = /^(text|search|email|url|tel|password|number|date|datetime-local|month|time|week)$/i;
+  function isEditableElement(node) {
+    if (!node || node.nodeType !== 1) return false;
+    const tag = node.tagName;
+    if (tag === "TEXTAREA" || tag === "SELECT") return true;
+    if (tag === "INPUT") return EDITABLE_INPUT_TYPES.test(node.type || "text");
+    return node.isContentEditable === true;
+  }
+  function isEditableEvent(event) {
+    return isEditableElement(eventTarget(event));
+  }
 
   // src/utils/debugFlag.js
   var _cached = null;
@@ -436,7 +496,7 @@
   var SITE_KEY = "pv2:siteSettings";
   var GLOBAL_KEYS = ["theme", "allowInFrame", "handedness", "mobileResize"];
   function defaultGlobal() {
-    return { theme: "auto", allowInFrame: false, handedness: "right", mobileResize: true };
+    return { theme: "auto", allowInFrame: false, handedness: "right", mobileResize: false, uiRev: 1 };
   }
   function defaultSite() {
     return {
@@ -444,6 +504,8 @@
       panelSize: config.popup.defaultSize,
       windowMode: "coupled",
       linkIntercept: true,
+      // 窗体内容里的链接在新标签页打开（原先与 linkIntercept 绑在一起，现已拆开）
+      popupLinksNewTab: true,
       phoneModel: config.phone.defaultModel,
       phonePosition: null,
       customSize: null,
@@ -470,10 +532,15 @@
       this._loaded = true;
       this.siteKey = currentSiteKey();
       const g = gm.getValue(KEY, null);
-      if (g && typeof g === "object") this.global = { ...defaultGlobal(), ...g };
+      if (g && typeof g === "object") {
+        this.global = { ...defaultGlobal(), ...g };
+        if (g.uiRev !== 1) this.global.mobileResize = false;
+      }
       const all = gm.getValue(SITE_KEY, null);
       if (all && typeof all === "object" && all[this.siteKey]) {
-        this.site = { ...defaultSite(), ...all[this.siteKey] };
+        const stored = all[this.siteKey];
+        this.site = { ...defaultSite(), ...stored };
+        if (!("popupLinksNewTab" in stored) && stored.linkIntercept === false) this.site.popupLinksNewTab = false;
       }
       if (!config.popup.sizes[this.site.panelSize] && this.site.panelSize !== "custom") {
         this.site.panelSize = defaultSite().panelSize;
@@ -483,6 +550,10 @@
       }
       this._applyInvariants();
       return this.get();
+    }
+    /** 该设置键是否按站点保存（不在 GLOBAL_KEYS 里即为站点键）。 */
+    isSiteKey(key) {
+      return !GLOBAL_KEYS.includes(key);
     }
     /** 当前生效设置 = 全局 + 当前站点设置。 */
     get() {
@@ -570,7 +641,8 @@
       const head = this._collectHead(doc, baseUrl);
       this._purge(doc, options);
       this._resolveLazyImages(doc, baseUrl);
-      return { head, body: doc.body ? doc.body.innerHTML : "" };
+      const title = (doc.title || "").trim().slice(0, 200);
+      return { head, body: doc.body ? doc.body.innerHTML : "", title };
     }
     _resolveLazyImages(doc, baseUrl) {
       doc.querySelectorAll("img").forEach((img) => {
@@ -741,7 +813,7 @@
       return null;
     }
   }
-  function renderIntoIframe({ html, url, container, sandboxAttrs, head = "", linkIntercept, loadingSelector = "#popup-panel-loading", onNavigate }) {
+  function renderIntoIframe({ html, url, container, sandboxAttrs, head = "", title = "", linkIntercept, loadingSelector = "#popup-panel-loading", onNavigate }) {
     var _a;
     (_a = container.querySelector(loadingSelector)) == null ? void 0 : _a.remove();
     container.classList.add("iframe-direct-load");
@@ -757,7 +829,7 @@
     container.appendChild(iframe);
     const iframeDoc = iframe.contentWindow.document;
     iframeDoc.open();
-    iframeDoc.write(buildDocument(html, url, head));
+    iframeDoc.write(buildDocument(html, url, head, title));
     iframeDoc.close();
     const runFixes = () => {
       if (!iframe.isConnected || !iframe.contentWindow) return;
@@ -780,16 +852,26 @@
       }
       if (onNavigate) {
         const loc = readIframeLocation(iframe);
-        if (loc) onNavigate(loc.url, loc.title);
+        if (loc && !isHostDocumentUrl(loc.url)) onNavigate(loc.url, loc.title);
       }
     });
     if (iframeDoc.readyState === "complete") iframe.dispatchEvent(new Event("load"));
     [1500, 3500].forEach((delay) => setTimeout(runFixes, delay));
     return iframe;
   }
-  function buildDocument(html, url, head = "") {
+  function isHostDocumentUrl(href) {
+    try {
+      return String(href).split("#")[0] === String(window.location.href).split("#")[0];
+    } catch {
+      return false;
+    }
+  }
+  function escapeHtml(text) {
+    return String(text || "").replace(/[&<>"]/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[ch]);
+  }
+  function buildDocument(html, url, head = "", title = "") {
     const baseHref = buildBaseHref(url);
-    return '<!DOCTYPE html><html><head><base href="' + baseHref + '"><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Content</title>' + head + "</head><body>" + html + "</body></html>";
+    return '<!DOCTYPE html><html><head><base href="' + escapeHtml(baseHref) + '"><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>' + escapeHtml(title) + "</title>" + head + "</head><body>" + html + "</body></html>";
   }
   function buildBaseHref(url) {
     try {
@@ -801,8 +883,12 @@
       return url;
     }
   }
+  function popupLinksOpenNewTab(explicit) {
+    if (explicit !== void 0) return explicit;
+    return settingsManager.get().popupLinksNewTab !== false;
+  }
   function fixLinks(iframeDoc, linkIntercept) {
-    const openNewTab = linkIntercept !== void 0 ? linkIntercept : settingsManager.get().linkIntercept !== false;
+    const openNewTab = popupLinksOpenNewTab(linkIntercept);
     iframeDoc.querySelectorAll("a[href]").forEach((link) => {
       if (openNewTab) link.target = "_blank";
       const href = link.getAttribute("href");
@@ -888,6 +974,22 @@
         fn(...args);
       };
       const timer = setTimeout(() => {
+        var _a2, _b;
+        if (settled) return;
+        try {
+          const href = iframe.contentWindow && iframe.contentWindow.location.href;
+          if (href && href !== "about:blank") {
+            (_a2 = container.querySelector(loadingSelector)) == null ? void 0 : _a2.remove();
+            container.classList.add("iframe-direct-load");
+            finish(onLoad);
+            return;
+          }
+        } catch {
+          (_b = container.querySelector(loadingSelector)) == null ? void 0 : _b.remove();
+          container.classList.add("iframe-direct-load");
+          finish(onLoad);
+          return;
+        }
         logger.warn(`[IframeLoader] timeout loading ${url}`);
         onError(`加载 ${url} 超时或被阻止，请尝试在新标签页打开。`);
       }, config.loader.timeout);
@@ -904,6 +1006,10 @@
       }, 800);
       iframe.addEventListener("load", () => {
         var _a2;
+        try {
+          if (iframe.contentWindow && iframe.contentWindow.location.href === "about:blank") return;
+        } catch {
+        }
         if (firstLoad) {
           firstLoad = false;
           const loc2 = readIframeLocation(iframe);
@@ -923,8 +1029,8 @@
       });
       iframe.addEventListener("error", () => finish(onError, `加载 ${url} 失败。`));
       (_a = container.querySelector(loadingSelector)) == null ? void 0 : _a.remove();
-      container.appendChild(iframe);
       iframe.src = url;
+      container.appendChild(iframe);
       return () => {
         clearTimeout(timer);
         clearInterval(pollTimer);
@@ -953,6 +1059,7 @@
             renderIntoIframe({
               html: result.body,
               head: result.head,
+              title: result.title,
               url,
               container,
               sandboxAttrs: contentSandboxAttrs(keepScripts),
@@ -968,7 +1075,7 @@
         },
         onerror: (error) => {
           logger.error("[RequestLoader] request error", error);
-          onError("网络请求失败");
+          onError(error && error.timeout ? "请求超时" : "网络请求失败");
         }
       });
       return () => {
@@ -1016,7 +1123,7 @@
         },
         onerror: (error) => {
           logger.error("[ParserLoader] request error", error);
-          onError("网络请求失败");
+          onError(error && error.timeout ? "请求超时" : "网络请求失败");
         }
       });
       return () => {
@@ -1039,7 +1146,7 @@
           }
         });
       });
-      const openNewTab = linkIntercept !== void 0 ? linkIntercept : settingsManager.get().linkIntercept !== false;
+      const openNewTab = linkIntercept !== void 0 ? linkIntercept : settingsManager.get().popupLinksNewTab !== false;
       doc.querySelectorAll("a[href]").forEach((link) => {
         if (openNewTab) {
           link.target = "_blank";
@@ -1075,7 +1182,7 @@
         const oldest = this.cache.keys().next().value;
         this.cache.delete(oldest);
       }
-      this.cache.set(url, { head: result.head, body: result.body, time: Date.now() });
+      this.cache.set(url, { head: result.head, body: result.body, title: result.title || "", time: Date.now() });
     }
     /**
      * 发起抓取并缓存，返回 { promise, abort }。
@@ -1088,7 +1195,8 @@
       const existing = this.inflight.get(url);
       if (existing) return existing;
       const entry = this._fetch(url, keepScripts, mobileUA);
-      entry.promise.finally(() => this.inflight.delete(url));
+      const cleanup = () => this.inflight.delete(url);
+      entry.promise.then(cleanup, cleanup);
       this.inflight.set(url, entry);
       return entry;
     }
@@ -1117,7 +1225,7 @@
           },
           onerror: (error) => {
             logger.error("[CacheLoader] request error", error);
-            reject(new Error("网络请求失败"));
+            reject(new Error(error && error.timeout ? "请求超时" : "网络请求失败"));
           }
         });
         abort = () => {
@@ -1138,6 +1246,7 @@
         renderIntoIframe({
           html: cached.body,
           head: cached.head,
+          title: cached.title,
           url,
           container,
           sandboxAttrs: contentSandboxAttrs(keepScripts),
@@ -1156,6 +1265,7 @@
         renderIntoIframe({
           html: result.body,
           head: result.head,
+          title: result.title,
           url,
           container,
           sandboxAttrs: contentSandboxAttrs(keepScripts),
@@ -1330,13 +1440,45 @@
     let lastX = 0;
     let lastY = 0;
     let raf = null;
+    const THRESHOLD = 4;
+    let pending = false;
     const applyMove = () => {
       raf = null;
       if (!dragging || dragLocked) return;
-      panel.style.left = `${startLeft + (lastX - startX)}px`;
-      panel.style.top = `${startTop + (lastY - startY)}px`;
+      panel.style.left = `${Math.round(startLeft + (lastX - startX))}px`;
+      panel.style.top = `${Math.round(startTop + (lastY - startY))}px`;
+    };
+    const beginDrag = () => {
+      var _a;
+      pending = false;
+      dragging = true;
+      if (dragLocked) return;
+      const rect = panel.getBoundingClientRect();
+      startLeft = Math.round(rect.left);
+      startTop = Math.round(rect.top);
+      panel.style.transition = "none";
+      panel.style.left = `${startLeft}px`;
+      panel.style.top = `${startTop}px`;
+      panel.style.transform = "none";
+      panel.classList.add("pv-dragging");
+      document.body.style.cursor = "grabbing";
+      try {
+        (_a = window.getSelection()) == null ? void 0 : _a.removeAllRanges();
+      } catch {
+      }
     };
     const finish = (commit) => {
+      if (pending) {
+        pending = false;
+        if (POINTER_EVENTS && pointerId != null) {
+          try {
+            header.releasePointerCapture(pointerId);
+          } catch {
+          }
+          pointerId = null;
+        }
+        return;
+      }
       if (!dragging) return;
       const info = { locked: dragLocked };
       dragging = false;
@@ -1357,26 +1499,16 @@
       if (commit) onDragEnd == null ? void 0 : onDragEnd(info);
     };
     header.addEventListener(DOWN, (e) => {
-      if (e.target.closest("button")) return;
+      if (closestInPath(e, "button, a, input")) return;
       if (isFullScreen()) return;
       if (e.button !== 0) return;
-      dragging = true;
+      pending = true;
+      dragging = false;
       dragLocked = locked();
-      const rect = panel.getBoundingClientRect();
       startX = e.clientX;
       startY = e.clientY;
-      startLeft = rect.left;
-      startTop = rect.top;
       lastX = e.clientX;
       lastY = e.clientY;
-      if (!dragLocked) {
-        panel.style.transition = "none";
-        panel.style.left = `${rect.left}px`;
-        panel.style.top = `${rect.top}px`;
-        panel.style.transform = "none";
-        panel.classList.add("pv-dragging");
-        document.body.style.cursor = "grabbing";
-      }
       if (POINTER_EVENTS) {
         pointerId = e.pointerId;
         try {
@@ -1384,9 +1516,13 @@
         } catch {
         }
       }
-      e.preventDefault();
+      if (e.pointerType && e.pointerType !== "mouse") e.preventDefault();
     });
     const move = (e) => {
+      if (pending) {
+        if (Math.abs(e.clientX - startX) < THRESHOLD && Math.abs(e.clientY - startY) < THRESHOLD) return;
+        beginDrag();
+      }
       if (!dragging) return;
       lastX = e.clientX;
       lastY = e.clientY;
@@ -1397,25 +1533,31 @@
     if (POINTER_EVENTS) document.addEventListener("pointercancel", () => finish(false));
   }
   function setupWheelScrollChain({ panel, contentArea, isFullScreen = () => false }) {
+    const canScrollFrom = (node, stop, dy) => {
+      var _a;
+      for (let el2 = node; el2 && el2.nodeType === 1; el2 = el2.parentElement || ((_a = el2.getRootNode) == null ? void 0 : _a.call(el2).host)) {
+        const style = getComputedStyle(el2);
+        if (/(auto|scroll)/.test(style.overflowY) && el2.scrollHeight > el2.clientHeight + 1) {
+          if (dy < 0 ? el2.scrollTop > 0 : el2.scrollTop + el2.clientHeight < el2.scrollHeight - 1) return true;
+        }
+        if (el2 === stop) break;
+      }
+      return false;
+    };
     document.addEventListener(
       "wheel",
       (e) => {
         if (!panel || !panel.classList.contains("visible")) return;
-        if (isFullScreen()) {
-          e.preventDefault();
-          e.stopPropagation();
-        } else {
+        const target = eventTarget(e);
+        if (!target || !panel.contains(target)) return;
+        if (!e.deltaY) return;
+        if (canScrollFrom(target, panel, e.deltaY)) return;
+        if (!isFullScreen()) {
           const content = contentArea();
-          if (content && content.contains(e.target)) {
-            const { scrollTop, scrollHeight, clientHeight } = content;
-            const atBottom = scrollTop + clientHeight >= scrollHeight - 1;
-            const canScroll = scrollHeight > clientHeight;
-            if (!canScroll || atBottom) {
-              e.preventDefault();
-              e.stopPropagation();
-            }
-          }
+          if (!content || !content.contains(target)) return;
         }
+        e.preventDefault();
+        e.stopPropagation();
       },
       true
     );
@@ -1470,6 +1612,13 @@
       this.contentArea = el("div", { id: "pvk-content" });
       this.panel = el("div", { id: "pvk-panel" }, header, this.contentArea);
       document.body.appendChild(this.panel);
+      for (const node of [this.panel, this.overlay]) {
+        const sync = () => {
+          node.inert = !node.classList.contains("visible");
+        };
+        sync();
+        new MutationObserver(sync).observe(node, { attributes: true, attributeFilter: ["class"] });
+      }
       this._setupDrag(header);
       this._setupKeyboard();
       return this.panel;
@@ -1632,13 +1781,24 @@
     _setupKeyboard() {
       document.addEventListener("keydown", (e) => {
         if (!this.panel || !this.panel.classList.contains("visible")) return;
-        if (e.key === "Escape") this.close();
-        else if (e.key === "f" || e.key === "F") this.toggleFullScreen();
-        else if (e.key === "r" || e.key === "R") {
-          if (this.currentUrl && !e.ctrlKey && !e.metaKey && !e.altKey) {
-            e.preventDefault();
-            this.refresh();
-          }
+        if (e.defaultPrevented || e.isComposing || e.keyCode === 229) return;
+        const target = eventTarget(e);
+        if (isEditableEvent(e)) {
+          if (e.key === "Escape" && target && this.panel.contains(target) && typeof target.blur === "function") target.blur();
+          return;
+        }
+        if (e.key === "Escape") {
+          this.close();
+          return;
+        }
+        if (e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return;
+        const key = String(e.key || "").toLowerCase();
+        if (key === "f") {
+          e.preventDefault();
+          this.toggleFullScreen();
+        } else if (key === "r" && this.currentUrl) {
+          e.preventDefault();
+          this.refresh();
         }
       });
       window.addEventListener("resize", () => {

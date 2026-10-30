@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name          页内弹窗打开新帖
 // @namespace     http://tampermonkey.net/
-// @version       2.2.0
+// @version       2.3.5
 // @description   点击论坛帖子链接，在弹窗中加载内容 (插件化架构 V2)
 // @author        cores
 // @include       *://*/*
@@ -9,6 +9,7 @@
 // @grant         GM_addStyle
 // @grant         GM_getValue
 // @grant         GM_setValue
+// @grant         GM_registerMenuCommand
 // @grant         unsafeWindow
 // @connect       *
 // @run-at        document-idle
@@ -48,7 +49,7 @@
     if (!DEBUG) return;
     try {
       var d = document.createElement("div");
-      d.textContent = "[PV2] boot v" + (true ? "2.2.0" : "?");
+      d.textContent = "[PV2] boot v" + (true ? "2.3.5" : "?");
       d.style.cssText = "position:fixed;top:12px;left:12px;z-index:2147483647;background:#7c3aed;color:#fff;padding:6px 12px;font-size:12px;border-radius:6px;font-family:sans-serif";
       (document.body || document.documentElement).appendChild(d);
     } catch (e) {
@@ -167,7 +168,11 @@
       historyKey: "pv2:history",
       favoritesKey: "pv2:favorites"
     },
-    maxHistoryEntries: 100
+    maxHistoryEntries: 100,
+    ui: {
+      // 外壳挂进 Shadow DOM（隔离宿主网站 CSS）；false = 退回 v2.2 的页面内挂载
+      shadow: true
+    }
   };
 
   // src/utils/logger.js
@@ -411,6 +416,17 @@
     }
   }
   var gm = {
+    /** 油猴菜单命令；无 GM 环境时返回 false（调用方保留悬浮齿轮作为入口）。 */
+    registerMenuCommand(caption, onClick) {
+      const fn = gmApi("GM_registerMenuCommand");
+      if (!fn) return false;
+      try {
+        fn(caption, onClick);
+        return true;
+      } catch {
+        return false;
+      }
+    },
     addStyle(css) {
       let node = null;
       const fn = gmApi("GM_addStyle");
@@ -434,9 +450,11 @@
     xmlhttpRequest(options) {
       const fn = gmApi("GM_xmlhttpRequest");
       if (fn) {
+        const onTimeout = options.ontimeout || (options.onerror ? () => options.onerror({ timeout: true, error: "请求超时" }) : void 0);
         return fn({
           timeout: options.timeout || 15e3,
-          ...options
+          ...options,
+          ontimeout: onTimeout
         });
       }
       const controller = typeof AbortController !== "undefined" ? new AbortController() : null;
@@ -457,11 +475,18 @@
           finalUrl: res.url
         });
       }).catch((err) => {
-        var _a;
+        var _a, _b;
         clearTimer();
-        (_a = options.onerror) == null ? void 0 : _a.call(options, err);
+        if (aborted) return;
+        if (err && err.name === "AbortError") (_a = options.onerror) == null ? void 0 : _a.call(options, { timeout: true, error: "请求超时" });
+        else (_b = options.onerror) == null ? void 0 : _b.call(options, err);
       });
-      if (controller) promise.abort = () => controller.abort();
+      let aborted = false;
+      if (controller)
+        promise.abort = () => {
+          aborted = true;
+          controller.abort();
+        };
       return promise;
     },
     getValue(key, fallback) {
@@ -502,7 +527,7 @@
         this.rules = {};
         for (const [host, list] of Object.entries(raw)) {
           if (Array.isArray(list)) {
-            this.rules[host] = list.filter((r) => r && typeof r.selector === "string" && r.selector.trim()).map((r) => ({ selector: r.selector.trim() }));
+            this.rules[host] = list.filter((r) => r && typeof r.selector === "string" && r.selector.trim()).map((r) => r.disabled === true ? { selector: r.selector.trim(), disabled: true } : { selector: r.selector.trim() });
           }
         }
       }
@@ -519,6 +544,37 @@
         this._persist();
       }
       return rules;
+    }
+    /** 修改规则（selector / disabled）。新选择器为空或与其它规则重复时返回 false。 */
+    updateRule(hostname, index, patch) {
+      const rules = this.getRules(hostname);
+      const rule = rules[index];
+      if (!rule) return false;
+      if ("selector" in patch) {
+        const sel = String(patch.selector || "").trim();
+        if (!sel || rules.some((r, i) => i !== index && r.selector === sel)) return false;
+        rule.selector = sel;
+      }
+      if ("disabled" in patch) {
+        if (patch.disabled) rule.disabled = true;
+        else delete rule.disabled;
+      }
+      this.load()[hostname] = rules;
+      this._persist();
+      return true;
+    }
+    /** 把规则插回指定位置（撤销删除用）。 */
+    insertRule(hostname, index, rule) {
+      const rules = this.getRules(hostname);
+      if (!rule || rules.some((r) => r.selector === rule.selector)) return rules;
+      rules.splice(Math.max(0, Math.min(index, rules.length)), 0, { ...rule });
+      this.load()[hostname] = rules;
+      this._persist();
+      return rules;
+    }
+    /** 所有有规则的站点：[{ host, count, enabled }]，按条数降序。 */
+    listHosts() {
+      return Object.entries(this.load()).filter(([, list]) => Array.isArray(list) && list.length).map(([host, list]) => ({ host, count: list.length, enabled: list.filter((r) => !r.disabled).length })).sort((a, b) => b.count - a.count || a.host.localeCompare(b.host));
     }
     removeRule(hostname, index) {
       const rules = this.getRules(hostname);
@@ -537,16 +593,25 @@
     match(event, hostname) {
       const rules = this.getRules(hostname);
       if (!rules.length) return null;
+      const target = event.target;
+      let clickedLink = null;
+      try {
+        clickedLink = target && target.closest ? target.closest("a[href]") : null;
+      } catch {
+      }
       for (const rule of rules) {
+        if (!rule || rule.disabled) continue;
         let el2 = null;
         try {
-          el2 = event.target.closest ? event.target.closest(rule.selector) : null;
+          el2 = target && target.closest ? target.closest(rule.selector) : null;
         } catch {
           el2 = null;
         }
         if (!el2) continue;
         const link = this._extractLink(el2);
-        if (link) return link;
+        if (!link) continue;
+        if (clickedLink && clickedLink !== el2 && link.element !== clickedLink && el2.contains(clickedLink)) continue;
+        return link;
       }
       return null;
     }
@@ -591,6 +656,194 @@
   };
   var rulesManager = new RulesManager();
 
+  // src/utils/dom.js
+  var ICON_PATHS = {
+    article: {
+      path: '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line>'
+    },
+    close: { path: '<line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line>' },
+    plus: { path: '<line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line>' },
+    info: {
+      path: '<circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="12"></line><line x1="12" y1="8" x2="12.01" y2="8"></line>'
+    },
+    smartphone: {
+      path: '<rect x="5" y="2" width="14" height="20" rx="2" ry="2"></rect><line x1="12" y1="18" x2="12.01" y2="18"></line>'
+    },
+    external: {
+      path: '<path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path><polyline points="15 3 21 3 21 9"></polyline><line x1="10" y1="14" x2="21" y2="3"></line>'
+    },
+    refresh: {
+      path: '<path d="M23 4v6h-6"></path><path d="M1 20v-6h6"></path><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10"></path><path d="M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>'
+    },
+    maximize: {
+      path: '<polyline points="15 3 21 3 21 9"></polyline><polyline points="9 21 3 21 3 15"></polyline><line x1="21" y1="3" x2="14" y2="10"></line><line x1="3" y1="21" x2="10" y2="14"></line>'
+    },
+    minimize: {
+      path: '<polyline points="4 14 10 14 10 20"></polyline><polyline points="20 10 14 10 14 4"></polyline><line x1="14" y1="10" x2="21" y2="3"></line><line x1="3" y1="21" x2="10" y2="14"></line>'
+    },
+    arrowLeft: {
+      path: '<line x1="19" y1="12" x2="5" y2="12"></line><polyline points="12 19 5 12 12 5"></polyline>'
+    },
+    arrowRight: {
+      path: '<line x1="5" y1="12" x2="19" y2="12"></line><polyline points="12 5 19 12 12 19"></polyline>'
+    },
+    // 图片切换用的细箭头（无杆，X 灯箱左右两侧的样式）
+    chevronLeft: {
+      path: '<polyline points="15 18 9 12 15 6"></polyline>'
+    },
+    chevronRight: {
+      path: '<polyline points="9 18 15 12 9 6"></polyline>'
+    },
+    resize: {
+      path: '<polyline points="7 17 17 7"></polyline><line x1="10" y1="17" x2="17" y2="17"></line><line x1="17" y1="10" x2="17" y2="17"></line>'
+    },
+    settings: {
+      path: '<circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>'
+    }
+  };
+  function el(tag, attrs = {}, ...children) {
+    const node = document.createElement(tag);
+    for (const [key, value] of Object.entries(attrs)) {
+      if (value === null || value === void 0) continue;
+      if (key === "class") node.className = value;
+      else if (key === "text") node.textContent = value;
+      else if (key === "style" && typeof value === "object") Object.assign(node.style, value);
+      else if (key.startsWith("on")) node.addEventListener(key.slice(2), value);
+      else node.setAttribute(key, value);
+    }
+    for (const child of children.flat()) {
+      if (child == null) continue;
+      node.appendChild(typeof child === "string" ? document.createTextNode(child) : child);
+    }
+    return node;
+  }
+  function svg(inner, attrs = {}) {
+    const ns = "http://www.w3.org/2000/svg";
+    const node = document.createElementNS(ns, "svg");
+    node.setAttribute("viewBox", "0 0 24 24");
+    node.setAttribute("fill", "none");
+    node.setAttribute("stroke", "currentColor");
+    node.setAttribute("stroke-width", "2");
+    node.setAttribute("stroke-linecap", "round");
+    node.setAttribute("stroke-linejoin", "round");
+    for (const [key, value] of Object.entries(attrs)) node.setAttribute(key, value);
+    const holder = document.createElement("div");
+    holder.innerHTML = inner.trim();
+    moveSvgChildren(node, holder);
+    return node;
+  }
+  function moveSvgChildren(svgParent, container) {
+    for (const child of [...container.childNodes]) {
+      if (child.nodeType !== 1) continue;
+      const el2 = document.createElementNS(svgParent.namespaceURI, child.localName);
+      for (const attr of [...child.attributes]) el2.setAttribute(attr.name, attr.value);
+      moveSvgChildren(el2, child);
+      svgParent.appendChild(el2);
+    }
+  }
+  function svgIcon(iconName, { size = 18 } = {}) {
+    const icon = ICON_PATHS[iconName];
+    if (!icon) return svg("", { width: size, height: size });
+    const node = svg(icon.path, { width: size, height: size });
+    for (const [key, value] of Object.entries(icon.attrs || {})) node.setAttribute(key, value);
+    return node;
+  }
+  function clear(node) {
+    while (node.firstChild) node.removeChild(node.firstChild);
+    return node;
+  }
+  function hijacksFixed(node) {
+    if (!node) return false;
+    try {
+      const cs = getComputedStyle(node);
+      if (cs.transform && cs.transform !== "none") return true;
+      if (cs.filter && cs.filter !== "none") return true;
+      if (cs.perspective && cs.perspective !== "none") return true;
+      if (cs.willChange && cs.willChange.includes("transform")) return true;
+      if (cs.contain && /paint|layout|strict|content/.test(cs.contain)) return true;
+    } catch (err) {
+      return false;
+    }
+    return false;
+  }
+  function pickMountPoint() {
+    const body = document.body;
+    const html = document.documentElement;
+    if (body && !hijacksFixed(body)) return body;
+    if (html && !hijacksFixed(html)) return html;
+    return body || html;
+  }
+  var uiShadowRoot = null;
+  function setUiRoot(root) {
+    uiShadowRoot = root || null;
+  }
+  function uiRoot() {
+    return uiShadowRoot;
+  }
+  function uiQuery(selector) {
+    return (uiShadowRoot || document).querySelector(selector);
+  }
+  function mountUi(node) {
+    if (uiShadowRoot) {
+      uiShadowRoot.appendChild(node);
+      return uiShadowRoot;
+    }
+    const parent = pickMountPoint();
+    if (parent) parent.appendChild(node);
+    return parent;
+  }
+  function eventPath(event) {
+    if (event && typeof event.composedPath === "function") {
+      const path = event.composedPath();
+      if (path && path.length) return path;
+    }
+    const out = [];
+    for (let node = event && event.target; node; node = node.parentNode || node.host) out.push(node);
+    return out;
+  }
+  function eventTarget(event) {
+    for (const node of eventPath(event)) if (node && node.nodeType === 1) return node;
+    return event ? event.target : null;
+  }
+  function closestInPath(event, selector) {
+    for (const node of eventPath(event)) {
+      if (node && node.nodeType === 1 && typeof node.matches === "function") {
+        try {
+          if (node.matches(selector)) return node;
+        } catch {
+          return null;
+        }
+      }
+    }
+    return null;
+  }
+  var EDITABLE_INPUT_TYPES = /^(text|search|email|url|tel|password|number|date|datetime-local|month|time|week)$/i;
+  function isEditableElement(node) {
+    if (!node || node.nodeType !== 1) return false;
+    const tag = node.tagName;
+    if (tag === "TEXTAREA" || tag === "SELECT") return true;
+    if (tag === "INPUT") return EDITABLE_INPUT_TYPES.test(node.type || "text");
+    return node.isContentEditable === true;
+  }
+  function isEditableEvent(event) {
+    return isEditableElement(eventTarget(event));
+  }
+  function deepActiveElement() {
+    let node = document.activeElement;
+    while (node && node.shadowRoot && node.shadowRoot.activeElement) node = node.shadowRoot.activeElement;
+    return node;
+  }
+  function isOwnUiNode(node) {
+    var _a;
+    if (!node || node.nodeType !== 1) return false;
+    if (uiShadowRoot && (((_a = node.getRootNode) == null ? void 0 : _a.call(node)) === uiShadowRoot || node === uiShadowRoot.host)) return true;
+    try {
+      return !!node.closest('[id^="popup-"], [id^="pv-"], [id^="pv2-"]');
+    } catch {
+      return false;
+    }
+  }
+
   // src/core/SiteManager.js
   markMod("SiteManager");
   var SiteManager = class {
@@ -610,8 +863,7 @@
      * @returns {{url:string,title:string,element:Element}|null}
      */
     resolveCandidate(event) {
-      var _a, _b;
-      if ((_b = (_a = event.target).closest) == null ? void 0 : _b.call(_a, "#popup-content-panel")) return null;
+      if (isOwnUiNode(eventTarget(event)) || isOwnUiNode(event.target)) return null;
       const hostname = window.location.hostname;
       const pathname = window.location.pathname;
       const ruleHit = rulesManager.match(event, hostname);
@@ -732,135 +984,12 @@
     return attrs.join(" ");
   }
 
-  // src/utils/dom.js
-  var ICON_PATHS = {
-    article: {
-      path: '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line>'
-    },
-    close: { path: '<line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line>' },
-    plus: { path: '<line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line>' },
-    info: {
-      path: '<circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="12"></line><line x1="12" y1="8" x2="12.01" y2="8"></line>'
-    },
-    smartphone: {
-      path: '<rect x="5" y="2" width="14" height="20" rx="2" ry="2"></rect><line x1="12" y1="18" x2="12.01" y2="18"></line>'
-    },
-    external: {
-      path: '<path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path><polyline points="15 3 21 3 21 9"></polyline><line x1="10" y1="14" x2="21" y2="3"></line>'
-    },
-    refresh: {
-      path: '<path d="M23 4v6h-6"></path><path d="M1 20v-6h6"></path><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10"></path><path d="M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>'
-    },
-    maximize: {
-      path: '<polyline points="15 3 21 3 21 9"></polyline><polyline points="9 21 3 21 3 15"></polyline><line x1="21" y1="3" x2="14" y2="10"></line><line x1="3" y1="21" x2="10" y2="14"></line>'
-    },
-    minimize: {
-      path: '<polyline points="4 14 10 14 10 20"></polyline><polyline points="20 10 14 10 14 4"></polyline><line x1="14" y1="10" x2="21" y2="3"></line><line x1="3" y1="21" x2="10" y2="14"></line>'
-    },
-    arrowLeft: {
-      path: '<line x1="19" y1="12" x2="5" y2="12"></line><polyline points="12 19 5 12 12 5"></polyline>'
-    },
-    arrowRight: {
-      path: '<line x1="5" y1="12" x2="19" y2="12"></line><polyline points="12 5 19 12 12 19"></polyline>'
-    },
-    // 图片切换用的细箭头（无杆，X 灯箱左右两侧的样式）
-    chevronLeft: {
-      path: '<polyline points="15 18 9 12 15 6"></polyline>'
-    },
-    chevronRight: {
-      path: '<polyline points="9 18 15 12 9 6"></polyline>'
-    },
-    resize: {
-      path: '<polyline points="7 17 17 7"></polyline><line x1="10" y1="17" x2="17" y2="17"></line><line x1="17" y1="10" x2="17" y2="17"></line>'
-    },
-    settings: {
-      path: '<circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>'
-    }
-  };
-  function el(tag, attrs = {}, ...children) {
-    const node = document.createElement(tag);
-    for (const [key, value] of Object.entries(attrs)) {
-      if (value === null || value === void 0) continue;
-      if (key === "class") node.className = value;
-      else if (key === "text") node.textContent = value;
-      else if (key === "style" && typeof value === "object") Object.assign(node.style, value);
-      else if (key.startsWith("on")) node.addEventListener(key.slice(2), value);
-      else node.setAttribute(key, value);
-    }
-    for (const child of children.flat()) {
-      if (child == null) continue;
-      node.appendChild(typeof child === "string" ? document.createTextNode(child) : child);
-    }
-    return node;
-  }
-  function svg(inner, attrs = {}) {
-    const ns = "http://www.w3.org/2000/svg";
-    const node = document.createElementNS(ns, "svg");
-    node.setAttribute("viewBox", "0 0 24 24");
-    node.setAttribute("fill", "none");
-    node.setAttribute("stroke", "currentColor");
-    node.setAttribute("stroke-width", "2");
-    node.setAttribute("stroke-linecap", "round");
-    node.setAttribute("stroke-linejoin", "round");
-    for (const [key, value] of Object.entries(attrs)) node.setAttribute(key, value);
-    const holder = document.createElement("div");
-    holder.innerHTML = inner.trim();
-    moveSvgChildren(node, holder);
-    return node;
-  }
-  function moveSvgChildren(svgParent, container) {
-    for (const child of [...container.childNodes]) {
-      if (child.nodeType !== 1) continue;
-      const el2 = document.createElementNS(svgParent.namespaceURI, child.localName);
-      for (const attr of [...child.attributes]) el2.setAttribute(attr.name, attr.value);
-      moveSvgChildren(el2, child);
-      svgParent.appendChild(el2);
-    }
-  }
-  function svgIcon(iconName, { size = 18 } = {}) {
-    const icon = ICON_PATHS[iconName];
-    if (!icon) return svg("", { width: size, height: size });
-    const node = svg(icon.path, { width: size, height: size });
-    for (const [key, value] of Object.entries(icon.attrs || {})) node.setAttribute(key, value);
-    return node;
-  }
-  function clear(node) {
-    while (node.firstChild) node.removeChild(node.firstChild);
-    return node;
-  }
-  function hijacksFixed(node) {
-    if (!node) return false;
-    try {
-      const cs = getComputedStyle(node);
-      if (cs.transform && cs.transform !== "none") return true;
-      if (cs.filter && cs.filter !== "none") return true;
-      if (cs.perspective && cs.perspective !== "none") return true;
-      if (cs.willChange && cs.willChange.includes("transform")) return true;
-      if (cs.contain && /paint|layout|strict|content/.test(cs.contain)) return true;
-    } catch (err) {
-      return false;
-    }
-    return false;
-  }
-  function pickMountPoint() {
-    const body = document.body;
-    const html = document.documentElement;
-    if (body && !hijacksFixed(body)) return body;
-    if (html && !hijacksFixed(html)) return html;
-    return body || html;
-  }
-  function mountUi(node) {
-    const parent = pickMountPoint();
-    if (parent) parent.appendChild(node);
-    return parent;
-  }
-
   // src/core/SettingsManager.js
   var KEY2 = "pv2:settings";
   var SITE_KEY = "pv2:siteSettings";
   var GLOBAL_KEYS = ["theme", "allowInFrame", "handedness", "mobileResize"];
   function defaultGlobal() {
-    return { theme: "auto", allowInFrame: false, handedness: "right", mobileResize: true };
+    return { theme: "auto", allowInFrame: false, handedness: "right", mobileResize: false, uiRev: 1 };
   }
   function defaultSite() {
     return {
@@ -868,6 +997,8 @@
       panelSize: config.popup.defaultSize,
       windowMode: "coupled",
       linkIntercept: true,
+      // 窗体内容里的链接在新标签页打开（原先与 linkIntercept 绑在一起，现已拆开）
+      popupLinksNewTab: true,
       phoneModel: config.phone.defaultModel,
       phonePosition: null,
       customSize: null,
@@ -894,10 +1025,15 @@
       this._loaded = true;
       this.siteKey = currentSiteKey();
       const g = gm.getValue(KEY2, null);
-      if (g && typeof g === "object") this.global = { ...defaultGlobal(), ...g };
+      if (g && typeof g === "object") {
+        this.global = { ...defaultGlobal(), ...g };
+        if (g.uiRev !== 1) this.global.mobileResize = false;
+      }
       const all = gm.getValue(SITE_KEY, null);
       if (all && typeof all === "object" && all[this.siteKey]) {
-        this.site = { ...defaultSite(), ...all[this.siteKey] };
+        const stored = all[this.siteKey];
+        this.site = { ...defaultSite(), ...stored };
+        if (!("popupLinksNewTab" in stored) && stored.linkIntercept === false) this.site.popupLinksNewTab = false;
       }
       if (!config.popup.sizes[this.site.panelSize] && this.site.panelSize !== "custom") {
         this.site.panelSize = defaultSite().panelSize;
@@ -907,6 +1043,10 @@
       }
       this._applyInvariants();
       return this.get();
+    }
+    /** 该设置键是否按站点保存（不在 GLOBAL_KEYS 里即为站点键）。 */
+    isSiteKey(key) {
+      return !GLOBAL_KEYS.includes(key);
     }
     /** 当前生效设置 = 全局 + 当前站点设置。 */
     get() {
@@ -994,7 +1134,8 @@
       const head = this._collectHead(doc, baseUrl);
       this._purge(doc, options);
       this._resolveLazyImages(doc, baseUrl);
-      return { head, body: doc.body ? doc.body.innerHTML : "" };
+      const title = (doc.title || "").trim().slice(0, 200);
+      return { head, body: doc.body ? doc.body.innerHTML : "", title };
     }
     _resolveLazyImages(doc, baseUrl) {
       doc.querySelectorAll("img").forEach((img) => {
@@ -1165,7 +1306,7 @@
       return null;
     }
   }
-  function renderIntoIframe({ html, url, container, sandboxAttrs, head = "", linkIntercept, loadingSelector = "#popup-panel-loading", onNavigate }) {
+  function renderIntoIframe({ html, url, container, sandboxAttrs, head = "", title = "", linkIntercept, loadingSelector = "#popup-panel-loading", onNavigate }) {
     var _a;
     (_a = container.querySelector(loadingSelector)) == null ? void 0 : _a.remove();
     container.classList.add("iframe-direct-load");
@@ -1181,7 +1322,7 @@
     container.appendChild(iframe);
     const iframeDoc = iframe.contentWindow.document;
     iframeDoc.open();
-    iframeDoc.write(buildDocument(html, url, head));
+    iframeDoc.write(buildDocument(html, url, head, title));
     iframeDoc.close();
     const runFixes = () => {
       if (!iframe.isConnected || !iframe.contentWindow) return;
@@ -1204,16 +1345,26 @@
       }
       if (onNavigate) {
         const loc = readIframeLocation(iframe);
-        if (loc) onNavigate(loc.url, loc.title);
+        if (loc && !isHostDocumentUrl(loc.url)) onNavigate(loc.url, loc.title);
       }
     });
     if (iframeDoc.readyState === "complete") iframe.dispatchEvent(new Event("load"));
     [1500, 3500].forEach((delay) => setTimeout(runFixes, delay));
     return iframe;
   }
-  function buildDocument(html, url, head = "") {
+  function isHostDocumentUrl(href) {
+    try {
+      return String(href).split("#")[0] === String(window.location.href).split("#")[0];
+    } catch {
+      return false;
+    }
+  }
+  function escapeHtml(text) {
+    return String(text || "").replace(/[&<>"]/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[ch]);
+  }
+  function buildDocument(html, url, head = "", title = "") {
     const baseHref = buildBaseHref(url);
-    return '<!DOCTYPE html><html><head><base href="' + baseHref + '"><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Content</title>' + head + "</head><body>" + html + "</body></html>";
+    return '<!DOCTYPE html><html><head><base href="' + escapeHtml(baseHref) + '"><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>' + escapeHtml(title) + "</title>" + head + "</head><body>" + html + "</body></html>";
   }
   function buildBaseHref(url) {
     try {
@@ -1225,8 +1376,12 @@
       return url;
     }
   }
+  function popupLinksOpenNewTab(explicit) {
+    if (explicit !== void 0) return explicit;
+    return settingsManager.get().popupLinksNewTab !== false;
+  }
   function fixLinks(iframeDoc, linkIntercept) {
-    const openNewTab = linkIntercept !== void 0 ? linkIntercept : settingsManager.get().linkIntercept !== false;
+    const openNewTab = popupLinksOpenNewTab(linkIntercept);
     iframeDoc.querySelectorAll("a[href]").forEach((link) => {
       if (openNewTab) link.target = "_blank";
       const href = link.getAttribute("href");
@@ -1312,6 +1467,22 @@
         fn(...args);
       };
       const timer = setTimeout(() => {
+        var _a2, _b;
+        if (settled) return;
+        try {
+          const href = iframe.contentWindow && iframe.contentWindow.location.href;
+          if (href && href !== "about:blank") {
+            (_a2 = container.querySelector(loadingSelector)) == null ? void 0 : _a2.remove();
+            container.classList.add("iframe-direct-load");
+            finish(onLoad);
+            return;
+          }
+        } catch {
+          (_b = container.querySelector(loadingSelector)) == null ? void 0 : _b.remove();
+          container.classList.add("iframe-direct-load");
+          finish(onLoad);
+          return;
+        }
         logger.warn(`[IframeLoader] timeout loading ${url}`);
         onError(`加载 ${url} 超时或被阻止，请尝试在新标签页打开。`);
       }, config.loader.timeout);
@@ -1328,6 +1499,10 @@
       }, 800);
       iframe.addEventListener("load", () => {
         var _a2;
+        try {
+          if (iframe.contentWindow && iframe.contentWindow.location.href === "about:blank") return;
+        } catch {
+        }
         if (firstLoad) {
           firstLoad = false;
           const loc2 = readIframeLocation(iframe);
@@ -1347,8 +1522,8 @@
       });
       iframe.addEventListener("error", () => finish(onError, `加载 ${url} 失败。`));
       (_a = container.querySelector(loadingSelector)) == null ? void 0 : _a.remove();
-      container.appendChild(iframe);
       iframe.src = url;
+      container.appendChild(iframe);
       return () => {
         clearTimeout(timer);
         clearInterval(pollTimer);
@@ -1377,6 +1552,7 @@
             renderIntoIframe({
               html: result.body,
               head: result.head,
+              title: result.title,
               url,
               container,
               sandboxAttrs: contentSandboxAttrs(keepScripts),
@@ -1392,7 +1568,7 @@
         },
         onerror: (error) => {
           logger.error("[RequestLoader] request error", error);
-          onError("网络请求失败");
+          onError(error && error.timeout ? "请求超时" : "网络请求失败");
         }
       });
       return () => {
@@ -1440,7 +1616,7 @@
         },
         onerror: (error) => {
           logger.error("[ParserLoader] request error", error);
-          onError("网络请求失败");
+          onError(error && error.timeout ? "请求超时" : "网络请求失败");
         }
       });
       return () => {
@@ -1463,7 +1639,7 @@
           }
         });
       });
-      const openNewTab = linkIntercept !== void 0 ? linkIntercept : settingsManager.get().linkIntercept !== false;
+      const openNewTab = linkIntercept !== void 0 ? linkIntercept : settingsManager.get().popupLinksNewTab !== false;
       doc.querySelectorAll("a[href]").forEach((link) => {
         if (openNewTab) {
           link.target = "_blank";
@@ -1499,7 +1675,7 @@
         const oldest = this.cache.keys().next().value;
         this.cache.delete(oldest);
       }
-      this.cache.set(url, { head: result.head, body: result.body, time: Date.now() });
+      this.cache.set(url, { head: result.head, body: result.body, title: result.title || "", time: Date.now() });
     }
     /**
      * 发起抓取并缓存，返回 { promise, abort }。
@@ -1512,7 +1688,8 @@
       const existing = this.inflight.get(url);
       if (existing) return existing;
       const entry = this._fetch(url, keepScripts, mobileUA);
-      entry.promise.finally(() => this.inflight.delete(url));
+      const cleanup = () => this.inflight.delete(url);
+      entry.promise.then(cleanup, cleanup);
       this.inflight.set(url, entry);
       return entry;
     }
@@ -1541,7 +1718,7 @@
           },
           onerror: (error) => {
             logger.error("[CacheLoader] request error", error);
-            reject(new Error("网络请求失败"));
+            reject(new Error(error && error.timeout ? "请求超时" : "网络请求失败"));
           }
         });
         abort = () => {
@@ -1562,6 +1739,7 @@
         renderIntoIframe({
           html: cached.body,
           head: cached.head,
+          title: cached.title,
           url,
           container,
           sandboxAttrs: contentSandboxAttrs(keepScripts),
@@ -1580,6 +1758,7 @@
         renderIntoIframe({
           html: result.body,
           head: result.head,
+          title: result.title,
           url,
           container,
           sandboxAttrs: contentSandboxAttrs(keepScripts),
@@ -1710,6 +1889,86 @@
   };
   var loaderManager = new LoaderManager();
 
+  // src/utils/uiHost.js
+  var HOST_ID = "pv2-ui-host";
+  var PAGE_START = "/* @pv-page-start */";
+  var PAGE_END = "/* @pv-page-end */";
+  function extractPageCss(css) {
+    const out = [];
+    let from = 0;
+    for (; ; ) {
+      const start = css.indexOf(PAGE_START, from);
+      if (start < 0) break;
+      const end = css.indexOf(PAGE_END, start);
+      if (end < 0) break;
+      out.push(css.slice(start + PAGE_START.length, end));
+      from = end + PAGE_END.length;
+    }
+    return out.join("\n");
+  }
+  function toShadowCss(css) {
+    return css.replace(/:root\.pv-theme-dark/g, ":host(.pv-theme-dark)").replace(/:root\.pv-theme-light/g, ":host(.pv-theme-light)").replace(/:root:not\(\.pv-theme-light\)/g, ":host(:not(.pv-theme-light))").replace(/:root(?![\w-])/g, ":host");
+  }
+  function injectInto(root, css) {
+    let ok = false;
+    try {
+      if (typeof CSSStyleSheet === "function" && "adoptedStyleSheets" in root) {
+        const sheet = new CSSStyleSheet();
+        sheet.replaceSync(css);
+        root.adoptedStyleSheets = [...root.adoptedStyleSheets, sheet];
+        ok = true;
+      }
+    } catch {
+    }
+    if (!ok) {
+      const style = document.createElement("style");
+      style.textContent = css;
+      root.appendChild(style);
+    }
+  }
+  function stylesApplied(root) {
+    const probe = document.createElement("div");
+    probe.className = "pv-style-probe";
+    root.appendChild(probe);
+    const ok = probe.offsetWidth === 13;
+    probe.remove();
+    return ok;
+  }
+  function createUiHost(css) {
+    if (!css || typeof document === "undefined" || !document.documentElement) return null;
+    const existing = document.getElementById(HOST_ID);
+    if (existing && existing.shadowRoot) {
+      setUiRoot(existing.shadowRoot);
+      return existing.shadowRoot;
+    }
+    let host = null;
+    try {
+      host = document.createElement("div");
+      host.id = HOST_ID;
+      host.setAttribute(
+        "style",
+        "all: initial !important; position: fixed !important; top: 0 !important; left: 0 !important; width: 0 !important; height: 0 !important; overflow: visible !important; z-index: 2147483000 !important; display: block !important;"
+      );
+      const root = host.attachShadow({ mode: "open" });
+      injectInto(root, toShadowCss(css) + "\n.pv-style-probe{position:absolute;width:13px;height:1px;visibility:hidden}");
+      const parent = pickMountPoint();
+      parent.appendChild(host);
+      if (!stylesApplied(root)) throw new Error("shadow styles not applied");
+      setUiRoot(root);
+      const pageCss = extractPageCss(css);
+      if (pageCss.trim()) gm.addStyle(pageCss);
+      return root;
+    } catch (err) {
+      console.warn("[PopupViewer] Shadow DOM 不可用，回退到页面内挂载", err);
+      try {
+        host == null ? void 0 : host.remove();
+      } catch {
+      }
+      setUiRoot(null);
+      return null;
+    }
+  }
+
   // src/utils/panelBehavior.js
   function clampToViewport(panel, { isFullScreen = false, pad = 8 } = {}) {
     if (!panel || isFullScreen) return;
@@ -1754,13 +2013,45 @@
     let lastX = 0;
     let lastY = 0;
     let raf = null;
+    const THRESHOLD = 4;
+    let pending = false;
     const applyMove = () => {
       raf = null;
       if (!dragging || dragLocked) return;
-      panel.style.left = `${startLeft + (lastX - startX)}px`;
-      panel.style.top = `${startTop + (lastY - startY)}px`;
+      panel.style.left = `${Math.round(startLeft + (lastX - startX))}px`;
+      panel.style.top = `${Math.round(startTop + (lastY - startY))}px`;
+    };
+    const beginDrag = () => {
+      var _a;
+      pending = false;
+      dragging = true;
+      if (dragLocked) return;
+      const rect = panel.getBoundingClientRect();
+      startLeft = Math.round(rect.left);
+      startTop = Math.round(rect.top);
+      panel.style.transition = "none";
+      panel.style.left = `${startLeft}px`;
+      panel.style.top = `${startTop}px`;
+      panel.style.transform = "none";
+      panel.classList.add("pv-dragging");
+      document.body.style.cursor = "grabbing";
+      try {
+        (_a = window.getSelection()) == null ? void 0 : _a.removeAllRanges();
+      } catch {
+      }
     };
     const finish = (commit) => {
+      if (pending) {
+        pending = false;
+        if (POINTER_EVENTS && pointerId != null) {
+          try {
+            header.releasePointerCapture(pointerId);
+          } catch {
+          }
+          pointerId = null;
+        }
+        return;
+      }
       if (!dragging) return;
       const info = { locked: dragLocked };
       dragging = false;
@@ -1781,26 +2072,16 @@
       if (commit) onDragEnd == null ? void 0 : onDragEnd(info);
     };
     header.addEventListener(DOWN, (e) => {
-      if (e.target.closest("button")) return;
+      if (closestInPath(e, "button, a, input")) return;
       if (isFullScreen()) return;
       if (e.button !== 0) return;
-      dragging = true;
+      pending = true;
+      dragging = false;
       dragLocked = locked();
-      const rect = panel.getBoundingClientRect();
       startX = e.clientX;
       startY = e.clientY;
-      startLeft = rect.left;
-      startTop = rect.top;
       lastX = e.clientX;
       lastY = e.clientY;
-      if (!dragLocked) {
-        panel.style.transition = "none";
-        panel.style.left = `${rect.left}px`;
-        panel.style.top = `${rect.top}px`;
-        panel.style.transform = "none";
-        panel.classList.add("pv-dragging");
-        document.body.style.cursor = "grabbing";
-      }
       if (POINTER_EVENTS) {
         pointerId = e.pointerId;
         try {
@@ -1808,9 +2089,13 @@
         } catch {
         }
       }
-      e.preventDefault();
+      if (e.pointerType && e.pointerType !== "mouse") e.preventDefault();
     });
     const move = (e) => {
+      if (pending) {
+        if (Math.abs(e.clientX - startX) < THRESHOLD && Math.abs(e.clientY - startY) < THRESHOLD) return;
+        beginDrag();
+      }
       if (!dragging) return;
       lastX = e.clientX;
       lastY = e.clientY;
@@ -1939,25 +2224,31 @@
     });
   }
   function setupWheelScrollChain({ panel, contentArea, isFullScreen = () => false }) {
+    const canScrollFrom = (node, stop, dy) => {
+      var _a;
+      for (let el2 = node; el2 && el2.nodeType === 1; el2 = el2.parentElement || ((_a = el2.getRootNode) == null ? void 0 : _a.call(el2).host)) {
+        const style = getComputedStyle(el2);
+        if (/(auto|scroll)/.test(style.overflowY) && el2.scrollHeight > el2.clientHeight + 1) {
+          if (dy < 0 ? el2.scrollTop > 0 : el2.scrollTop + el2.clientHeight < el2.scrollHeight - 1) return true;
+        }
+        if (el2 === stop) break;
+      }
+      return false;
+    };
     document.addEventListener(
       "wheel",
       (e) => {
         if (!panel || !panel.classList.contains("visible")) return;
-        if (isFullScreen()) {
-          e.preventDefault();
-          e.stopPropagation();
-        } else {
+        const target = eventTarget(e);
+        if (!target || !panel.contains(target)) return;
+        if (!e.deltaY) return;
+        if (canScrollFrom(target, panel, e.deltaY)) return;
+        if (!isFullScreen()) {
           const content = contentArea();
-          if (content && content.contains(e.target)) {
-            const { scrollTop, scrollHeight, clientHeight } = content;
-            const atBottom = scrollTop + clientHeight >= scrollHeight - 1;
-            const canScroll = scrollHeight > clientHeight;
-            if (!canScroll || atBottom) {
-              e.preventDefault();
-              e.stopPropagation();
-            }
-          }
+          if (!content || !content.contains(target)) return;
         }
+        e.preventDefault();
+        e.stopPropagation();
       },
       true
     );
@@ -1967,7 +2258,14 @@
   function createToolbar(handlers) {
     const actions = el("div", { id: "popup-panel-actions" });
     const makeBtn = (id, icon, title, onClick) => {
-      const btn = el("button", { id, class: "popup-panel-btn", title, onclick: onClick });
+      const btn = el("button", {
+        id,
+        type: "button",
+        class: "popup-panel-btn",
+        title,
+        "aria-label": title.replace(/\s*\(.*\)$/, ""),
+        onclick: onClick
+      });
       btn.appendChild(svgIcon(icon));
       actions.appendChild(btn);
       return btn;
@@ -1995,10 +2293,81 @@
     return { actions, refresh, maximize, open, settings, close };
   }
 
+  // src/core/StorageManager.js
+  var StorageManager = class {
+    constructor() {
+      this.historyKey = config.storage.historyKey;
+      this.favoritesKey = config.storage.favoritesKey;
+    }
+    _read(key, fallback) {
+      const value = gm.getValue(key, null);
+      if (value === null || value === void 0) return fallback;
+      if (typeof value === "string") {
+        try {
+          return JSON.parse(value);
+        } catch {
+          return fallback;
+        }
+      }
+      return value;
+    }
+    _write(key, value) {
+      gm.setValue(key, JSON.stringify(value));
+    }
+    getHistory() {
+      return this._read(this.historyKey, []);
+    }
+    addHistory(entry) {
+      const history = this.getHistory();
+      const now = Date.now();
+      const next = [
+        { title: entry.title || "", url: entry.url, time: now },
+        ...history.filter((h) => h.url !== entry.url)
+      ];
+      this._write(this.historyKey, next.slice(0, config.maxHistoryEntries));
+      return next;
+    }
+    clearHistory(host = "") {
+      const history = this.getHistory();
+      if (!host) {
+        this._write(this.historyKey, []);
+        return;
+      }
+      const next = history.filter((h) => {
+        try {
+          return new URL(h.url).hostname !== host;
+        } catch {
+          return true;
+        }
+      });
+      this._write(this.historyKey, next);
+    }
+    getFavorites() {
+      return this._read(this.favoritesKey, []);
+    }
+    addFavorite(entry) {
+      const favorites = this.getFavorites();
+      if (favorites.some((f) => f.url === entry.url)) return favorites;
+      const next = [{ title: entry.title || "", url: entry.url, time: Date.now() }, ...favorites];
+      this._write(this.favoritesKey, next);
+      return next;
+    }
+    removeFavorite(url) {
+      const next = this.getFavorites().filter((f) => f.url !== url);
+      this._write(this.favoritesKey, next);
+      return next;
+    }
+    isFavorite(url) {
+      return this.getFavorites().some((f) => f.url === url);
+    }
+  };
+  var storageManager = new StorageManager();
+
   // src/ui/SettingsPanel.js
   function createSettingsPanel({ onChange, onManageRules, onClose }) {
-    const SIZE_ORDER = ["small", "medium", "large", "phone"];
-    const SIZE_LABELS = { small: "小", medium: "中", large: "大", phone: "手机" };
+    var _a, _b;
+    const SIZE_ORDER = ["small", "medium", "large", "phone", "custom"];
+    const SIZE_LABELS = { small: "小", medium: "中", large: "大", phone: "手机", custom: "自定义" };
     const THEME_ORDER = ["auto", "light", "dark"];
     const THEME_LABELS = { auto: "跟随系统", light: "浅色", dark: "深色" };
     const DEFAULT_SIZE = "medium";
@@ -2011,7 +2380,7 @@
       eventBus.emit("settings-changed", settingsManager.get());
     };
     const tipEl = el("div", { id: "pv-settings-tip", class: "hidden" });
-    document.body.appendChild(tipEl);
+    mountUi(tipEl);
     let tipTarget = null;
     function toggleTip(btn, text) {
       if (tipTarget === btn) {
@@ -2048,21 +2417,32 @@
     }
     document.addEventListener("click", (e) => {
       if (tipEl.classList.contains("hidden")) return;
-      if (e.target.closest(".pv-settings-tip") || e.target === tipEl) return;
+      if (closestInPath(e, ".pv-settings-tip") || eventTarget(e) === tipEl) return;
       hideTip();
     });
     document.addEventListener("keydown", (e) => {
       if (e.key === "Escape") hideTip();
     });
-    const makeSeg = (order, labels, getKey, setKey, { icons = {}, defaultOf, onChange: onChange2, onSet } = {}) => {
+    const makeSeg = (order, labels, getKey, setKey, { icons = {}, defaultOf, onChange: onChange2, onSet, statusOnly = [], disabledOf, onDisabled } = {}) => {
       const btns = {};
-      const group2 = el("div", { class: "pv-seg" });
+      const group2 = el("div", { class: "pv-seg", role: "group" });
       const sync = () => {
         const current = getKey();
+        let reason = "";
         Object.entries(btns).forEach(([k, b]) => {
-          b.classList.toggle("active", k === current);
+          const active = k === current;
+          b.classList.toggle("active", active);
+          b.setAttribute("aria-pressed", active ? "true" : "false");
           b.classList.toggle("is-default", !!defaultOf && k === defaultOf);
+          if (statusOnly.includes(k)) b.classList.toggle("hidden", !active);
+          const why = disabledOf ? disabledOf(k) : "";
+          b.disabled = !!why;
+          if (why) {
+            b.title = why;
+            reason = why;
+          } else b.removeAttribute("title");
         });
+        onDisabled == null ? void 0 : onDisabled(reason);
       };
       order.forEach((k) => {
         const children = [];
@@ -2074,6 +2454,7 @@
             type: "button",
             class: "pv-seg-item",
             onclick: () => {
+              if (statusOnly.includes(k) || btn.disabled) return;
               settingsManager.set(onSet ? onSet(k) : { [setKey]: k });
               sync();
               onChange2 == null ? void 0 : onChange2();
@@ -2092,16 +2473,27 @@
       icons: { phone: svgIcon("smartphone", { size: 12 }) },
       defaultOf: DEFAULT_SIZE,
       onChange: syncPhoneModels,
-      onSet: (k) => ({ panelSize: k, customSize: null })
+      onSet: (k) => ({ panelSize: k, customSize: null }),
+      statusOnly: ["custom"]
     });
+    (_b = (_a = eventBus).on) == null ? void 0 : _b.call(_a, "settings-changed", () => sizeSeg.sync());
     const themeSeg = makeSeg(THEME_ORDER, THEME_LABELS, () => settingsManager.get().theme || "auto", "theme", {
       defaultOf: DEFAULT_THEME
     });
+    const windowModeNote = el("div", { class: "pv-settings-note hidden", role: "note" });
     const windowModeSeg = makeSeg(
       ["coupled", "float"],
-      { coupled: "跟随页面", float: "独立悬浮" },
+      { coupled: "遮罩（点空白关闭）", float: "悬浮（不挡页面）" },
       () => settingsManager.get().windowMode || "coupled",
-      "windowMode"
+      "windowMode",
+      {
+        // 不变量：关闭页面链接拦截时只能悬浮（SettingsManager._applyInvariants），置灰并说明原因
+        disabledOf: (k) => k === "coupled" && settingsManager.get().linkIntercept === false ? "已关闭「页面链接拦截」，只能使用悬浮" : "",
+        onDisabled: (reason) => {
+          windowModeNote.textContent = reason;
+          windowModeNote.classList.toggle("hidden", !reason);
+        }
+      }
     );
     const handednessSeg = makeSeg(
       ["right", "left"],
@@ -2144,10 +2536,17 @@
     linkInterceptSwitch.checked = settingsManager.get().linkIntercept !== false;
     linkInterceptSwitch.addEventListener("change", () => {
       settingsManager.set({ linkIntercept: linkInterceptSwitch.checked });
-      if (!linkInterceptSwitch.checked) windowModeSeg.sync();
+      windowModeSeg.sync();
       persist();
     });
     const linkInterceptSwitchWrap = el("label", { class: "pv-switch" }, linkInterceptSwitch, el("span", { class: "pv-switch-track" }));
+    const popupLinksSwitch = el("input", { type: "checkbox", id: "pv-settings-popup-links" });
+    popupLinksSwitch.checked = settingsManager.get().popupLinksNewTab !== false;
+    popupLinksSwitch.addEventListener("change", () => {
+      settingsManager.set({ popupLinksNewTab: popupLinksSwitch.checked });
+      persist();
+    });
+    const popupLinksSwitchWrap = el("label", { class: "pv-switch" }, popupLinksSwitch, el("span", { class: "pv-switch-track" }));
     const allowInFrameSwitch = el("input", { type: "checkbox", id: "pv-settings-iframe" });
     allowInFrameSwitch.checked = settingsManager.get().allowInFrame === true;
     allowInFrameSwitch.addEventListener("change", () => {
@@ -2168,9 +2567,30 @@
       gm.setValue("pv2:debug", debugSwitch.checked);
     });
     const debugSwitchWrap = el("label", { class: "pv-switch" }, debugSwitch, el("span", { class: "pv-switch-track" }));
-    const resetBtn = el("button", { type: "button", class: "pv-settings-reset", text: "恢复默认" });
+    const RESET_LABEL = "恢复默认";
+    const resetBtn = el("button", {
+      type: "button",
+      class: "pv-settings-reset",
+      text: RESET_LABEL,
+      title: "重置全部全局设置和本站设置（不影响其他站点和链接规则）"
+    });
+    let resetTimer = 0;
+    const disarmReset = () => {
+      clearTimeout(resetTimer);
+      resetTimer = 0;
+      resetBtn.classList.remove("confirming");
+      resetBtn.textContent = RESET_LABEL;
+    };
     resetBtn.addEventListener("click", () => {
+      if (!resetTimer) {
+        resetBtn.classList.add("confirming");
+        resetBtn.textContent = "确认恢复全局+本站设置？";
+        resetTimer = setTimeout(disarmReset, 3e3);
+        return;
+      }
+      disarmReset();
       settingsManager.reset();
+      popupLinksSwitch.checked = settingsManager.get().popupLinksNewTab !== false;
       scrollSwitch.checked = settingsManager.get().scrollbarVisible !== false;
       lockSwitch.checked = settingsManager.get().locked === true;
       linkInterceptSwitch.checked = settingsManager.get().linkIntercept !== false;
@@ -2185,7 +2605,13 @@
       persist();
     });
     const manageRulesBtn = el("button", { type: "button", class: "pv-settings-reset", text: "管理", onclick: () => onManageRules == null ? void 0 : onManageRules() });
-    const closeBtn = el("button", { type: "button", class: "pv-settings-close", title: "关闭设置", onclick: () => onClose == null ? void 0 : onClose() });
+    const closeBtn = el("button", {
+      type: "button",
+      class: "pv-settings-close",
+      title: "关闭设置",
+      "aria-label": "关闭设置",
+      onclick: () => onClose == null ? void 0 : onClose()
+    });
     closeBtn.appendChild(svgIcon("close", { size: 14 }));
     const head = el(
       "div",
@@ -2194,78 +2620,224 @@
       closeBtn
     );
     const group = (title) => el("div", { class: "pv-settings-group" }, el("div", { class: "pv-settings-group-title", text: title }));
-    const titleCol = (label, sub, tip) => el(
-      "div",
-      { class: "pv-settings-title-col" },
-      el(
+    let labelSeq = 0;
+    const titleCol = (label, sub, tip, settingKey) => {
+      const n = ++labelSeq;
+      const labelId = `pv-settings-label-${n}`;
+      const subId = `pv-settings-sub-${n}`;
+      const site = !!settingKey && settingsManager.isSiteKey(settingKey);
+      const col = el(
         "div",
-        { class: "pv-settings-label-line" },
-        el("span", { class: "pv-settings-label", text: label }),
-        tip ? makeTip(tip) : null
-      ),
-      sub ? el("div", { class: "pv-settings-sub", text: sub }) : null
-    );
-    const rowBlock = (label, sub, control, tip) => el(
-      "div",
-      { class: "pv-settings-item" },
-      el("div", { class: "pv-settings-item-head" }, titleCol(label, sub, tip), control)
-    );
-    const colBlock = (label, sub, control, tip) => el(
-      "div",
-      { class: "pv-settings-item" },
-      el("div", { class: "pv-settings-item-head" }, titleCol(label, sub, tip)),
-      control
-    );
-    const sizeBlock = el(
-      "div",
-      { class: "pv-settings-item" },
-      el("div", { class: "pv-settings-item-head" }, titleCol("窗体大小", "弹窗的默认尺寸")),
-      sizeSeg.group,
-      phoneModelsWrap
-    );
-    const commonTab = el("button", { type: "button", class: "pv-settings-tab active", text: "通用" });
-    const mobileTab = el("button", { type: "button", class: "pv-settings-tab", text: "移动端" });
-    const tabs = el("div", { class: "pv-settings-tabs" }, commonTab, mobileTab);
-    const commonPane = el("div", { class: "pv-settings-pane active" });
-    const mobilePane = el("div", { class: "pv-settings-pane" });
-    const switchTab = (which) => {
-      const isCommon = which === "common";
-      commonTab.classList.toggle("active", isCommon);
-      mobileTab.classList.toggle("active", !isCommon);
-      commonPane.classList.toggle("active", isCommon);
-      mobilePane.classList.toggle("active", !isCommon);
+        { class: "pv-settings-title-col" },
+        el(
+          "div",
+          { class: "pv-settings-label-line" },
+          el("span", { class: "pv-settings-label", id: labelId, text: label }),
+          site ? el("span", { class: "pv-settings-scope", title: "此项按站点分别保存，只影响当前网站", text: "仅本站" }) : null,
+          tip ? makeTip(tip) : null
+        ),
+        sub ? el("div", { class: "pv-settings-sub", id: subId, text: sub }) : null
+      );
+      return { col, labelId, subId: sub ? subId : null };
     };
-    commonTab.addEventListener("click", () => switchTab("common"));
-    mobileTab.addEventListener("click", () => switchTab("mobile"));
+    const labelControl = (control, t) => {
+      if (control.tagName === "BUTTON") return;
+      const target = control.querySelector("input") || control;
+      target.setAttribute("aria-labelledby", t.labelId);
+      if (t.subId) target.setAttribute("aria-describedby", t.subId);
+    };
+    const rowBlock = (label, sub, control, tip, settingKey) => {
+      const t = titleCol(label, sub, tip, settingKey);
+      labelControl(control, t);
+      return el("div", { class: "pv-settings-item" }, el("div", { class: "pv-settings-item-head" }, t.col, control));
+    };
+    const colBlock = (label, sub, control, tip, settingKey, ...extra) => {
+      const t = titleCol(label, sub, tip, settingKey);
+      labelControl(control, t);
+      return el("div", { class: "pv-settings-item" }, el("div", { class: "pv-settings-item-head" }, t.col), control, ...extra);
+    };
+    const sizeBlock = colBlock("窗体大小", "弹窗的默认尺寸", sizeSeg.group, null, "panelSize", phoneModelsWrap);
+    const footer = el("div", { class: "pv-settings-footer" }, resetBtn);
+    const RECENT_LIMIT = 20;
+    const recentList = el("div", { class: "pv-recent-list" });
+    const clearLabel = "清空本站";
+    const clearBtn = el("button", { type: "button", class: "pv-settings-reset pv-recent-clear", text: clearLabel });
+    let clearTimer = 0;
+    const disarmClear = () => {
+      clearTimeout(clearTimer);
+      clearTimer = 0;
+      clearBtn.classList.remove("confirming");
+      clearBtn.textContent = clearLabel;
+    };
+    clearBtn.addEventListener("click", () => {
+      if (!clearTimer) {
+        clearBtn.classList.add("confirming");
+        clearBtn.textContent = "确认清空本站记录？";
+        clearTimer = setTimeout(disarmClear, 3e3);
+        return;
+      }
+      disarmClear();
+      storageManager.clearHistory(window.location.hostname);
+      renderRecent();
+    });
+    const recentHead = el(
+      "div",
+      { class: "pv-recent-head" },
+      el("span", { class: "pv-settings-group-title", text: "最近打开（本站）" }),
+      clearBtn
+    );
+    function renderRecent() {
+      disarmClear();
+      recentList.textContent = "";
+      let items = [];
+      try {
+        items = storageManager.getHistory();
+      } catch {
+      }
+      const currentHost = window.location.hostname;
+      items = (Array.isArray(items) ? items : []).filter((h) => h && h.url && hostOf(h.url) === currentHost).slice(0, RECENT_LIMIT);
+      clearBtn.classList.toggle("hidden", !items.length);
+      if (!items.length) {
+        recentList.appendChild(el("div", { class: "pv-recent-empty", text: "本站还没有记录，打开过的帖子会显示在这里" }));
+        return;
+      }
+      for (const h of items) {
+        const title = h.title || h.url;
+        recentList.appendChild(
+          el(
+            "button",
+            {
+              type: "button",
+              class: "pv-recent-item",
+              title: h.url,
+              onclick: () => {
+                onClose == null ? void 0 : onClose();
+                eventBus.emit("open-page", { url: h.url, title: h.title || "" });
+              }
+            },
+            el("span", { class: "pv-recent-title", text: title }),
+            el("span", { class: "pv-recent-meta", text: relativeTime(h.time) })
+          )
+        );
+      }
+    }
+    const commonTab = el("button", {
+      type: "button",
+      id: "pv-settings-tab-common",
+      class: "pv-settings-tab active",
+      "aria-controls": "pv-settings-pane-common",
+      text: "通用"
+    });
+    const mobileTab = el("button", {
+      type: "button",
+      id: "pv-settings-tab-mobile",
+      class: "pv-settings-tab",
+      "aria-controls": "pv-settings-pane-mobile",
+      text: "移动端"
+    });
+    const recentTab = el("button", {
+      type: "button",
+      id: "pv-settings-tab-recent",
+      class: "pv-settings-tab",
+      "aria-controls": "pv-settings-pane-recent",
+      text: "最近"
+    });
+    const tabs = el("div", { class: "pv-settings-tabs", role: "tablist", "aria-label": "设置分类" }, commonTab, mobileTab, recentTab);
+    const commonPane = el("div", {
+      id: "pv-settings-pane-common",
+      class: "pv-settings-pane active",
+      role: "tabpanel",
+      "aria-labelledby": "pv-settings-tab-common"
+    });
+    const mobilePane = el("div", {
+      id: "pv-settings-pane-mobile",
+      class: "pv-settings-pane",
+      role: "tabpanel",
+      "aria-labelledby": "pv-settings-tab-mobile"
+    });
+    const recentPane = el("div", {
+      id: "pv-settings-pane-recent",
+      class: "pv-settings-pane pv-recent-pane",
+      role: "tabpanel",
+      "aria-labelledby": "pv-settings-tab-recent"
+    });
+    const TAB_PANES = { common: [commonTab, commonPane], mobile: [mobileTab, mobilePane], recent: [recentTab, recentPane] };
+    const TAB_ORDER = ["common", "mobile", "recent"];
+    const switchTab = (which) => {
+      for (const [k, [tab, pane]] of Object.entries(TAB_PANES)) {
+        tab.classList.toggle("active", k === which);
+        tab.setAttribute("aria-selected", k === which ? "true" : "false");
+        tab.tabIndex = k === which ? 0 : -1;
+        pane.classList.toggle("active", k === which);
+      }
+      footer.classList.toggle("hidden", which === "recent");
+      if (which === "recent") renderRecent();
+    };
+    for (const [k, [tab]] of Object.entries(TAB_PANES)) {
+      tab.setAttribute("role", "tab");
+      tab.addEventListener("click", () => switchTab(k));
+    }
+    tabs.addEventListener("keydown", (e) => {
+      if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+      e.preventDefault();
+      const current = TAB_ORDER.findIndex((k) => TAB_PANES[k][0].classList.contains("active"));
+      const next = (current + (e.key === "ArrowRight" ? 1 : -1) + TAB_ORDER.length) % TAB_ORDER.length;
+      switchTab(TAB_ORDER[next]);
+      TAB_PANES[TAB_ORDER[next]][0].focus();
+    });
+    switchTab("common");
+    recentPane.append(recentHead, recentList);
     commonPane.append(
       group("窗体行为"),
-      colBlock("窗体驻留方式", "弹窗遮罩与页面交互", windowModeSeg.group, "跟随页面：弹窗带遮罩；独立悬浮：无遮罩、页面可交互，点击链接仍在弹窗内打开内容"),
+      colBlock("窗体驻留方式", "弹窗遮罩与页面交互", windowModeSeg.group, "遮罩：弹窗带遮罩，点空白处关闭；悬浮：无遮罩、不挡页面，页面可继续操作，点击链接仍在弹窗内打开", "windowMode", windowModeNote),
       sizeBlock,
-      rowBlock("窗体滚动条", "显示或隐藏窗体内的滚动条", scrollSwitchWrap),
-      rowBlock("锁定窗体", "锁定后窗体不可拖动、不可缩放", lockSwitchWrap),
+      rowBlock("窗体滚动条", "显示或隐藏窗体内的滚动条", scrollSwitchWrap, null, "scrollbarVisible"),
+      rowBlock("锁定窗体", "锁定后窗体不可拖动、不可缩放", lockSwitchWrap, null, "locked"),
       group("交互控制"),
-      rowBlock("页面链接拦截", "开启后页面链接在弹窗内打开", linkInterceptSwitchWrap, "开启：页面链接点击在弹窗内打开；关闭：页面链接原页面打开，窗体内容里的链接在窗体内部打开（禁止新标签页），窗体自动切换为独立悬浮"),
-      rowBlock("链接规则", "拦截本站指定链接并在弹窗打开", manageRulesBtn, "规则按当前站点生效；点「取选」直接在页面上点一下链接即可生成，无需写选择器"),
+      rowBlock("页面链接拦截", "开启后页面链接在弹窗内打开", linkInterceptSwitchWrap, "开启：点击页面链接在弹窗内打开；关闭：页面链接按原样在页面打开，窗体只能悬浮（不挡页面）", "linkIntercept"),
+      rowBlock("窗体内链接新标签页打开", "弹窗内容里的链接在新标签页打开", popupLinksSwitchWrap, "开启：弹窗内容里的链接在新标签页打开；关闭：在弹窗内部跳转", "popupLinksNewTab"),
+      rowBlock("链接规则", "拦截本站指定链接并在弹窗打开", manageRulesBtn, "规则按当前站点生效；点「点选链接」后在页面上点一下链接即可生成，无需写选择器"),
       group("外观"),
-      colBlock("外观主题", "跟随系统或手动指定", themeSeg.group),
+      colBlock("外观主题", "跟随系统或手动指定", themeSeg.group, null, "theme"),
       group("高级"),
       rowBlock("在 iframe 中运行", "默认关闭（等同 @noframes）", allowInFrameWrap, "风险：开启后脚本会在页面内所有 iframe 中运行（含广告、嵌入内容等），可能增加页面开销、出现多个悬浮按钮，或与嵌入页面产生样式冲突；仅在确有需要时开启。脚本自己的弹窗 iframe 始终跳过，不会套娃"),
       rowBlock("调试标记", "在页面左上角/右侧显示脚本运行状态与错误标记（下次刷新生效），仅排查问题时开启", debugSwitchWrap, "开启后每次刷新页面会显示：紫色 boot 版本、右侧模块加载序号、橙色初始化状态、红色错误信息；排查完请关闭")
     );
     mobilePane.append(
       group("移动端专属"),
-      rowBlock("四角缩放把手", "触屏下窗体四角显示缩放把手，可自由调整窗体大小", mobileResizeSwitchWrap),
+      rowBlock("四角缩放把手", "触屏下窗体四角显示缩放把手，可自由调整窗体大小（默认关闭）", mobileResizeSwitchWrap),
       colBlock("惯用手", "左手：工具栏镜像，关闭按钮移到左上角（移动端单手使用）", handednessSeg.group)
     );
+    const topArea = el("div", { class: "pv-settings-top" }, head, tabs);
     return el(
       "div",
-      { id: "popup-settings-popover" },
-      head,
-      tabs,
+      { id: "popup-settings-popover", role: "dialog", "aria-label": "设置" },
+      topArea,
       commonPane,
       mobilePane,
-      el("div", { class: "pv-settings-footer" }, resetBtn)
+      recentPane,
+      footer
     );
+  }
+  function relativeTime(t) {
+    const diff = Date.now() - Number(t || 0);
+    if (!t || diff < 0) return "";
+    const min = Math.floor(diff / 6e4);
+    if (min < 1) return "刚刚";
+    if (min < 60) return min + " 分钟前";
+    const h = Math.floor(min / 60);
+    if (h < 24) return h + " 小时前";
+    const d = Math.floor(h / 24);
+    if (d < 30) return d + " 天前";
+    const date = new Date(Number(t));
+    return date.getFullYear() + "-" + (date.getMonth() + 1) + "-" + date.getDate();
+  }
+  function hostOf(url) {
+    try {
+      return new URL(url).hostname;
+    } catch {
+      return "";
+    }
   }
 
   // src/utils/selector.js
@@ -2328,6 +2900,15 @@
     } else if (tag && tag !== "div" && tag !== "span") {
       push(tag, "标签");
     }
+    const outerLink = el2.parentElement && el2.parentElement.closest ? el2.parentElement.closest("a[href]") : null;
+    if (outerLink && outerLink !== el2) {
+      const lc = Array.prototype.slice.call(outerLink.classList || []).filter(isStableClassName).slice(0, 2);
+      if (outerLink.id && isStableId(outerLink.id)) push("#" + cssEscapeIdent(outerLink.id), "链接 id");
+      if (lc.length) push("a." + lc.map(cssEscapeIdent).join("."), "链接 class");
+      const lp = outerLink.parentElement;
+      const lpc = lp ? Array.prototype.slice.call(lp.classList || []).filter(isStableClassName).slice(0, 2) : [];
+      if (lpc.length) push(lp.tagName.toLowerCase() + "." + lpc.map(cssEscapeIdent).join(".") + " > a", "父级+链接");
+    }
     let p = el2.parentElement;
     let depth = 0;
     while (p && p !== document.body && depth < 4) {
@@ -2373,45 +2954,118 @@
       if (parts.length) push(parts.join(" > "), "路径");
     } catch {
     }
-    list.sort((a, b) => {
-      const score = (c) => {
-        if (c.count >= 2 && c.count <= 200) return 0;
-        if (c.count === 1) return 2;
-        if (c.count > 200 && c.count <= 800) return 1;
-        return 3;
-      };
-      const d = score(a) - score(b);
-      if (d) return d;
-      return a.sel.length - b.sel.length;
-    });
-    return list.slice(0, 8);
+    const link = el2.closest ? el2.closest("a[href]") : null;
+    for (const c of list) {
+      let selfMatch = false;
+      try {
+        selfMatch = !!link && link.matches(c.sel);
+      } catch {
+      }
+      c.kind = c.note === "父 class（整块）" ? "block" : selfMatch ? "link" : "other";
+      if (c.kind === "block") c.note = "整块（整行任意位置可点）";
+      c.desc = describeCandidate(c);
+    }
+    return rankCandidates(dedupeSameMatches(list), { hasLink: !!link });
+  }
+  function dedupeSameMatches(list) {
+    const kept = [];
+    const sorted = list.slice().sort((a, b) => a.sel.length - b.sel.length);
+    for (const c of sorted) {
+      if (c.count > 800) {
+        kept.push(c);
+        continue;
+      }
+      let nodes;
+      try {
+        nodes = new Set(document.body.querySelectorAll(c.sel));
+      } catch {
+        continue;
+      }
+      const dup = kept.some((k) => {
+        if (k.count !== c.count || k.kind !== c.kind || !k._nodes) return false;
+        for (const n of nodes) if (!k._nodes.has(n)) return false;
+        return true;
+      });
+      if (dup) continue;
+      c._nodes = nodes;
+      kept.push(c);
+    }
+    for (const c of kept) delete c._nodes;
+    return kept;
+  }
+  function describeCandidate(c) {
+    if (c.kind === "block") return "整行任意位置（点这一块都会打开）";
+    if (c.count === 1) return "只拦截这一个链接";
+    if (c.kind === "link") return "只拦截这类链接";
+    return "同一类元素";
+  }
+  function rankCandidates(list, { hasLink = false, limit = 8 } = {}) {
+    const countScore = (c) => {
+      if (c.count >= 2 && c.count <= 200) return 0;
+      if (c.count > 200 && c.count <= 800) return 1;
+      if (c.count === 1) return 2;
+      return 3;
+    };
+    const kindScore = (c) => {
+      if (c.kind === "block") return 2;
+      if (hasLink) return c.kind === "link" ? 0 : 1;
+      return 0;
+    };
+    const sorted = list.slice().sort((a, b) => kindScore(a) - kindScore(b) || countScore(a) - countScore(b) || a.sel.length - b.sel.length);
+    const block = sorted.filter((c) => c.kind === "block").slice(0, 1);
+    const rest = sorted.filter((c) => c.kind !== "block").slice(0, Math.max(0, limit - block.length));
+    return rest.concat(block);
   }
 
   // src/ui/ElementPicker.js
+  var MAX_HITS = 200;
+  var TAP_SLOP = 10;
   function pickElement() {
     return new Promise((resolve) => {
       let done = false;
       let phase = "hover";
       let hoverEl = null;
       let cands = [];
+      let activeSel = "";
+      let touchStart = null;
+      const coarse = (() => {
+        try {
+          return window.matchMedia("(pointer: coarse)").matches;
+        } catch {
+          return false;
+        }
+      })();
+      const IDLE_HINT = coarse ? "点选链接：点按要拦截的链接" : "点选链接：移动鼠标高亮，单击要拦截的链接 · Esc 取消";
       const overlay = el("div", { class: "pv-picker-overlay" });
-      const hint = el("div", { class: "pv-picker-bar", id: "pv-picker-hint" });
+      const hintText = el("span", { class: "pv-picker-bar-text", text: IDLE_HINT });
+      const hintCancel = el("button", { type: "button", class: "pv-picker-bar-cancel", text: "取消" });
+      const hint = el("div", { class: "pv-picker-bar", id: "pv-picker-hint", role: "status" }, hintText, hintCancel);
       const highlight = el("div", { class: "pv-picker-highlight hidden" });
-      const cTitle = el("div", { class: "pv-picker-c-title", text: "确认选择器" });
-      const cCands = el("div", { class: "pv-picker-cands" });
-      const cInput = el("input", { type: "text", class: "pv-picker-input", placeholder: "可手动改写选择器" });
+      const hits = el("div", { class: "pv-picker-hits" });
+      const cTitle = el("div", { class: "pv-picker-c-title", text: "要拦截哪些链接？" });
+      const cCands = el("div", { class: "pv-picker-cands", role: "radiogroup", "aria-label": "候选范围" });
       const cMeta = el("div", { class: "pv-picker-c-meta" });
+      const cInput = el("input", { type: "text", class: "pv-picker-input", placeholder: "可手动改写选择器", "aria-label": "CSS 选择器" });
+      const cAdv = el(
+        "details",
+        { class: "pv-picker-adv" },
+        el("summary", { text: "高级（CSS 选择器）" }),
+        cInput
+      );
       const okBtn = el("button", { type: "button", class: "pv-picker-btn primary", text: "确认" });
       const againBtn = el("button", { type: "button", class: "pv-picker-btn", text: "重新选" });
       const cancelBtn = el("button", { type: "button", class: "pv-picker-btn", text: "取消" });
       const cBtns = el("div", { class: "pv-picker-c-btns" }, againBtn, cancelBtn, okBtn);
-      const confirm = el("div", { class: "pv-picker-confirm hidden" }, cTitle, cCands, cInput, cMeta, cBtns);
-      document.body.appendChild(overlay);
-      document.body.appendChild(hint);
-      document.body.appendChild(confirm);
-      document.body.appendChild(highlight);
+      const confirm = el("div", { class: "pv-picker-confirm hidden", role: "dialog", "aria-label": "确认点选的链接" }, cTitle, cCands, cMeta, cAdv, cBtns);
+      mountUi(overlay);
+      mountUi(hits);
+      mountUi(highlight);
+      mountUi(hint);
+      mountUi(confirm);
       overlay.style.pointerEvents = "none";
       hint.style.pointerEvents = "none";
+      hits.style.pointerEvents = "none";
+      hintCancel.style.pointerEvents = "auto";
       confirm.style.pointerEvents = "auto";
       function finish(sel) {
         if (done) return;
@@ -2423,6 +3077,7 @@
         document.removeEventListener("mousemove", onMove, true);
         document.removeEventListener("mouseover", onMove, true);
         document.removeEventListener("click", onClick, true);
+        document.removeEventListener("touchstart", onTouchStart, true);
         document.removeEventListener("touchend", onTouchEnd, true);
         window.removeEventListener("scroll", onRepaint, true);
         window.removeEventListener("resize", onRepaint, true);
@@ -2431,11 +3086,20 @@
         hint.remove();
         confirm.remove();
         highlight.remove();
+        hits.remove();
       }
+      const OWN_SEL = ".pv-picker-overlay, .pv-picker-confirm, .pv-picker-bar, .pv-picker-highlight, .pv-picker-hits";
       function isOwn(el2) {
-        return !!el2 && !!el2.closest && el2.closest(
-          '.pv-picker-overlay, .pv-picker-confirm, .pv-picker-bar, .pv-picker-highlight, [id^="popup-"], [id^="pv-"]'
-        );
+        if (!el2 || el2.nodeType !== 1) return false;
+        if (isOwnUiNode(el2)) return true;
+        try {
+          return !!el2.closest(OWN_SEL);
+        } catch {
+          return false;
+        }
+      }
+      function inOwnUi(e) {
+        return !!closestInPath(e, ".pv-picker-confirm, .pv-picker-bar");
       }
       function resolveTarget(raw) {
         let el2 = raw;
@@ -2464,25 +3128,42 @@
         }
         return null;
       }
-      function paint(el2) {
-        const box = highlight;
-        if (!el2 || !el2.getBoundingClientRect) {
-          box.classList.add("hidden");
-          return;
-        }
+      function placeBox(box, el2) {
+        if (!el2 || !el2.getBoundingClientRect) return false;
         const r = el2.getBoundingClientRect();
-        if (r.width < 1 && r.height < 1) {
-          box.classList.add("hidden");
-          return;
+        if (r.width < 1 && r.height < 1) return false;
+        if (r.bottom < 0 || r.top > window.innerHeight || r.right < 0 || r.left > window.innerWidth) return false;
+        box.style.left = Math.round(Math.max(0, r.left)) + "px";
+        box.style.top = Math.round(Math.max(0, r.top)) + "px";
+        box.style.width = Math.round(r.width) + "px";
+        box.style.height = Math.round(r.height) + "px";
+        return true;
+      }
+      function paint(el2) {
+        highlight.classList.toggle("hidden", !placeBox(highlight, el2));
+      }
+      function showMatches(sel) {
+        activeSel = sel || "";
+        let list = [];
+        if (activeSel) {
+          try {
+            list = Array.prototype.slice.call(document.body.querySelectorAll(activeSel), 0, MAX_HITS);
+          } catch {
+            list = [];
+          }
         }
-        box.style.left = Math.max(0, r.left) + "px";
-        box.style.top = Math.max(0, r.top) + "px";
-        box.style.width = r.width + "px";
-        box.style.height = r.height + "px";
-        box.classList.remove("hidden");
+        let used = 0;
+        for (const node of list) {
+          if (isOwn(node)) continue;
+          let box = hits.children[used];
+          if (!box) box = hits.appendChild(el("div", { class: "pv-picker-hit" }));
+          if (placeBox(box, node)) used++;
+        }
+        while (hits.children.length > used) hits.lastChild.remove();
       }
       function onRepaint() {
         if (phase === "hover" && hoverEl) paint(hoverEl);
+        else if (phase === "confirm") showMatches(activeSel);
       }
       function onMove(e) {
         if (phase !== "hover") return;
@@ -2490,12 +3171,12 @@
         if (el2 === hoverEl) return;
         hoverEl = el2;
         paint(el2);
-        if (el2) {
+        if (el2 && !coarse) {
           const tag = el2.tagName.toLowerCase();
           const cls = Array.prototype.slice.call(el2.classList || []).filter(isStableClassName).slice(0, 2).join(".");
-          hint.textContent = "取选：" + tag + (cls ? "." + cls : "") + (el2.id ? "#" + el2.id : "") + " · 单击选定 · Esc 取消";
+          hintText.textContent = "点选链接：" + tag + (cls ? "." + cls : "") + (el2.id ? "#" + el2.id : "") + " · 单击选定 · Esc 取消";
         } else {
-          hint.textContent = "取选：移动鼠标高亮，单击要拦截的链接 · Esc 取消";
+          hintText.textContent = IDLE_HINT;
         }
       }
       function finishPick(el2) {
@@ -2507,41 +3188,54 @@
         hint.classList.add("hidden");
         showConfirm();
       }
+      function selectCand(i) {
+        const c = cands[i];
+        if (!c) return;
+        Array.prototype.forEach.call(cCands.children, (b, j) => {
+          b.classList.toggle("is-on", j === i);
+          b.setAttribute("aria-checked", j === i ? "true" : "false");
+        });
+        cInput.value = c.sel;
+        updateMeta(c.sel);
+      }
       function showConfirm() {
-        cCands.innerHTML = "";
+        cCands.textContent = "";
         cands.forEach((c, i) => {
-          const btn = el("button", { type: "button", class: "pv-picker-cand" + (i === 0 ? " is-on" : ""), title: c.note || "" });
-          btn.appendChild(el("code", { text: c.sel }));
-          btn.appendChild(el("em", { text: c.count + " 个" + (c.note ? " · " + c.note : "") }));
-          btn.addEventListener("click", () => {
-            cCands.querySelectorAll(".pv-picker-cand").forEach((b) => b.classList.remove("is-on"));
-            btn.classList.add("is-on");
-            cInput.value = c.sel;
-            updateMeta(c.sel);
-            try {
-              const hit = document.body.querySelector(c.sel);
-              if (hit) paint(hit);
-            } catch {
-            }
-          });
+          const btn = el(
+            "button",
+            {
+              type: "button",
+              class: "pv-picker-cand" + (c.kind === "block" ? " is-block" : ""),
+              role: "radio",
+              title: (c.desc || c.sel) + (c.note ? " · " + c.note : "") + "\n" + c.sel,
+              "aria-label": (c.desc || c.sel) + "，选择器 " + c.sel
+            },
+            // 可见文本只放实际选择器；中文解释（只拦截这类链接/整行任意位置等）
+            // 放进 title 提示，避免候选框被中文说明撑高。
+            el("code", { class: "pv-picker-cand-sel", text: c.sel }),
+            el("em", { text: "本页 " + c.count + " 个" })
+          );
+          btn.addEventListener("click", () => selectCand(i));
           cCands.appendChild(btn);
         });
-        cInput.value = cands[0].sel;
-        updateMeta(cands[0].sel);
         confirm.classList.remove("hidden");
-        cInput.focus();
-        cInput.select();
+        selectCand(0);
+        okBtn.focus();
       }
       function updateMeta(sel) {
         let n = 0;
         try {
           n = document.body.querySelectorAll(sel).length;
         } catch {
+          cMeta.textContent = "选择器无效";
+          showMatches("");
+          return;
         }
-        cMeta.textContent = "本页匹配 " + n + " 个元素";
+        cMeta.textContent = "本页匹配 " + n + " 个" + (n ? "（已在页面上框出" + (n > MAX_HITS ? "前 " + MAX_HITS + " 个" : "") + "）" : "");
+        showMatches(sel);
       }
       function onClick(e) {
-        if (e.target.closest(".pv-picker-confirm") || e.target.closest(".pv-picker-bar")) return;
+        if (inOwnUi(e)) return;
         e.preventDefault();
         e.stopPropagation();
         if (typeof e.stopImmediatePropagation === "function") e.stopImmediatePropagation();
@@ -2550,20 +3244,32 @@
         const el2 = pickFromPoint(e.clientX, e.clientY) || hoverEl;
         finishPick(el2);
       }
+      function onTouchStart(e) {
+        const t = e.touches && e.touches[0];
+        touchStart = t ? { x: t.clientX, y: t.clientY } : null;
+      }
       function onTouchEnd(e) {
         if (phase !== "hover") return;
-        if (e.target.closest(".pv-picker-confirm") || e.target.closest(".pv-picker-bar")) return;
+        if (inOwnUi(e)) return;
+        const t = e.changedTouches && e.changedTouches[0];
+        if (t && touchStart && Math.hypot(t.clientX - touchStart.x, t.clientY - touchStart.y) > TAP_SLOP) {
+          touchStart = null;
+          return;
+        }
+        touchStart = null;
         if (e.cancelable) e.preventDefault();
         e.stopPropagation();
         if (typeof e.stopImmediatePropagation === "function") e.stopImmediatePropagation();
         let el2 = null;
         try {
-          const t = e.changedTouches && e.changedTouches[0];
           if (t) el2 = pickFromPoint(t.clientX, t.clientY);
         } catch {
         }
-        el2 = el2 || hoverEl;
-        finishPick(el2);
+        if (el2) {
+          hoverEl = el2;
+          paint(el2);
+        }
+        finishPick(el2 || hoverEl);
       }
       function onKey(e) {
         if (e.key === "Escape") {
@@ -2571,51 +3277,63 @@
           finish(null);
         }
       }
-      okBtn.addEventListener("click", () => {
+      const submit = () => {
         const v = cInput.value.trim();
         finish(v || null);
-      });
+      };
+      okBtn.addEventListener("click", submit);
       againBtn.addEventListener("click", () => {
         phase = "hover";
+        showMatches("");
         confirm.classList.add("hidden");
         hint.classList.remove("hidden");
+        hintText.textContent = IDLE_HINT;
       });
       cancelBtn.addEventListener("click", () => finish(null));
+      hintCancel.addEventListener("click", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        finish(null);
+      });
       cInput.addEventListener("keydown", (e) => {
         if (e.key === "Enter") {
           e.preventDefault();
-          const v = cInput.value.trim();
-          finish(v || null);
+          submit();
         }
       });
       cInput.addEventListener("input", () => {
         const v = cInput.value.trim();
+        Array.prototype.forEach.call(cCands.children, (b, j) => b.classList.toggle("is-on", !!cands[j] && cands[j].sel === v));
         if (v) updateMeta(v);
       });
       document.addEventListener("mousemove", onMove, true);
       document.addEventListener("mouseover", onMove, true);
       document.addEventListener("click", onClick, true);
+      document.addEventListener("touchstart", onTouchStart, { capture: true, passive: true });
       document.addEventListener("touchend", onTouchEnd, true);
       window.addEventListener("scroll", onRepaint, true);
       window.addEventListener("resize", onRepaint, true);
       document.addEventListener("keydown", onKey, true);
-      hint.textContent = "取选：移动鼠标高亮，单击要拦截的链接 · Esc 取消";
     });
   }
 
   // src/ui/RulesPanel.js
+  var UNDO_MS = 4e3;
   function createRulesPanel() {
-    const hostname = () => window.location.hostname;
+    const currentHost = () => window.location.hostname;
     let picking = false;
+    let viewHost = currentHost();
     const backdrop = el("div", { id: "pv-rules-panel-backdrop", onclick: () => close() });
-    const closeBtn = el("button", { type: "button", class: "popup-panel-btn", title: "关闭 (Esc)", onclick: () => close() });
+    const closeBtn = el("button", { type: "button", class: "popup-panel-btn pv-rules-close", title: "关闭 (Esc)", "aria-label": "关闭", onclick: () => close() });
     closeBtn.appendChild(svgIcon("close", { size: 15 }));
     const hostEl = el("span", { id: "pv-rules-host" });
+    const allBtn = el("button", { type: "button", class: "pv-rules-all", "aria-pressed": "false", text: "全部站点", onclick: () => toggleAllView() });
     const header = el(
       "div",
       { id: "pv-rules-panel-header" },
       el("span", { class: "pv-rules-title", text: "链接规则" }),
       hostEl,
+      allBtn,
       closeBtn
     );
     const listEl = el("div", { id: "pv-rules-list" });
@@ -2623,85 +3341,232 @@
       "button",
       { type: "button", id: "pv-rules-pick", onclick: () => startPick() },
       svgIcon("plus", { size: 14 }),
-      el("span", { text: "取选新链接" })
+      el("span", { text: "点选链接" })
     );
-    const body = el(
-      "div",
-      { id: "pv-rules-panel-body" },
-      el("div", { class: "pv-rules-tip", text: "点击「取选新链接」，在页面上点一下要拦截的帖子链接，即可自动生成规则（仅当前站点生效，弹窗打开）" }),
-      listEl,
-      pickBtn
-    );
-    const root = el("div", { id: "pv-rules-panel" }, header, body);
-    const toastEl = el("div", { id: "pv-rules-toast" });
-    document.body.appendChild(toastEl);
+    const backBtn = el("button", { type: "button", class: "pv-rules-back hidden", text: "返回本站规则", onclick: () => showHost(currentHost()) });
+    const tipEl = el("div", { class: "pv-rules-tip", text: "点击「点选链接」，在页面上点一下要拦截的帖子链接，即可自动生成规则（仅当前站点生效，弹窗打开）" });
+    const body = el("div", { id: "pv-rules-panel-body" }, tipEl, listEl, pickBtn, backBtn);
+    const root = el("div", { id: "pv-rules-panel", role: "dialog", "aria-modal": "true", "aria-label": "链接规则" }, header, body);
+    const toastText = el("span", { class: "pv-rules-toast-text" });
+    const toastAction = el("button", { type: "button", class: "pv-rules-toast-action hidden" });
+    const toastEl = el("div", { id: "pv-rules-toast", role: "status" }, toastText, toastAction);
+    mountUi(toastEl);
     let toastTimer = null;
-    function toast(msg) {
-      toastEl.textContent = msg;
+    let toastHandler = null;
+    function hideToast() {
+      clearTimeout(toastTimer);
+      toastHandler = null;
+      toastEl.classList.remove("visible");
+    }
+    function toast(msg, action) {
+      toastText.textContent = msg;
+      toastHandler = action ? action.run : null;
+      toastAction.textContent = action ? action.label : "";
+      toastAction.classList.toggle("hidden", !action);
       toastEl.classList.add("visible");
       clearTimeout(toastTimer);
-      toastTimer = setTimeout(() => toastEl.classList.remove("visible"), 1600);
+      toastTimer = setTimeout(hideToast, action ? UNDO_MS : 1600);
     }
-    function open() {
+    toastAction.addEventListener("click", () => {
+      const run = toastHandler;
+      hideToast();
+      run == null ? void 0 : run();
+    });
+    let returnFocus = null;
+    const FOCUSABLE2 = 'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+    const focusables = () => [...root.querySelectorAll(FOCUSABLE2)].filter((node) => node.getClientRects().length > 0);
+    root.addEventListener("keydown", (e) => {
+      if (e.key !== "Tab") return;
+      const list = focusables();
+      if (!list.length) return;
+      const active = deepActiveElement();
+      const first = list[0];
+      const last = list[list.length - 1];
+      if (e.shiftKey && (active === first || !root.contains(active))) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && (active === last || !root.contains(active))) {
+        e.preventDefault();
+        first.focus();
+      }
+    });
+    function open(trigger = deepActiveElement()) {
+      viewHost = currentHost();
+      returnFocus = trigger;
+      root.inert = false;
+      backdrop.inert = false;
       root.classList.add("visible");
       backdrop.classList.add("visible");
-      renderList();
-      closeBtn.focus();
+      render();
+      const focusClose = () => {
+        if (!root.classList.contains("visible")) return;
+        try {
+          closeBtn.focus({ preventScroll: true });
+        } catch {
+        }
+      };
+      focusClose();
+      requestAnimationFrame(focusClose);
     }
     function close() {
       if (picking) return;
+      const focusInside = root.contains(deepActiveElement());
       root.classList.remove("visible");
       backdrop.classList.remove("visible");
-      toastEl.classList.remove("visible");
+      hideToast();
+      if (focusInside && returnFocus && returnFocus.isConnected) {
+        try {
+          returnFocus.focus({ preventScroll: true });
+        } catch {
+        }
+      }
+      returnFocus = null;
     }
-    function renderList() {
-      listEl.innerHTML = "";
-      const rules = rulesManager.getRules(hostname());
-      hostEl.textContent = hostname() + "（" + rules.length + " 条）";
-      if (!rules.length) {
-        listEl.appendChild(el("div", { class: "pv-rules-empty", text: "还没有规则，点击「取选新链接」开始" }));
+    function toggleAllView() {
+      if (viewHost === null) showHost(currentHost());
+      else {
+        viewHost = null;
+        render();
+      }
+    }
+    function showHost(host) {
+      viewHost = host;
+      render();
+    }
+    function render() {
+      const isAll = viewHost === null;
+      const isCurrent = viewHost === currentHost();
+      allBtn.classList.toggle("active", isAll);
+      allBtn.setAttribute("aria-pressed", isAll ? "true" : "false");
+      pickBtn.classList.toggle("hidden", !isCurrent);
+      backBtn.classList.toggle("hidden", isCurrent);
+      tipEl.classList.toggle("hidden", !isCurrent);
+      if (isAll) renderHosts();
+      else renderList(viewHost);
+    }
+    function renderHosts() {
+      listEl.textContent = "";
+      const hosts = rulesManager.listHosts();
+      hostEl.textContent = "全部站点（" + hosts.length + " 个）";
+      if (!hosts.length) {
+        listEl.appendChild(el("div", { class: "pv-rules-empty", text: "还没有任何站点的规则" }));
         return;
       }
-      rules.forEach((r, i) => {
-        const count = (() => {
-          try {
-            return document.querySelectorAll(r.selector).length;
-          } catch {
-            return 0;
-          }
-        })();
-        const row = el("div", { class: "pv-rules-row" });
-        const info = el(
-          "div",
-          { class: "pv-rules-row-info" },
-          el("div", { class: "pv-rules-row-sel", text: r.selector }),
-          el("div", { class: "pv-rules-row-count", text: "本页匹配 " + count + " 个链接" })
+      for (const h of hosts) {
+        const off = h.count - h.enabled;
+        listEl.appendChild(
+          el(
+            "button",
+            { type: "button", class: "pv-rules-host-row" + (h.host === currentHost() ? " is-current" : ""), onclick: () => showHost(h.host) },
+            el("span", { class: "pv-rules-host-name", text: h.host }),
+            el("span", { class: "pv-rules-host-count", text: h.count + " 条" + (off ? "（" + off + " 条已停用）" : "") })
+          )
         );
-        const del = el(
-          "button",
-          { type: "button", class: "pv-rules-del", title: "删除", onclick: (e) => {
-            e.stopPropagation();
-            confirmDelete(del, i);
-          } },
-          svgIcon("close", { size: 13 })
-        );
-        row.appendChild(info);
-        row.appendChild(del);
-        listEl.appendChild(row);
-      });
+      }
     }
-    function confirmDelete(btn, index) {
+    function countOnPage(selector) {
+      try {
+        return document.querySelectorAll(selector).length;
+      } catch {
+        return -1;
+      }
+    }
+    function renderList(host) {
+      listEl.textContent = "";
+      const isCurrent = host === currentHost();
+      const rules = rulesManager.getRules(host);
+      hostEl.textContent = host + "（" + rules.length + " 条）";
+      if (!rules.length) {
+        listEl.appendChild(el("div", { class: "pv-rules-empty", text: isCurrent ? "还没有规则，点击「点选链接」开始" : "该站点没有规则" }));
+        return;
+      }
+      rules.forEach((r, i) => listEl.appendChild(buildRow(host, r, i, isCurrent)));
+    }
+    function buildRow(host, r, i, isCurrent) {
+      const row = el("div", { class: "pv-rules-row" + (r.disabled ? " is-disabled" : "") });
+      const selId = "pv-rules-sel-" + i;
+      const selEl = el("div", { class: "pv-rules-row-sel", id: selId, text: r.selector });
+      let countText = "";
+      if (isCurrent) {
+        const n = countOnPage(r.selector);
+        countText = n < 0 ? "选择器无效" : "本页匹配 " + n + " 个";
+      }
+      if (r.disabled) countText = (countText ? countText + " · " : "") + "已停用";
+      const info = el("div", { class: "pv-rules-row-info" }, selEl, countText ? el("div", { class: "pv-rules-row-count", text: countText }) : null);
+      const toggle = el("input", { type: "checkbox", "aria-labelledby": selId, title: r.disabled ? "已停用，点击启用" : "已启用，点击停用" });
+      toggle.checked = !r.disabled;
+      toggle.addEventListener("change", () => {
+        rulesManager.updateRule(host, i, { disabled: !toggle.checked });
+        render();
+        toast(toggle.checked ? "已启用" : "已停用");
+      });
+      const toggleWrap = el("label", { class: "pv-switch pv-rules-toggle" }, toggle, el("span", { class: "pv-switch-track" }));
+      const editBtn = el("button", { type: "button", class: "pv-rules-edit", title: "编辑选择器", text: "编辑", onclick: () => startEdit(host, i, row, info, r) });
+      const del = el("button", { type: "button", class: "pv-rules-del", title: "删除", "aria-label": "删除规则" }, svgIcon("close", { size: 13 }), el("span", { class: "pv-rules-del-text", text: "再点一次删除" }));
+      del.addEventListener("click", (e) => {
+        e.stopPropagation();
+        confirmDelete(del, host, i);
+      });
+      row.append(info, toggleWrap, editBtn, del);
+      return row;
+    }
+    function startEdit(host, index, row, info, rule) {
+      const input = el("input", { type: "text", class: "pv-rules-edit-input", value: rule.selector, "aria-label": "编辑 CSS 选择器" });
+      const meta = el("div", { class: "pv-rules-row-count" });
+      const syncMeta = () => {
+        const n = countOnPage(input.value.trim());
+        meta.textContent = n < 0 ? "选择器无效" : "本页匹配 " + n + " 个";
+      };
+      const save = () => {
+        const v = input.value.trim();
+        if (v === rule.selector) return render();
+        if (countOnPage(v) < 0) return toast("选择器无效");
+        if (!rulesManager.updateRule(host, index, { selector: v })) return toast("选择器为空或与已有规则重复");
+        render();
+        toast("已保存");
+      };
+      input.addEventListener("input", syncMeta);
+      input.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          save();
+        } else if (e.key === "Escape") {
+          e.preventDefault();
+          e.stopPropagation();
+          render();
+        }
+      });
+      const saveBtn = el("button", { type: "button", class: "pv-rules-edit", text: "保存", onclick: save });
+      const cancelBtn = el("button", { type: "button", class: "pv-rules-edit", text: "取消", onclick: () => render() });
+      row.textContent = "";
+      row.classList.add("is-editing");
+      row.append(el("div", { class: "pv-rules-row-info" }, input, meta), saveBtn, cancelBtn);
+      syncMeta();
+      input.focus();
+      input.select();
+    }
+    function confirmDelete(btn, host, index) {
       if (btn.dataset.confirm === "1") {
-        rulesManager.removeRule(hostname(), index);
-        renderList();
-        toast("已删除");
+        const rule = { ...rulesManager.getRules(host)[index] };
+        rulesManager.removeRule(host, index);
+        render();
+        toast("已删除", {
+          label: "撤销",
+          run: () => {
+            rulesManager.insertRule(host, index, rule);
+            if (root.classList.contains("visible")) render();
+            toast("已恢复");
+          }
+        });
         return;
       }
       btn.dataset.confirm = "1";
       btn.classList.add("confirming");
+      btn.title = "再点一次删除";
       setTimeout(() => {
         btn.dataset.confirm = "";
         btn.classList.remove("confirming");
+        btn.title = "删除";
       }, 2200);
     }
     async function startPick() {
@@ -2710,14 +3575,22 @@
       pickBtn.disabled = true;
       root.classList.remove("visible");
       backdrop.classList.remove("visible");
-      const selector = await pickElement();
-      root.classList.add("visible");
-      backdrop.classList.add("visible");
-      picking = false;
-      pickBtn.disabled = false;
+      hideToast();
+      eventBus.emit("picker-start");
+      let selector = null;
+      try {
+        selector = await pickElement();
+      } finally {
+        eventBus.emit("picker-end", { selector });
+        root.classList.add("visible");
+        backdrop.classList.add("visible");
+        picking = false;
+        pickBtn.disabled = false;
+      }
       if (!selector) return;
-      rulesManager.addRule(hostname(), selector);
-      renderList();
+      rulesManager.addRule(currentHost(), selector);
+      viewHost = currentHost();
+      render();
       toast("已添加规则");
     }
     document.addEventListener("keydown", (e) => {
@@ -2726,16 +3599,16 @@
         close();
       }
     });
-    return { root, backdrop, open, close };
+    return { root, backdrop, open, close, startPick };
   }
 
   // src/ui/style.css
-  var style_default = `/* ===== 站点样式隔离：抵御宿主网站全局 CSS 对脚本 UI 的干扰 ===== */\r
-/* 用 @layer 将重置放入低优先级层，我们自己的样式(非 layer)始终覆盖它。\r
-   只作用于脚本 UI 的"外壳"(头部/工具栏/底部/设置/悬浮按钮)，\r
+  var style_default = `/* ===== 站点样式隔离 ===== */\r
+/* v2.3.0 起外壳挂在 Shadow DOM 里（src/utils/uiHost.js），宿主网站的 CSS 进不来；\r
+   这层重置主要留给回退路径（不支持 Shadow DOM 时外壳直接挂在页面里）。\r
+   用 @layer 放进低优先级层，我们自己的样式(非 layer)始终覆盖它；\r
    不碰 #popup-content-area，避免影响弹窗内打开的网站内容。\r
-   注意：@layer 无法完全挡住宿主页面同源无层级规则，因此对固定尺寸容器\r
-   额外补了无层级的 box-sizing 兜底。 */\r
+   不再重置 outline：之前的 outline:0 把浏览器默认焦点框一起去掉了，键盘用户看不到焦点。 */\r
 @layer pv-reset {\r
   #popup-content-panel,\r
   #popup-panel-header,\r
@@ -2750,8 +3623,8 @@
   #pv-rules-panel-backdrop,\r
   #pv-rules-toast,\r
   #pv-rules-toast *,\r
-  #pv-picker-overlay,\r
-  #pv-picker-overlay *,\r
+  #pv-settings-tip,\r
+  .pv-picker-overlay,\r
   .pv-picker-bar,\r
   .pv-picker-bar *,\r
   .pv-picker-confirm,\r
@@ -2761,7 +3634,6 @@
     margin: 0;\r
     padding: 0;\r
     border: 0;\r
-    outline: 0;\r
     background: transparent;\r
     vertical-align: baseline;\r
     text-decoration: none;\r
@@ -2785,6 +3657,29 @@
 #pv-rules-panel-backdrop,\r
 #pv-rules-toast {\r
   box-sizing: border-box;\r
+}\r
+\r
+/* 外壳各根元素固定排版：Shadow 宿主是 all:initial，回退路径下又可能继承宿主页面的字号行高 */\r
+#popup-settings-popover,\r
+#pv-settings-tip,\r
+#pv-float-settings,\r
+#pv-rules-panel,\r
+#pv-rules-toast,\r
+.pv-picker-bar,\r
+.pv-picker-confirm {\r
+  font-family: var(--pv-font);\r
+  font-size: var(--pv-fs-sm);\r
+  line-height: 1.5;\r
+  letter-spacing: normal;\r
+  text-transform: none;\r
+  color: var(--popup-text);\r
+  -webkit-text-size-adjust: 100%;\r
+}\r
+:is(#popup-content-panel, #popup-settings-popover, #pv-rules-panel, .pv-picker-confirm, .pv-picker-bar)\r
+  :is(button, input, select, textarea) {\r
+  font: inherit;\r
+  letter-spacing: inherit;\r
+  text-transform: none;\r
 }\r
 \r
 :root {\r
@@ -2817,6 +3712,37 @@
     0 24px 60px -18px rgba(15, 23, 42, 0.28),\r
     0 8px 24px -12px rgba(15, 23, 42, 0.16);\r
   --popup-overlay: rgba(15, 23, 42, 0.28);\r
+\r
+  /* v2.3.0 新增令牌：对比度达标的配对色 + 刻度 */\r
+  --popup-on-accent: #ffffff; /* 强调色/危险色上的文字 */\r
+  --popup-border-strong: #7c8ba1; /* 输入框边框、开关关闭态（对白 ≥3:1） */\r
+  --popup-focus: var(--popup-accent); /* 焦点框实色 */\r
+  --popup-shadow-sm: 0 4px 12px -4px rgba(15, 23, 42, 0.22);\r
+  --popup-shadow-md: 0 10px 28px -10px rgba(15, 23, 42, 0.28);\r
+  --pv-font: system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei',\r
+    'Noto Sans SC', 'Noto Sans CJK SC', Roboto, sans-serif;\r
+  --pv-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;\r
+  --pv-fs-xs: 12px;\r
+  --pv-fs-sm: 13px;\r
+  --pv-fs-md: 14px;\r
+  --pv-fs-lg: 15px;\r
+  --pv-radius-sm: 6px;\r
+  --pv-radius-md: 8px;\r
+  --pv-radius-lg: 12px;\r
+  --pv-dur-1: 120ms;\r
+  --pv-dur-2: 200ms;\r
+  --pv-dur-3: 280ms;\r
+  --pv-ease-out: cubic-bezier(0.16, 1, 0.3, 1);\r
+  --pv-hit: 44px; /* 触屏最小热区 */\r
+  /* 层级：单一基准，各层 calc 排序 */\r
+  --pv-z: 2147483000;\r
+}\r
+\r
+:root.pv-theme-dark {\r
+  --popup-on-accent: #0f172a;\r
+  --popup-border-strong: #64748b;\r
+  --popup-shadow-sm: 0 4px 12px -4px rgba(0, 0, 0, 0.6);\r
+  --popup-shadow-md: 0 10px 28px -10px rgba(0, 0, 0, 0.7);\r
 }\r
 \r
 :root.pv-theme-dark {\r
@@ -2845,6 +3771,10 @@
 \r
 @media (prefers-color-scheme: dark) {\r
   :root:not(.pv-theme-light) {\r
+    --popup-on-accent: #0f172a;\r
+    --popup-border-strong: #64748b;\r
+    --popup-shadow-sm: 0 4px 12px -4px rgba(0, 0, 0, 0.6);\r
+    --popup-shadow-md: 0 10px 28px -10px rgba(0, 0, 0, 0.7);\r
     --popup-accent: #60a5fa;\r
     --popup-accent-hover: #93c5fd;\r
     --popup-accent-soft: rgba(96, 165, 250, 0.14);\r
@@ -2870,34 +3800,40 @@
 }\r
 \r
 /* ===== 基础链接样式优化（仅 Discuz 类论坛生效，避免全站污染） ===== */\r
-html.pv-forum .suh a,\r
-html.pv-forum table tr td a,\r
-html.pv-forum th.common a {\r
+/* @pv-page-start */\r
+/* 只作用于列表里的帖子标题链接；此前的 table tr td a 会连帖子正文里的链接颜色和下划线一起去掉 */\r
+html.pv-forum td.suh a,\r
+html.pv-forum th.common a.xst {\r
   cursor: pointer;\r
-  transition: color 0.2s ease-in-out, text-shadow 0.2s ease-in-out;\r
+  transition: color 0.2s ease;\r
   text-decoration: none;\r
   position: relative;\r
   color: inherit;\r
 }\r
-html.pv-forum .suh a:hover,\r
-html.pv-forum table tr td a:hover,\r
+html.pv-forum td.suh a:hover,\r
 html.pv-forum th.common a.xst:hover {\r
-  color: var(--popup-accent);\r
-  text-shadow: 0 0 5px rgba(37, 99, 235, 0.3);\r
+  color: var(--popup-accent, #2563eb);\r
 }\r
+/* @pv-page-end */\r
 \r
 /* ===== 面板核心 ===== */\r
 #popup-content-panel {\r
   position: fixed;\r
-  z-index: var(--popup-z-index);\r
+  z-index: calc(var(--pv-z) + 1);\r
   overscroll-behavior: contain;\r
   background-color: var(--popup-surface);\r
   color: var(--popup-text);\r
   box-shadow: var(--popup-shadow);\r
   display: flex;\r
   flex-direction: column;\r
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',\r
-    'Microsoft YaHei', Roboto, 'Helvetica Neue', Arial, sans-serif;\r
+  /* 外壳根固定排版，不继承宿主页面的字号/行高/字距（v2.3.0） */\r
+  font-family: var(--pv-font);\r
+  font-size: var(--pv-fs-md);\r
+  line-height: 1.5;\r
+  letter-spacing: normal;\r
+  text-transform: none;\r
+  -webkit-text-size-adjust: 100%;\r
+  color-scheme: light dark;\r
   overflow: hidden;\r
   opacity: 0;\r
   pointer-events: none;\r
@@ -2918,6 +3854,28 @@ html.pv-forum th.common a.xst:hover {\r
   opacity: 1;\r
   pointer-events: auto;\r
   transform: translate(-50%, -50%) scale(1);\r
+}\r
+/* 面板自身获得焦点（打开时）不画框；内部控件各自有 :focus-visible */\r
+#popup-content-panel:focus {\r
+  outline: none;\r
+}\r
+/* 点选链接期间让开：完全透明且不接收事件 */\r
+#popup-content-panel.pv-picking,\r
+#popup-panel-overlay.pv-picking {\r
+  opacity: 0 !important;\r
+  pointer-events: none !important;\r
+}\r
+/* 全屏：用 class 而不是内联 100vw/100vh，避开滚动条与手机地址栏 */\r
+#popup-content-panel.pv-fullscreen {\r
+  inset: 0 !important;\r
+  width: auto !important;\r
+  height: auto !important;\r
+  max-width: none !important;\r
+  max-height: none !important;\r
+  transform: none !important;\r
+  border-radius: 0 !important;\r
+  padding: env(safe-area-inset-top, 0px) env(safe-area-inset-right, 0px) env(safe-area-inset-bottom, 0px)\r
+    env(safe-area-inset-left, 0px);\r
 }\r
 \r
 /* ===== 拖拽 / 缩放反馈 ===== */\r
@@ -2954,22 +3912,29 @@ html.pv-forum th.common a.xst:hover {\r
   touch-action: none;\r
 }\r
 @media (pointer: coarse) {\r
+  /* 半透明小角标，热区用 ::before 扩到 44px：不再用不透明方块盖住网页四角（v2.3.0） */\r
   .pv-resize-knob {\r
     display: flex;\r
     align-items: center;\r
     justify-content: center;\r
-    width: 36px;\r
-    height: 36px;\r
-    border-radius: 10px;\r
+    width: 26px;\r
+    height: 26px;\r
+    border-radius: var(--pv-radius-md);\r
     border: 1px solid var(--popup-border);\r
     background-color: var(--popup-surface);\r
     color: var(--popup-muted);\r
-    box-shadow: 0 2px 8px -2px rgba(15, 23, 42, 0.25);\r
-    transition: color 0.15s ease, transform 0.1s ease, box-shadow 0.15s ease;\r
+    opacity: 0.55;\r
+    box-shadow: var(--popup-shadow-sm);\r
+    transition: opacity var(--pv-dur-1) ease, color var(--pv-dur-1) ease;\r
+  }\r
+  .pv-resize-knob::before {\r
+    content: '';\r
+    position: absolute;\r
+    inset: -9px;\r
   }\r
   .pv-resize-knob:active {\r
-    transform: scale(0.92);\r
-    box-shadow: 0 4px 12px -2px rgba(15, 23, 42, 0.3);\r
+    opacity: 1;\r
+    color: var(--popup-accent);\r
   }\r
   .pv-resize-knob svg {\r
     width: 18px;\r
@@ -3041,7 +4006,7 @@ html.pv-forum th.common a.xst:hover {\r
   justify-content: center;\r
 }\r
 .pv-title-text {\r
-  font-size: 15px;\r
+  font-size: var(--pv-fs-lg);\r
   font-weight: 600;\r
   letter-spacing: 0.1px;\r
   color: var(--popup-text);\r
@@ -3055,14 +4020,15 @@ html.pv-forum th.common a.xst:hover {\r
   gap: 4px;\r
   flex: 0 0 auto;\r
 }\r
-#popup-content-panel .popup-panel-btn {\r
+/* 图标按钮：主面板与规则面板共用（规则面板关闭按钮此前拿不到这些基础样式） */\r
+:is(#popup-content-panel, #pv-rules-panel) .popup-panel-btn {\r
   appearance: none;\r
   -webkit-appearance: none;\r
+  position: relative;\r
   margin: 0;\r
-  background-color: #00000012;\r
   background-color: var(--popup-btn-bg);\r
   border: 1px solid transparent;\r
-  border-radius: 9px;\r
+  border-radius: var(--pv-radius-md);\r
   width: 34px;\r
   height: 34px;\r
   padding: 0;\r
@@ -3073,12 +4039,10 @@ html.pv-forum th.common a.xst:hover {\r
   justify-content: center;\r
   flex: 0 0 auto;\r
   font: inherit;\r
-  color: #64748b;\r
   color: var(--popup-muted);\r
-  transition: background-color 0.15s ease-in-out, color 0.15s ease-in-out,\r
-    transform 0.1s ease-in-out;\r
+  transition: background-color var(--pv-dur-1) ease, color var(--pv-dur-1) ease, transform 80ms ease;\r
 }\r
-#popup-content-panel .popup-panel-btn svg {\r
+:is(#popup-content-panel, #pv-rules-panel) .popup-panel-btn svg {\r
   display: block;\r
   width: 16px;\r
   height: 16px;\r
@@ -3086,44 +4050,33 @@ html.pv-forum th.common a.xst:hover {\r
   stroke: currentColor;\r
   pointer-events: none;\r
 }\r
-#popup-content-panel .popup-panel-btn:hover {\r
-  background-color: #00000020;\r
-  background-color: var(--popup-btn-hover);\r
-  color: #1a2233;\r
-  color: var(--popup-text);\r
+@media (hover: hover) {\r
+  :is(#popup-content-panel, #pv-rules-panel) .popup-panel-btn:hover {\r
+    background-color: var(--popup-btn-hover);\r
+    color: var(--popup-text);\r
+  }\r
+  #popup-content-panel .popup-panel-btn#popup-panel-close:hover,\r
+  #pv-rules-panel .popup-panel-btn:hover {\r
+    color: var(--popup-danger);\r
+    background-color: var(--popup-danger-soft);\r
+  }\r
+  #popup-content-panel .popup-panel-btn#popup-panel-refresh:hover,\r
+  #popup-content-panel .popup-panel-btn#popup-panel-open-in-new:hover,\r
+  #popup-content-panel .popup-panel-btn#popup-panel-maximize:hover {\r
+    color: var(--popup-accent);\r
+    background-color: var(--popup-accent-soft);\r
+  }\r
 }\r
-#popup-content-panel .popup-panel-btn:active {\r
-  transform: scale(0.92);\r
-  background-color: #0000002a;\r
+:is(#popup-content-panel, #pv-rules-panel) .popup-panel-btn:active {\r
+  transform: scale(0.94);\r
   background-color: var(--popup-btn-active);\r
 }\r
-#popup-content-panel .popup-panel-btn:focus-visible {\r
-  outline: 2px solid rgba(37, 99, 235, 0.4);\r
-  outline: 2px solid var(--popup-focus-ring);\r
-  outline-offset: 1px;\r
+:is(#popup-content-panel, #pv-rules-panel) .popup-panel-btn:focus-visible {\r
+  outline: 2px solid var(--popup-focus);\r
+  outline-offset: 2px;\r
 }\r
 #popup-content-panel .popup-panel-btn.active {\r
-  color: #2563eb;\r
   color: var(--popup-accent);\r
-  background-color: rgba(37, 99, 235, 0.1);\r
-  background-color: var(--popup-accent-soft);\r
-}\r
-#popup-panel-close:hover,\r
-#popup-content-panel .popup-panel-btn#popup-panel-close:hover {\r
-  color: #dc2626;\r
-  color: var(--popup-danger);\r
-  background-color: rgba(220, 38, 38, 0.1);\r
-  background-color: var(--popup-danger-soft);\r
-}\r
-#popup-panel-refresh:hover,\r
-#popup-panel-open-in-new:hover,\r
-#popup-panel-maximize:hover,\r
-#popup-content-panel .popup-panel-btn#popup-panel-refresh:hover,\r
-#popup-content-panel .popup-panel-btn#popup-panel-open-in-new:hover,\r
-#popup-content-panel .popup-panel-btn#popup-panel-maximize:hover {\r
-  color: #2563eb;\r
-  color: var(--popup-accent);\r
-  background-color: rgba(37, 99, 235, 0.1);\r
   background-color: var(--popup-accent-soft);\r
 }\r
 \r
@@ -3155,6 +4108,8 @@ html.pv-forum th.common a.xst:hover {\r
 }\r
 #popup-content-area.iframe-direct-load {\r
   padding: 0;\r
+  /* iframe 自己负责滚动：外壳不再产生第二条滚动条（v2.3.1） */\r
+  overflow: hidden;\r
 }\r
 /* 设置：隐藏窗体滚动条 */\r
 #popup-content-area.pv-hide-scrollbar {\r
@@ -3168,22 +4123,27 @@ html.pv-forum th.common a.xst:hover {\r
 /* ===== 设置面板 ===== */\r
 #popup-settings-popover {\r
   position: fixed;\r
-  width: 280px;\r
-  z-index: 10002;\r
+  width: 340px;\r
+  max-width: calc(100vw - 16px);\r
+  z-index: calc(var(--pv-z) + 3);\r
   /* 桌面固定限高，避免内容增多后忽大忽小；内部滚动 */\r
   max-height: min(560px, calc(100vh - 32px));\r
   max-height: min(560px, calc(100dvh - 32px));\r
   overflow-y: auto;\r
+  overflow-x: clip;\r
   background-color: var(--popup-surface);\r
   color: var(--popup-text);\r
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',\r
-    'Microsoft YaHei', Roboto, 'Helvetica Neue', Arial, sans-serif;\r
+  font-family: var(--pv-font);\r
   border: 1px solid var(--popup-border);\r
-  border-radius: 12px;\r
+  border-radius: var(--pv-radius-lg);\r
   box-shadow: var(--popup-shadow);\r
-  padding: 6px;\r
+  /* 底部不留内边距，sticky 页脚贴底（S4） */\r
+  padding: 0 6px 0;\r
   box-sizing: border-box;\r
-  font-size: 13px;\r
+  font-size: var(--pv-fs-sm);\r
+  /* 细滚动条，提示下方还有内容（S4） */\r
+  scrollbar-width: thin;\r
+  scrollbar-color: var(--popup-border-strong) transparent;\r
   opacity: 0;\r
   pointer-events: none;\r
   transform: translateY(-6px);\r
@@ -3194,15 +4154,38 @@ html.pv-forum th.common a.xst:hover {\r
   pointer-events: auto;\r
   transform: translateY(0);\r
 }\r
-/* 设置面板：隐藏滚动条（保留滚动） */\r
-#popup-settings-popover {\r
-  scrollbar-width: none;\r
-  -ms-overflow-style: none;\r
+/* 手机/窄屏：全宽底部 sheet（由 PopupPanel.showSettingsNear 加 class） */\r
+#popup-settings-popover.pv-settings-sheet {\r
+  width: 100vw;\r
+  max-width: 100vw;\r
+  max-height: min(85dvh, 720px);\r
+  border-radius: 16px 16px 0 0;\r
+  border-left: 0;\r
+  border-right: 0;\r
+  border-bottom: 0;\r
+  padding-bottom: max(8px, env(safe-area-inset-bottom));\r
+}\r
+#popup-settings-popover.pv-settings-sheet .pv-settings-head {\r
+  padding-top: 10px;\r
 }\r
 #popup-settings-popover::-webkit-scrollbar {\r
-  display: none;\r
-  width: 0;\r
-  height: 0;\r
+  width: 6px;\r
+}\r
+#popup-settings-popover::-webkit-scrollbar-thumb {\r
+  background-color: var(--popup-border-strong);\r
+  border-radius: 3px;\r
+}\r
+#popup-settings-popover::-webkit-scrollbar-track {\r
+  background: transparent;\r
+}\r
+/* 滚动容器顶部：标题 + 关闭 + tab 一起吸顶（S2） */\r
+.pv-settings-top {\r
+  position: sticky;\r
+  top: 0;\r
+  z-index: 3;\r
+  margin: 0 -6px 0;\r
+  padding: 6px 6px 0;\r
+  background-color: var(--popup-surface);\r
 }\r
 /* 弹窗头：标题 + 关闭按钮（小屏上弹窗可能盖住 ⚙ 锚点，独立关闭入口） */\r
 .pv-settings-head {\r
@@ -3217,10 +4200,7 @@ html.pv-forum th.common a.xst:hover {\r
   display: flex;\r
   gap: 6px;\r
   padding: 2px 6px 10px;\r
-  position: sticky;\r
-  top: 0;\r
   background-color: var(--popup-surface);\r
-  z-index: 1;\r
 }\r
 .pv-settings-tab {\r
   flex: 1;\r
@@ -3238,19 +4218,17 @@ html.pv-forum th.common a.xst:hover {\r
   white-space: nowrap;\r
   transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;\r
 }\r
-.pv-settings-tab:hover {\r
-  color: var(--popup-text);\r
-  border-color: var(--popup-muted);\r
+@media (hover: hover) {\r
+  .pv-settings-tab:hover {\r
+    color: var(--popup-text);\r
+    border-color: var(--popup-muted);\r
+  }\r
 }\r
 .pv-settings-tab.active {\r
   background-color: var(--popup-accent-soft);\r
   border-color: var(--popup-accent);\r
   color: var(--popup-accent);\r
   font-weight: 600;\r
-}\r
-.pv-settings-tab:focus-visible {\r
-  outline: 2px solid var(--popup-focus-ring);\r
-  outline-offset: 1px;\r
 }\r
 .pv-settings-pane {\r
   display: none;\r
@@ -3281,9 +4259,11 @@ html.pv-forum th.common a.xst:hover {\r
   justify-content: center;\r
   transition: background-color 0.15s ease, color 0.15s ease, transform 0.1s ease;\r
 }\r
-.pv-settings-close:hover {\r
-  background-color: var(--popup-btn-hover);\r
-  color: var(--popup-text);\r
+@media (hover: hover) {\r
+  .pv-settings-close:hover {\r
+    background-color: var(--popup-btn-hover);\r
+    color: var(--popup-text);\r
+  }\r
 }\r
 .pv-settings-close:active {\r
   transform: scale(0.92);\r
@@ -3306,18 +4286,19 @@ html.pv-forum th.common a.xst:hover {\r
   border-top: none;\r
 }\r
 .pv-settings-group-title {\r
-  font-size: 11px;\r
+  font-size: var(--pv-fs-xs);\r
   font-weight: 600;\r
-  letter-spacing: 0.08em;\r
-  color: var(--popup-faint);\r
+  color: var(--popup-muted);\r
   padding: 0 6px 6px;\r
 }\r
 .pv-settings-item {\r
   padding: 7px 6px;\r
   border-radius: 8px;\r
 }\r
-.pv-settings-item:hover {\r
-  background-color: var(--popup-btn-hover);\r
+@media (hover: hover) {\r
+  .pv-settings-item:hover {\r
+    background-color: var(--popup-btn-hover);\r
+  }\r
 }\r
 .pv-settings-item-head {\r
   display: flex;\r
@@ -3345,9 +4326,9 @@ html.pv-forum th.common a.xst:hover {\r
   color: var(--popup-text);\r
 }\r
 .pv-settings-sub {\r
-  font-size: 11px;\r
+  font-size: var(--pv-fs-xs);\r
   line-height: 1.4;\r
-  color: var(--popup-faint);\r
+  color: var(--popup-muted);\r
 }\r
 .pv-settings-tip {\r
   display: inline-flex;\r
@@ -3359,13 +4340,15 @@ html.pv-forum th.common a.xst:hover {\r
   border: none;\r
   border-radius: 50%;\r
   background: transparent;\r
-  color: var(--popup-faint);\r
+  color: var(--popup-muted);\r
   cursor: pointer;\r
   flex: 0 0 auto;\r
 }\r
-.pv-settings-tip:hover {\r
-  color: var(--popup-accent);\r
-  background-color: var(--popup-accent-soft);\r
+@media (hover: hover) {\r
+  .pv-settings-tip:hover {\r
+    color: var(--popup-accent);\r
+    background-color: var(--popup-accent-soft);\r
+  }\r
 }\r
 .pv-settings-phone-models {\r
   display: flex;\r
@@ -3380,7 +4363,7 @@ html.pv-forum th.common a.xst:hover {\r
 }\r
 #pv-settings-tip {\r
   position: fixed;\r
-  z-index: 10005;\r
+  z-index: calc(var(--pv-z) + 6);\r
   width: 220px;\r
   padding: 8px 10px;\r
   background-color: var(--popup-text);\r
@@ -3411,14 +4394,16 @@ html.pv-forum th.common a.xst:hover {\r
   cursor: pointer;\r
   transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;\r
 }\r
-.pv-settings-reset:hover {\r
-  color: var(--popup-danger);\r
-  border-color: var(--popup-danger-soft);\r
-  background-color: var(--popup-danger-soft);\r
+@media (hover: hover) {\r
+  .pv-settings-reset:hover {\r
+    color: var(--popup-danger);\r
+    border-color: var(--popup-danger-soft);\r
+    background-color: var(--popup-danger-soft);\r
+  }\r
 }\r
 .pv-settings-reset:focus-visible {\r
-  outline: 2px solid var(--popup-focus-ring);\r
-  outline-offset: 1px;\r
+  outline: 2px solid var(--popup-focus);\r
+  outline-offset: 2px;\r
 }\r
 /* 开关 */\r
 .pv-switch {\r
@@ -3439,7 +4424,7 @@ html.pv-forum th.common a.xst:hover {\r
   position: absolute;\r
   inset: 0;\r
   border-radius: 999px;\r
-  background-color: var(--popup-btn-active);\r
+  background-color: var(--popup-border-strong);\r
   transition: background-color 0.2s ease;\r
 }\r
 .pv-switch-track::after {\r
@@ -3461,7 +4446,7 @@ html.pv-forum th.common a.xst:hover {\r
   transform: translateX(16px);\r
 }\r
 .pv-switch input:focus-visible + .pv-switch-track {\r
-  outline: 2px solid var(--popup-focus-ring);\r
+  outline: 2px solid var(--popup-focus);\r
   outline-offset: 2px;\r
 }\r
 /* 分段控件（胶囊式） */\r
@@ -3487,9 +4472,11 @@ html.pv-forum th.common a.xst:hover {\r
   white-space: nowrap;\r
   transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;\r
 }\r
-.pv-seg-item:hover {\r
-  color: var(--popup-text);\r
-  border-color: var(--popup-muted);\r
+@media (hover: hover) {\r
+  .pv-seg-item:hover {\r
+    color: var(--popup-text);\r
+    border-color: var(--popup-muted);\r
+  }\r
 }\r
 .pv-seg-item.active {\r
   background-color: var(--popup-accent-soft);\r
@@ -3497,25 +4484,148 @@ html.pv-forum th.common a.xst:hover {\r
   color: var(--popup-accent);\r
   font-weight: 600;\r
 }\r
-.pv-seg-item.is-default.active::after {\r
-  content: '';\r
-  display: block;\r
-  width: 4px;\r
-  height: 4px;\r
-  border-radius: 50%;\r
-  background: currentColor;\r
-  margin: 2px auto 0;\r
-}\r
 .pv-seg-item:focus-visible {\r
-  outline: 2px solid var(--popup-focus-ring);\r
-  outline-offset: 1px;\r
+  outline: 2px solid var(--popup-focus);\r
+  outline-offset: 2px;\r
+}\r
+\r
+/* ---- 2.2.x：sticky 页脚、作用范围标签、不可选说明、最近列表、焦点与触屏热区 ---- */\r
+#popup-settings-popover .pv-settings-footer {\r
+  position: sticky;\r
+  bottom: 0;\r
+  z-index: 1;\r
+  margin: 4px -6px 0;\r
+  padding: 10px 6px 8px;\r
+  background-color: var(--popup-surface);\r
+}\r
+.pv-settings-footer.hidden,\r
+.pv-settings-note.hidden,\r
+.pv-seg-item.hidden,\r
+.pv-recent-clear.hidden {\r
+  display: none !important;\r
+}\r
+.pv-settings-scope {\r
+  flex: 0 0 auto;\r
+  padding: 0 5px;\r
+  border: 1px solid var(--popup-border);\r
+  border-radius: var(--pv-radius-sm);\r
+  color: var(--popup-muted);\r
+  font-size: var(--pv-fs-xs);\r
+  font-weight: 400;\r
+  line-height: 16px;\r
+  white-space: nowrap;\r
+}\r
+.pv-settings-note {\r
+  margin-top: 6px;\r
+  color: var(--popup-muted);\r
+  font-size: var(--pv-fs-xs);\r
+  line-height: 1.4;\r
+}\r
+.pv-seg-item:disabled {\r
+  cursor: not-allowed;\r
+  color: var(--popup-faint);\r
+  background: transparent;\r
+  text-decoration: line-through;\r
+}\r
+.pv-settings-reset.confirming {\r
+  color: var(--popup-danger);\r
+  border-color: var(--popup-danger);\r
+  background-color: var(--popup-danger-soft);\r
+}\r
+.pv-recent-head {\r
+  display: flex;\r
+  align-items: center;\r
+  justify-content: space-between;\r
+  gap: 8px;\r
+  padding: 0 0 6px;\r
+}\r
+.pv-recent-head .pv-settings-group-title {\r
+  padding-bottom: 0;\r
+}\r
+.pv-recent-list {\r
+  display: flex;\r
+  flex-direction: column;\r
+  gap: 2px;\r
+  padding-bottom: 8px;\r
+}\r
+.pv-recent-item {\r
+  display: flex;\r
+  flex-direction: column;\r
+  gap: 2px;\r
+  width: 100%;\r
+  padding: 7px 6px;\r
+  border: none;\r
+  border-radius: var(--pv-radius-md);\r
+  background: transparent;\r
+  color: var(--popup-text);\r
+  text-align: left;\r
+  cursor: pointer;\r
+}\r
+.pv-recent-title {\r
+  display: -webkit-box;\r
+  -webkit-line-clamp: 2;\r
+  -webkit-box-orient: vertical;\r
+  overflow: hidden;\r
+  font-size: var(--pv-fs-sm);\r
+  line-height: 1.4;\r
+  white-space: normal;\r
+}\r
+.pv-recent-meta,\r
+.pv-recent-empty {\r
+  color: var(--popup-muted);\r
+  font-size: var(--pv-fs-xs);\r
+}\r
+.pv-recent-empty {\r
+  padding: 16px 6px;\r
+  text-align: center;\r
+}\r
+@media (hover: hover) {\r
+  .pv-recent-item:hover {\r
+    background-color: var(--popup-btn-hover);\r
+  }\r
+}\r
+.pv-settings-close:focus-visible,\r
+.pv-settings-tip:focus-visible,\r
+.pv-settings-tab:focus-visible,\r
+.pv-settings-reset:focus-visible,\r
+.pv-seg-item:focus-visible,\r
+.pv-recent-item:focus-visible,\r
+.pv-switch input:focus-visible + .pv-switch-track {\r
+  outline: 2px solid var(--popup-focus);\r
+  outline-offset: 2px;\r
+}\r
+@media (pointer: coarse) {\r
+  .pv-settings-close,\r
+  .pv-settings-tab,\r
+  .pv-settings-reset,\r
+  .pv-seg-item,\r
+  .pv-recent-item {\r
+    min-height: var(--pv-hit);\r
+  }\r
+  .pv-settings-close {\r
+    min-width: var(--pv-hit);\r
+  }\r
+  .pv-settings-tip,\r
+  .pv-switch {\r
+    position: relative;\r
+  }\r
+  .pv-settings-tip::before,\r
+  .pv-switch::before {\r
+    content: '';\r
+    position: absolute;\r
+    top: 50%;\r
+    left: 50%;\r
+    width: var(--pv-hit);\r
+    height: var(--pv-hit);\r
+    transform: translate(-50%, -50%);\r
+  }\r
 }\r
 \r
 /* ===== 链接规则面板 ===== */\r
 #pv-rules-panel-backdrop {\r
   position: fixed;\r
   inset: 0;\r
-  z-index: 10002;\r
+  z-index: calc(var(--pv-z) + 4);\r
   background-color: var(--popup-overlay);\r
   opacity: 0;\r
   pointer-events: none;\r
@@ -3527,7 +4637,7 @@ html.pv-forum th.common a.xst:hover {\r
 }\r
 #pv-rules-panel {\r
   position: fixed;\r
-  z-index: 10003;\r
+  z-index: calc(var(--pv-z) + 5);\r
   width: 440px;\r
   max-width: calc(100vw - 24px);\r
   max-height: calc(100vh - 48px);\r
@@ -3536,10 +4646,9 @@ html.pv-forum th.common a.xst:hover {\r
   transform: translate(-50%, -48%) scale(0.97);\r
   background-color: var(--popup-surface);\r
   color: var(--popup-text);\r
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',\r
-    'Microsoft YaHei', Roboto, 'Helvetica Neue', Arial, sans-serif;\r
+  font-family: var(--pv-font);\r
   border: 1px solid var(--popup-border);\r
-  border-radius: 14px;\r
+  border-radius: var(--pv-radius-lg);\r
   box-shadow: var(--popup-shadow);\r
   display: flex;\r
   flex-direction: column;\r
@@ -3569,8 +4678,8 @@ html.pv-forum th.common a.xst:hover {\r
 }\r
 #pv-rules-host {\r
   flex: 1;\r
-  font-size: 11px;\r
-  color: var(--popup-faint);\r
+  font-size: var(--pv-fs-xs);\r
+  color: var(--popup-muted);\r
   white-space: nowrap;\r
   overflow: hidden;\r
   text-overflow: ellipsis;\r
@@ -3583,9 +4692,9 @@ html.pv-forum th.common a.xst:hover {\r
   gap: 12px;\r
 }\r
 .pv-rules-tip {\r
-  font-size: 11px;\r
+  font-size: var(--pv-fs-xs);\r
   line-height: 1.5;\r
-  color: var(--popup-faint);\r
+  color: var(--popup-muted);\r
 }\r
 #pv-rules-list {\r
   display: flex;\r
@@ -3593,7 +4702,7 @@ html.pv-forum th.common a.xst:hover {\r
   gap: 8px;\r
 }\r
 .pv-rules-empty {\r
-  color: var(--popup-faint);\r
+  color: var(--popup-muted);\r
   text-align: center;\r
   padding: 18px 0;\r
   border: 1px dashed var(--popup-border);\r
@@ -3624,8 +4733,8 @@ html.pv-forum th.common a.xst:hover {\r
   text-overflow: ellipsis;\r
 }\r
 .pv-rules-row-count {\r
-  font-size: 11px;\r
-  color: var(--popup-faint);\r
+  font-size: var(--pv-fs-xs);\r
+  color: var(--popup-muted);\r
 }\r
 .pv-rules-del {\r
   display: inline-flex;\r
@@ -3641,13 +4750,15 @@ html.pv-forum th.common a.xst:hover {\r
   cursor: pointer;\r
   flex: 0 0 auto;\r
 }\r
-.pv-rules-del:hover {\r
-  color: var(--popup-danger);\r
-  border-color: var(--popup-danger-soft);\r
-  background-color: var(--popup-danger-soft);\r
+@media (hover: hover) {\r
+  .pv-rules-del:hover {\r
+    color: var(--popup-danger);\r
+    border-color: var(--popup-danger-soft);\r
+    background-color: var(--popup-danger-soft);\r
+  }\r
 }\r
 .pv-rules-del.confirming {\r
-  color: #fff;\r
+  color: var(--popup-on-accent);\r
   background-color: var(--popup-danger);\r
   border-color: var(--popup-danger);\r
 }\r
@@ -3658,15 +4769,17 @@ html.pv-forum th.common a.xst:hover {\r
   gap: 6px;\r
   background-color: var(--popup-accent);\r
   border: 1px solid var(--popup-accent);\r
-  color: #fff;\r
+  color: var(--popup-on-accent);\r
   font-weight: 500;\r
   padding: 8px 16px;\r
   border-radius: 8px;\r
   cursor: pointer;\r
   transition: background 0.15s ease;\r
 }\r
-#pv-rules-pick:hover {\r
-  background-color: var(--popup-accent-hover);\r
+@media (hover: hover) {\r
+  #pv-rules-pick:hover {\r
+    background-color: var(--popup-accent-hover);\r
+  }\r
 }\r
 #pv-rules-pick:disabled {\r
   opacity: 0.5;\r
@@ -3681,20 +4794,21 @@ html.pv-forum th.common a.xst:hover {\r
   height: 30px;\r
   padding: 0;\r
 }\r
-#pv-rules-panel .popup-panel-btn:hover {\r
-  color: var(--popup-danger);\r
-  background-color: var(--popup-danger-soft);\r
+@media (hover: hover) {\r
+  #pv-rules-panel .popup-panel-btn:hover {\r
+    color: var(--popup-danger);\r
+    background-color: var(--popup-danger-soft);\r
+  }\r
 }\r
 #pv-rules-toast {\r
   position: fixed;\r
   left: 50%;\r
   bottom: 28px;\r
   transform: translateX(-50%) translateY(8px);\r
-  z-index: 10006;\r
+  z-index: calc(var(--pv-z) + 7);\r
   background-color: var(--popup-text);\r
   color: var(--popup-bg);\r
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',\r
-    'Microsoft YaHei', Roboto, 'Helvetica Neue', Arial, sans-serif;\r
+  font-family: var(--pv-font);\r
   font-size: 12px;\r
   padding: 8px 16px;\r
   border-radius: 999px;\r
@@ -3708,17 +4822,165 @@ html.pv-forum th.common a.xst:hover {\r
   transform: translateX(-50%) translateY(0);\r
 }\r
 \r
+/* ---- 2.2.x：全部站点、启停、编辑、撤销删除、焦点与触屏热区 ---- */\r
+#pv-rules-pick.hidden,\r
+.pv-rules-tip.hidden,\r
+.pv-rules-back.hidden,\r
+.pv-rules-toast-action.hidden {\r
+  display: none !important;\r
+}\r
+#pv-rules-panel .pv-rules-close {\r
+  display: inline-flex;\r
+  align-items: center;\r
+  justify-content: center;\r
+  width: 30px;\r
+  height: 30px;\r
+  padding: 0;\r
+  border: 1px solid transparent;\r
+  border-radius: var(--pv-radius-md);\r
+  background-color: var(--popup-btn-bg);\r
+  color: var(--popup-muted);\r
+  cursor: pointer;\r
+}\r
+#pv-rules-panel .pv-rules-close svg {\r
+  width: 15px;\r
+  height: 15px;\r
+  fill: none;\r
+  stroke: currentColor;\r
+  pointer-events: none;\r
+}\r
+.pv-rules-all,\r
+.pv-rules-edit,\r
+.pv-rules-back,\r
+.pv-rules-toast-action {\r
+  flex: 0 0 auto;\r
+  padding: 4px 10px;\r
+  border: 1px solid var(--popup-border-strong);\r
+  border-radius: 999px;\r
+  background: transparent;\r
+  color: var(--popup-text);\r
+  font-size: var(--pv-fs-xs);\r
+  white-space: nowrap;\r
+  cursor: pointer;\r
+}\r
+.pv-rules-all.active {\r
+  border-color: var(--popup-accent);\r
+  background-color: var(--popup-accent-soft);\r
+  color: var(--popup-accent);\r
+}\r
+.pv-rules-back {\r
+  align-self: center;\r
+  margin-top: 8px;\r
+}\r
+.pv-rules-row.is-disabled .pv-rules-row-sel {\r
+  color: var(--popup-muted);\r
+  text-decoration: line-through;\r
+}\r
+.pv-rules-row.is-editing {\r
+  align-items: flex-start;\r
+}\r
+.pv-rules-toggle {\r
+  flex: 0 0 auto;\r
+}\r
+.pv-rules-edit-input {\r
+  width: 100%;\r
+  box-sizing: border-box;\r
+  padding: 6px 9px;\r
+  border: 1px solid var(--popup-border-strong);\r
+  border-radius: var(--pv-radius-md);\r
+  background-color: var(--popup-bg);\r
+  color: var(--popup-text);\r
+  font-family: var(--pv-mono);\r
+  font-size: var(--pv-fs-xs);\r
+}\r
+.pv-rules-del .pv-rules-del-text {\r
+  display: none;\r
+}\r
+.pv-rules-del.confirming {\r
+  width: auto;\r
+  padding: 0 8px;\r
+  gap: 4px;\r
+}\r
+.pv-rules-del.confirming .pv-rules-del-text {\r
+  display: inline;\r
+  font-size: var(--pv-fs-xs);\r
+  white-space: nowrap;\r
+}\r
+.pv-rules-host-row {\r
+  display: flex;\r
+  align-items: center;\r
+  justify-content: space-between;\r
+  gap: 8px;\r
+  width: 100%;\r
+  padding: 9px 10px;\r
+  border: 1px solid var(--popup-border);\r
+  border-radius: var(--pv-radius-md);\r
+  background: transparent;\r
+  color: var(--popup-text);\r
+  text-align: left;\r
+  cursor: pointer;\r
+}\r
+.pv-rules-host-row.is-current {\r
+  border-color: var(--popup-accent);\r
+}\r
+.pv-rules-host-name {\r
+  overflow: hidden;\r
+  font-size: var(--pv-fs-sm);\r
+  white-space: nowrap;\r
+  text-overflow: ellipsis;\r
+}\r
+.pv-rules-host-count {\r
+  flex: 0 0 auto;\r
+  color: var(--popup-muted);\r
+  font-size: var(--pv-fs-xs);\r
+}\r
+#pv-rules-toast {\r
+  display: flex;\r
+  align-items: center;\r
+  gap: 10px;\r
+}\r
+.pv-rules-toast-action {\r
+  border-color: currentColor;\r
+  color: inherit;\r
+}\r
+@media (hover: hover) {\r
+  #pv-rules-panel .pv-rules-close:hover,\r
+  .pv-rules-all:hover,\r
+  .pv-rules-edit:hover,\r
+  .pv-rules-back:hover,\r
+  .pv-rules-host-row:hover {\r
+    background-color: var(--popup-btn-hover);\r
+  }\r
+}\r
+#pv-rules-panel button:focus-visible,\r
+#pv-rules-toast button:focus-visible,\r
+.pv-rules-edit-input:focus-visible,\r
+.pv-rules-toggle input:focus-visible + .pv-switch-track {\r
+  outline: 2px solid var(--popup-focus);\r
+  outline-offset: 2px;\r
+}\r
+@media (pointer: coarse) {\r
+  #pv-rules-panel button,\r
+  #pv-rules-toast button {\r
+    min-height: var(--pv-hit);\r
+  }\r
+  #pv-rules-panel .pv-rules-close,\r
+  .pv-rules-del {\r
+    min-width: var(--pv-hit);\r
+  }\r
+}\r
+\r
 /* ===== 取选链接模式 ===== */\r
 .pv-picker-overlay {\r
   position: fixed;\r
   inset: 0;\r
-  z-index: 10010;\r
+  z-index: calc(var(--pv-z) + 8);\r
   background-color: rgba(15, 23, 42, 0.35);\r
   pointer-events: none;\r
 }\r
 .pv-picker-bar {\r
   position: fixed;\r
-  z-index: 10011;\r
+  z-index: calc(var(--pv-z) + 9);\r
   display: flex;\r
   align-items: center;\r
   gap: 10px;\r
@@ -3729,8 +4991,7 @@ html.pv-forum th.common a.xst:hover {\r
   background-color: var(--popup-surface);\r
   border: 1px solid var(--popup-border);\r
   box-shadow: var(--popup-shadow);\r
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',\r
-    'Microsoft YaHei', Roboto, 'Helvetica Neue', Arial, sans-serif;\r
+  font-family: var(--pv-font);\r
   pointer-events: none;\r
 }\r
 #pv-picker-hint {\r
@@ -3748,7 +5009,7 @@ html.pv-forum th.common a.xst:hover {\r
   bottom: 20px;\r
   left: 50%;\r
   transform: translateX(-50%);\r
-  z-index: 10011;\r
+  z-index: calc(var(--pv-z) + 9);\r
   width: min(560px, calc(100vw - 24px));\r
   max-height: calc(100vh - 48px);\r
   overflow-y: auto;\r
@@ -3759,8 +5020,7 @@ html.pv-forum th.common a.xst:hover {\r
   background-color: var(--popup-surface);\r
   border: 1px solid var(--popup-border);\r
   box-shadow: var(--popup-shadow);\r
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',\r
-    'Microsoft YaHei', Roboto, 'Helvetica Neue', Arial, sans-serif;\r
+  font-family: var(--pv-font);\r
   display: flex;\r
   flex-direction: column;\r
   gap: 8px;\r
@@ -3799,22 +5059,34 @@ html.pv-forum th.common a.xst:hover {\r
   color: var(--popup-accent);\r
   background-color: var(--popup-accent-soft);\r
 }\r
+.pv-picker-cand-sel {\r
+  max-width: 100%;\r
+  overflow: hidden;\r
+  color: var(--popup-text);\r
+  font-family: var(--pv-mono);\r
+  font-size: 12px;\r
+  text-overflow: ellipsis;\r
+  white-space: nowrap;\r
+}\r
+.pv-picker-cand.is-on .pv-picker-cand-sel {\r
+  color: var(--popup-accent);\r
+}\r
 .pv-picker-cand code {\r
-  font-family: Consolas, 'Courier New', monospace;\r
-  font-size: 11px;\r
+  font-family: var(--pv-mono);\r
+  font-size: var(--pv-fs-xs);\r
 }\r
 .pv-picker-cand em {\r
   font-style: normal;\r
-  color: var(--popup-faint);\r
-  font-size: 11px;\r
+  color: var(--popup-muted);\r
+  font-size: var(--pv-fs-xs);\r
 }\r
 .pv-picker-input {\r
   padding: 6px 9px;\r
-  border: 1px solid var(--popup-border);\r
+  border: 1px solid var(--popup-border-strong);\r
   border-radius: 8px;\r
   background-color: var(--popup-bg);\r
   color: var(--popup-text);\r
-  font-family: Consolas, 'Courier New', monospace;\r
+  font-family: var(--pv-mono);\r
   font-size: 12px;\r
   outline: none;\r
   transition: border-color 0.15s ease, box-shadow 0.15s ease;\r
@@ -3844,29 +5116,104 @@ html.pv-forum th.common a.xst:hover {\r
   cursor: pointer;\r
   transition: background 0.15s ease, color 0.15s ease;\r
 }\r
-.pv-picker-btn:hover {\r
-  color: var(--popup-accent);\r
-  border-color: var(--popup-accent-soft);\r
-  background-color: var(--popup-accent-soft);\r
+@media (hover: hover) {\r
+  .pv-picker-btn:hover {\r
+    color: var(--popup-accent);\r
+    border-color: var(--popup-accent-soft);\r
+    background-color: var(--popup-accent-soft);\r
+  }\r
 }\r
 .pv-picker-btn.primary {\r
   background-color: var(--popup-accent);\r
   border-color: var(--popup-accent);\r
-  color: #fff;\r
+  color: var(--popup-on-accent);\r
   font-weight: 500;\r
 }\r
-.pv-picker-btn.primary:hover {\r
-  background-color: var(--popup-accent-hover);\r
-  color: #fff;\r
+@media (hover: hover) {\r
+  .pv-picker-btn.primary:hover {\r
+    background-color: var(--popup-accent-hover);\r
+    color: var(--popup-on-accent);\r
+  }\r
 }\r
 .pv-picker-highlight {\r
   position: fixed;\r
-  z-index: 10012;\r
+  z-index: calc(var(--pv-z) + 10);\r
   pointer-events: none;\r
   border: 2px solid var(--popup-accent);\r
   border-radius: 4px;\r
   background-color: var(--popup-accent-soft);\r
-  transition: left 0.08s ease, top 0.08s ease, width 0.08s ease, height 0.08s ease;\r
+}\r
+\r
+/* ---- 2.2.x：全部命中高亮、提示条「取消」、通俗候选与「高级」、焦点与触屏热区 ---- */\r
+.pv-picker-hits {\r
+  position: fixed;\r
+  inset: 0;\r
+  z-index: calc(var(--pv-z) + 8);\r
+  pointer-events: none;\r
+}\r
+.pv-picker-hit {\r
+  position: fixed;\r
+  box-sizing: border-box;\r
+  border: 1px dashed var(--popup-accent);\r
+  border-radius: 3px;\r
+  background-color: var(--popup-accent-soft);\r
+  pointer-events: none;\r
+}\r
+.pv-picker-bar {\r
+  display: flex;\r
+  align-items: center;\r
+  gap: 10px;\r
+}\r
+.pv-picker-bar-text {\r
+  min-width: 0;\r
+}\r
+.pv-picker-bar-cancel {\r
+  flex: 0 0 auto;\r
+  padding: 3px 12px;\r
+  border: 1px solid currentColor;\r
+  border-radius: 999px;\r
+  background: transparent;\r
+  color: inherit;\r
+  font-size: var(--pv-fs-xs);\r
+  cursor: pointer;\r
+}\r
+.pv-picker-cand-desc {\r
+  font-size: var(--pv-fs-sm);\r
+  font-weight: 600;\r
+  color: var(--popup-text);\r
+}\r
+.pv-picker-cand.is-block .pv-picker-cand-desc {\r
+  font-weight: 400;\r
+}\r
+.pv-picker-adv {\r
+  color: var(--popup-muted);\r
+  font-size: var(--pv-fs-xs);\r
+}\r
+.pv-picker-adv > summary {\r
+  padding: 4px 0;\r
+  cursor: pointer;\r
+}\r
+.pv-picker-adv[open] > summary {\r
+  margin-bottom: 6px;\r
+}\r
+.pv-picker-adv .pv-picker-input {\r
+  width: 100%;\r
+  box-sizing: border-box;\r
+}\r
+.pv-picker-confirm button:focus-visible,\r
+.pv-picker-bar-cancel:focus-visible,\r
+.pv-picker-adv > summary:focus-visible,\r
+.pv-picker-input:focus-visible {\r
+  outline: 2px solid var(--popup-focus);\r
+  outline-offset: 2px;\r
+}\r
+@media (pointer: coarse) {\r
+  .pv-picker-btn,\r
+  .pv-picker-cand,\r
+  .pv-picker-bar-cancel,\r
+  .pv-picker-adv > summary {\r
+    min-height: var(--pv-hit);\r
+  }\r
 }\r
 \r
 /* ===== 独立悬浮设置按钮 ===== */\r
@@ -3875,20 +5222,21 @@ html.pv-forum th.common a.xst:hover {\r
   right: 20px;\r
   /* 抬高到 iPhone 刘海屏 home 指示条安全区之上，避免被遮住/误触 */\r
   bottom: calc(20px + env(safe-area-inset-bottom, 0px));\r
-  z-index: 10001;\r
-  width: 42px;\r
-  height: 42px;\r
+  right: calc(20px + env(safe-area-inset-right, 0px));\r
+  z-index: calc(var(--pv-z) + 2);\r
+  width: var(--pv-hit);\r
+  height: var(--pv-hit);\r
   padding: 0;\r
   border-radius: 50%;\r
   border: 1px solid var(--popup-border);\r
   background-color: var(--popup-surface);\r
   color: var(--popup-muted);\r
-  box-shadow: 0 4px 16px -4px rgba(15, 23, 42, 0.25);\r
+  box-shadow: var(--popup-shadow-sm);\r
   display: flex;\r
   align-items: center;\r
   justify-content: center;\r
   cursor: pointer;\r
-  transition: transform 0.15s ease, box-shadow 0.15s ease, color 0.15s ease;\r
+  transition: transform 80ms ease, box-shadow var(--pv-dur-1) ease, color var(--pv-dur-1) ease;\r
 }\r
 #pv-float-settings svg {\r
   width: 18px;\r
@@ -3897,12 +5245,18 @@ html.pv-forum th.common a.xst:hover {\r
   stroke: currentColor;\r
   pointer-events: none;\r
 }\r
-#pv-float-settings:hover {\r
-  color: var(--popup-accent);\r
-  box-shadow: 0 6px 20px -4px rgba(15, 23, 42, 0.3);\r
+@media (hover: hover) {\r
+  #pv-float-settings:hover {\r
+    color: var(--popup-accent);\r
+    box-shadow: var(--popup-shadow-md);\r
+  }\r
 }\r
 #pv-float-settings:active {\r
-  transform: scale(0.92);\r
+  transform: scale(0.94);\r
+}\r
+#pv-float-settings:focus-visible {\r
+  outline: 2px solid var(--popup-focus);\r
+  outline-offset: 2px;\r
 }\r
 #pv-float-settings.hidden {\r
   display: none;\r
@@ -3916,9 +5270,26 @@ html.pv-forum th.common a.xst:hover {\r
   justify-content: center;\r
   height: 100%;\r
   color: var(--popup-muted);\r
-  padding: 25px;\r
+  padding: 24px;\r
+  font-family: var(--pv-font);\r
+  font-size: var(--pv-fs-sm);\r
+  line-height: 1.5;\r
 }\r
-.spinner {\r
+.pv-loading-open {\r
+  margin-top: 16px;\r
+  padding: 8px 16px;\r
+  border: 1px solid var(--popup-border-strong);\r
+  border-radius: var(--pv-radius-md);\r
+  background: transparent;\r
+  color: var(--popup-text);\r
+  font: inherit;\r
+  cursor: pointer;\r
+}\r
+.pv-loading-open:focus-visible {\r
+  outline: 2px solid var(--popup-focus);\r
+  outline-offset: 2px;\r
+}\r
+.pv-spinner {\r
   width: 38px;\r
   height: 38px;\r
   margin-bottom: 20px;\r
@@ -3936,20 +5307,23 @@ html.pv-forum th.common a.xst:hover {\r
   }\r
 }\r
 .pv-loading-hint {\r
-  font-size: 15px;\r
+  font-size: var(--pv-fs-lg);\r
   font-weight: 500;\r
   color: var(--popup-text);\r
 }\r
 .pv-loading-sub {\r
   margin-top: 8px;\r
-  font-size: 13px;\r
-  color: var(--popup-faint);\r
+  font-size: var(--pv-fs-sm);\r
+  color: var(--popup-muted);\r
 }\r
 \r
 /* ===== 错误状态 ===== */\r
 #popup-panel-error {\r
-  padding: 35px;\r
+  padding: 32px;\r
   color: var(--popup-text);\r
+  font-family: var(--pv-font);\r
+  font-size: var(--pv-fs-md);\r
+  line-height: 1.5;\r
   text-align: center;\r
   display: flex;\r
   flex-direction: column;\r
@@ -3963,52 +5337,69 @@ html.pv-forum th.common a.xst:hover {\r
   margin-bottom: 6px;\r
 }\r
 #popup-panel-error h3 {\r
-  margin-top: 16px;\r
-  margin-bottom: 10px;\r
+  margin: 16px 0 8px;\r
   font-weight: 600;\r
-  font-size: 1.15em;\r
+  font-size: 17px;\r
+  line-height: 1.4;\r
+  color: var(--popup-text);\r
 }\r
 #popup-panel-error p {\r
-  margin-bottom: 24px;\r
+  margin: 0 0 24px;\r
   color: var(--popup-muted);\r
   max-width: 420px;\r
+  font-size: var(--pv-fs-sm);\r
   line-height: 1.6;\r
-  word-break: break-all;\r
+  word-break: break-word;\r
+}\r
+#popup-panel-error .pv-error-actions {\r
+  display: flex;\r
+  gap: 8px;\r
+  flex-wrap: wrap;\r
+  justify-content: center;\r
 }\r
 #popup-panel-error button {\r
-  padding: 10px 20px;\r
-  background: var(--popup-accent);\r
-  color: #fff;\r
-  border: none;\r
-  border-radius: 8px;\r
+  min-height: 36px;\r
+  padding: 8px 20px;\r
+  border: 1px solid var(--popup-border-strong);\r
+  border-radius: var(--pv-radius-md);\r
+  background: transparent;\r
+  color: var(--popup-text);\r
   cursor: pointer;\r
-  font-weight: 500;\r
-  font-size: 14px;\r
-  transition: background 0.15s ease-in-out, transform 0.1s ease-in-out,\r
-    box-shadow 0.15s ease-in-out;\r
+  font: 500 var(--pv-fs-md) / 1.4 var(--pv-font);\r
+  transition: background var(--pv-dur-1) ease, border-color var(--pv-dur-1) ease;\r
 }\r
-#popup-panel-error button:hover {\r
-  background: var(--popup-accent-hover);\r
-  box-shadow: 0 4px 12px -4px var(--popup-focus-ring);\r
+/* 主操作：第一个按钮（重试；没有重试时是「在新标签页打开」） */\r
+#popup-panel-error .pv-error-actions button:first-child {\r
+  background: var(--popup-accent);\r
+  border-color: var(--popup-accent);\r
+  color: var(--popup-on-accent);\r
 }\r
-#popup-panel-error button:active {\r
-  transform: scale(0.97);\r
+@media (hover: hover) {\r
+  #popup-panel-error button:hover {\r
+    background: var(--popup-btn-hover);\r
+  }\r
+  #popup-panel-error .pv-error-actions button:first-child:hover {\r
+    background: var(--popup-accent-hover);\r
+    border-color: var(--popup-accent-hover);\r
+  }\r
 }\r
 #popup-panel-error button:focus-visible {\r
-  outline: 2px solid var(--popup-focus-ring);\r
+  outline: 2px solid var(--popup-focus);\r
   outline-offset: 2px;\r
 }\r
 #popup-panel-error button:disabled {\r
-  opacity: 0.5;\r
+  color: var(--popup-faint);\r
   cursor: not-allowed;\r
 }\r
 \r
 /* ===== iframe ===== */\r
 #popup-panel-iframe {\r
+  display: block;\r
   width: 100%;\r
   height: 100%;\r
   border: none;\r
-  background-color: #fff;\r
+  /* 深色主题下加载期间不闪白；帖子自己的背景色加载后覆盖它 */\r
+  background-color: var(--popup-bg);\r
 }\r
 \r
 /* ===== 底部状态栏 ===== */\r
@@ -4023,8 +5414,8 @@ html.pv-forum th.common a.xst:hover {\r
   box-sizing: border-box;\r
   background-color: var(--popup-header-bg);\r
   border-top: 1px solid var(--popup-border);\r
-  font-size: 12px;\r
-  color: var(--popup-faint);\r
+  font-size: var(--pv-fs-xs);\r
+  color: var(--popup-muted);\r
 }\r
 #popup-panel-footer.empty {\r
   display: none;\r
@@ -4032,20 +5423,34 @@ html.pv-forum th.common a.xst:hover {\r
 .pv-footer-nav {\r
   display: flex;\r
   align-items: center;\r
-  gap: 4px;\r
+  gap: 8px;\r
+}\r
+/* 弹窗内没有可走的历史时整组隐藏（默认帖内链接新标签页打开，大多数时候用不上） */\r
+.pv-footer-nav.pv-no-history {\r
+  display: none;\r
+}\r
+/* 当前所在站点：让用户知道弹窗里是哪个网站 */\r
+.pv-footer-host {\r
+  flex: 1;\r
+  min-width: 0;\r
+  overflow: hidden;\r
+  white-space: nowrap;\r
+  text-overflow: ellipsis;\r
+  color: var(--popup-muted);\r
+  font-size: var(--pv-fs-xs);\r
 }\r
 #popup-panel-footer .popup-panel-btn {\r
   width: 28px;\r
   height: 28px;\r
-  border-radius: 7px;\r
+  border-radius: var(--pv-radius-sm);\r
 }\r
 #popup-panel-footer .popup-panel-btn svg {\r
   width: 14px;\r
   height: 14px;\r
 }\r
+/* 禁用态：保持可见但能看出不可用（去掉 opacity 叠加，之前实际对比度只有约 1.3:1） */\r
 #popup-panel-footer .popup-panel-btn:disabled {\r
-  opacity: 0.35;\r
-  cursor: default;\r
+  cursor: not-allowed;\r
   background-color: transparent;\r
   color: var(--popup-faint);\r
 }\r
@@ -4055,6 +5460,7 @@ html.pv-forum th.common a.xst:hover {\r
 }\r
 \r
 /* ===== 链接视觉提示 ===== */\r
+/* @pv-page-start */\r
 .popup-trigger::after,\r
 th.common::after,\r
 a.xst::after {\r
@@ -4099,15 +5505,32 @@ th.common {\r
 }\r
 a.xst {\r
   display: inline-block;\r
-  transition: color 0.15s ease-in-out, padding-right 0.15s ease-in-out;\r
+  transition: color var(--pv-dur-1) ease;\r
 }\r
+/* 悬停只变色，不再过渡 padding（会让整个论坛列表重排） */\r
 a.xst:hover {\r
-  color: var(--popup-accent);\r
-  padding-right: 30px;\r
+  color: var(--popup-accent, #2563eb);\r
 }\r
 a.xst::after {\r
   right: 0;\r
 }\r
+/* 触屏没有悬停：提示图标常驻半透明 */\r
+@media (pointer: coarse) {\r
+  .popup-trigger::after,\r
+  th.common::after,\r
+  a.xst::after {\r
+    opacity: 0.45;\r
+  }\r
+}\r
+@media (prefers-reduced-motion: reduce) {\r
+  .popup-trigger::after,\r
+  th.common::after,\r
+  a.xst,\r
+  a.xst::after {\r
+    transition: none !important;\r
+  }\r
+}\r
+/* @pv-page-end */\r
 \r
 /* ===== 遮罩层 ===== */\r
 #popup-panel-overlay {\r
@@ -4118,8 +5541,8 @@ a.xst::after {\r
   height: 100%;\r
   background-color: var(--popup-overlay);\r
   opacity: 0;\r
-  z-index: 9998;\r
-  transition: opacity 0.3s ease-in-out;\r
+  z-index: var(--pv-z);\r
+  transition: opacity var(--pv-dur-3) ease;\r
   pointer-events: none;\r
   backdrop-filter: blur(6px);\r
   -webkit-backdrop-filter: blur(6px);\r
@@ -4130,21 +5553,32 @@ a.xst::after {\r
 }\r
 \r
 /* ===== 无障碍：减少动效 ===== */\r
+/* 覆盖外壳内所有元素（按下缩放、开关滑块、平滑滚动等此前漏掉了）；spinner 改为透明度呼吸 */\r
 @media (prefers-reduced-motion: reduce) {\r
-  #popup-content-panel,\r
-  #popup-panel-overlay,\r
-  #popup-settings-popover,\r
-  #pv-rules-panel,\r
-  #pv-rules-panel-backdrop,\r
-  #pv-rules-toast,\r
-  .pv-picker-bar,\r
-  .pv-picker-confirm,\r
-  .pv-picker-overlay,\r
-  .pv-picker-highlight {\r
-    transition: none;\r
+  :is(#popup-content-panel, #popup-panel-overlay, #popup-settings-popover, #pv-float-settings, #pv-rules-panel,\r
+      #pv-rules-panel-backdrop, #pv-rules-toast, .pv-picker-bar, .pv-picker-confirm, .pv-picker-overlay,\r
+      .pv-picker-highlight),\r
+  :is(#popup-content-panel, #popup-settings-popover, #pv-rules-panel, .pv-picker-bar, .pv-picker-confirm) * {\r
+    transition-duration: 0.01ms !important;\r
+    animation-duration: 0.01ms !important;\r
+    scroll-behavior: auto !important;\r
   }\r
-  .spinner {\r
-    animation-duration: 1.6s;\r
+  :is(#popup-content-panel, #popup-settings-popover, #pv-rules-panel, #pv-float-settings) :active {\r
+    transform: none !important;\r
+  }\r
+  .pv-spinner,\r
+  #popup-content-panel .pv-spinner {\r
+    animation: pv-pulse 1.6s ease-in-out infinite !important;\r
+    border-top-color: var(--popup-accent-soft);\r
+  }\r
+}\r
+@keyframes pv-pulse {\r
+  0%,\r
+  100% {\r
+    opacity: 0.35;\r
+  }\r
+  50% {\r
+    opacity: 1;\r
   }\r
 }\r
 @media (prefers-reduced-transparency: reduce) {\r
@@ -4159,19 +5593,30 @@ a.xst::after {\r
   #popup-content-panel {\r
     max-width: calc(100vw - 16px);\r
     max-height: calc(100vh - 16px);\r
+    max-height: calc(100dvh - 16px);\r
   }\r
 }\r
 \r
 /* ===== 触屏适配（pointer: coarse） ===== */\r
 @media (pointer: coarse) {\r
-  /* 加大触控目标到 44px 标准（页脚按钮除外：页脚高 38px，保持小尺寸防溢出） */\r
-  #popup-content-panel .popup-panel-btn {\r
-    width: 44px;\r
+  /* 触控目标 44px 标准 */\r
+  :is(#popup-content-panel, #pv-rules-panel) .popup-panel-btn {\r
+    width: var(--pv-hit);\r
+    height: var(--pv-hit);\r
+  }\r
+  /* 页脚：视觉保持 30px，热区用 ::before 扩到 44px，按钮间距 ≥8px */\r
+  #popup-panel-footer {\r
     height: 44px;\r
+    min-height: 44px;\r
   }\r
   #popup-panel-footer .popup-panel-btn {\r
     width: 30px;\r
     height: 30px;\r
+  }\r
+  #popup-panel-footer .popup-panel-btn::before {\r
+    content: '';\r
+    position: absolute;\r
+    inset: -7px;\r
   }\r
   #pv-float-settings {\r
     width: 48px;\r
@@ -4198,6 +5643,40 @@ a.xst::after {\r
 @media (pointer: coarse) and (max-width: 560px), (pointer: coarse) and (max-height: 560px) {\r
   .pv-resize {\r
     display: none;\r
+  }\r
+}\r
+/* 手机竖屏：头部改两行，标题占满第一行，5 个操作按钮平分第二行。\r
+   这样标题不再被 5×44px 按钮压到只剩几十像素（v2.3.1）。 */\r
+@media (pointer: coarse) and (max-width: 560px) {\r
+  #popup-panel-header {\r
+    flex-wrap: wrap;\r
+    height: auto;\r
+    min-height: 0;\r
+    padding: 6px 8px 8px;\r
+    gap: 6px 8px;\r
+  }\r
+  #popup-panel-title {\r
+    flex: 1 1 100%;\r
+    order: 1;\r
+  }\r
+  #popup-panel-title .pv-title-text {\r
+    display: -webkit-box;\r
+    -webkit-line-clamp: 2;\r
+    -webkit-box-orient: vertical;\r
+    white-space: normal;\r
+    line-height: 1.35;\r
+    font-size: var(--pv-fs-md);\r
+  }\r
+  #popup-panel-actions {\r
+    flex: 1 1 100%;\r
+    order: 2;\r
+    justify-content: space-between;\r
+    gap: 4px;\r
+  }\r
+  #popup-panel-actions .popup-panel-btn {\r
+    flex: 1 1 0;\r
+    width: auto;\r
+    height: var(--pv-hit);\r
   }\r
 }\r
 \r
@@ -4233,33 +5712,33 @@ a.xst::after {\r
   align-items: center;\r
   justify-content: center;\r
 }\r
+/* reader 本身不滚动：评论卡、资料卡、提示、灯箱都相对它定位 */\r
 .pv-x-reader {\r
   position: relative;\r
+  flex: 1;\r
+  min-width: 0;\r
+  min-height: 0;\r
+  display: flex;\r
+}\r
+/* 双栏：左帖子、右回复，各自滚动 */\r
+.pv-x-columns {\r
   flex: 1;\r
   min-width: 0;\r
   min-height: 0;\r
   display: grid;\r
   grid-template-columns: minmax(0, 1.04fr) minmax(0, 0.96fr);\r
 }\r
-.pv-x-reader.pv-x-single {\r
-  grid-template-columns: minmax(0, 1fr);\r
-  grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);\r
-}\r
 .pv-x-pane {\r
   min-width: 0;\r
   min-height: 0;\r
 }\r
-/* 左栏：独立滚动，滚动条隐藏 */\r
 .pv-x-pane-post {\r
   overflow-y: auto;\r
+  overflow-x: hidden;\r
   overscroll-behavior: contain;\r
-  scrollbar-width: none;\r
-  -ms-overflow-style: none;\r
+  border-right: 1px solid var(--pv-x-border, #eff3f4);\r
 }\r
-.pv-x-pane-post::-webkit-scrollbar {\r
-  display: none;\r
-}\r
-/* 右栏：工具行与回复框固定，只有评论列表滚动 */\r
+/* 右栏：工具行与回复框固定，只有回复列表滚动 */\r
 .pv-x-pane-replies {\r
   display: flex;\r
   flex-direction: column;\r
@@ -4270,18 +5749,81 @@ a.xst::after {\r
   min-height: 0;\r
   overflow-y: auto;\r
   overscroll-behavior: contain;\r
-  scrollbar-width: none;\r
-  -ms-overflow-style: none;\r
 }\r
-.pv-x-reply-list::-webkit-scrollbar {\r
-  display: none;\r
+/* 单栏：一个滚动容器，帖子 → 工具行（吸顶）→ 回复框 → 回复 */\r
+.pv-x-reader.pv-x-single .pv-x-columns {\r
+  display: block;\r
+  overflow-y: auto;\r
+  overscroll-behavior: contain;\r
 }\r
-.pv-x-pane-post {\r
-  border-right: 1px solid var(--pv-x-border, #eff3f4);\r
+.pv-x-reader.pv-x-single .pv-x-pane-post,\r
+.pv-x-reader.pv-x-single .pv-x-reply-list {\r
+  overflow: visible;\r
 }\r
 .pv-x-reader.pv-x-single .pv-x-pane-post {\r
   border-right: none;\r
   border-bottom: 1px solid var(--pv-x-border, #eff3f4);\r
+}\r
+.pv-x-reader.pv-x-single .pv-x-pane-replies {\r
+  display: block;\r
+  overflow: visible;\r
+}\r
+.pv-x-reader.pv-x-single .pv-x-reply-tools {\r
+  position: sticky;\r
+  top: 0;\r
+  z-index: 2;\r
+}\r
+/* 细滚动条：主题边框色，背景透明 */\r
+.pv-x-pane-post,\r
+.pv-x-reply-list,\r
+.pv-x-reader.pv-x-single .pv-x-columns,\r
+.pv-x-card-body {\r
+  scrollbar-width: thin;\r
+  scrollbar-color: var(--pv-x-scrollbar, #a9b4c0) transparent;\r
+}\r
+.pv-x-pane-post::-webkit-scrollbar,\r
+.pv-x-reply-list::-webkit-scrollbar,\r
+.pv-x-columns::-webkit-scrollbar,\r
+.pv-x-card-body::-webkit-scrollbar {\r
+  width: 6px;\r
+  background: transparent;\r
+}\r
+.pv-x-pane-post::-webkit-scrollbar-thumb,\r
+.pv-x-reply-list::-webkit-scrollbar-thumb,\r
+.pv-x-columns::-webkit-scrollbar-thumb,\r
+.pv-x-card-body::-webkit-scrollbar-thumb {\r
+  border-radius: 3px;\r
+  background-color: var(--pv-x-scrollbar, #a9b4c0);\r
+}\r
+/* 「窗体滚动条」关闭时：阅读器内的滚动条也隐藏（渐隐仍保留，提示还能滚） */\r
+#popup-content-area.pv-hide-scrollbar .pv-x-pane-post,\r
+#popup-content-area.pv-hide-scrollbar .pv-x-reply-list,\r
+#popup-content-area.pv-hide-scrollbar .pv-x-columns,\r
+#popup-content-area.pv-hide-scrollbar .pv-x-card-body {\r
+  scrollbar-width: none;\r
+}\r
+#popup-content-area.pv-hide-scrollbar .pv-x-pane-post::-webkit-scrollbar,\r
+#popup-content-area.pv-hide-scrollbar .pv-x-reply-list::-webkit-scrollbar,\r
+#popup-content-area.pv-hide-scrollbar .pv-x-columns::-webkit-scrollbar,\r
+#popup-content-area.pv-hide-scrollbar .pv-x-card-body::-webkit-scrollbar {\r
+  display: none;\r
+}\r
+/* 底部渐隐：吸底的伪元素盖住最后 14px（不影响滚动条与点击） */\r
+.pv-x-pane-post::after,\r
+.pv-x-reply-list::after,\r
+.pv-x-card-body::after {\r
+  content: '';\r
+  position: sticky;\r
+  bottom: 0;\r
+  display: block;\r
+  height: 14px;\r
+  margin-top: -14px;\r
+  pointer-events: none;\r
+  background: linear-gradient(to bottom, transparent, var(--pv-x-bg, #fff));\r
+}\r
+.pv-x-card-body::after {\r
+  height: 12px;\r
+  margin-top: -12px;\r
 }\r
 .pv-x-reply-tools {\r
   display: flex;\r
@@ -4316,9 +5858,7 @@ a.xst::after {\r
   padding: 12px 16px;\r
   border-bottom: 1px solid var(--pv-x-border, #eff3f4);\r
 }\r
-.pv-x-post:hover {\r
-  background-color: var(--pv-x-hover, rgba(0, 0, 0, 0.03));\r
-}\r
+/* 帖子行本身不可点，不做悬停底色（只有链接、按钮、引用卡有悬停态） */\r
 .pv-x-avatar-col {\r
   display: flex;\r
   flex-direction: column;\r
@@ -4341,12 +5881,31 @@ a.xst::after {\r
   object-fit: cover;\r
   border: 0;\r
 }\r
+/* 线程竖线：只在下一条是直接回复时画（data-thread-next），并穿过行间距接到下一条头像 */\r
 .pv-x-thread-line {\r
+  display: none;\r
   flex: 1;\r
   width: 2px;\r
   min-height: 8px;\r
   margin-top: 4px;\r
   background-color: var(--pv-x-border, #eff3f4);\r
+}\r
+.pv-x-post[data-thread-next='true'] > .pv-x-avatar-col > .pv-x-thread-line {\r
+  display: block;\r
+  /* 本行下内边距 12 + 分隔线 1 + 下一行上内边距 12 */\r
+  margin-bottom: -25px;\r
+}\r
+.pv-x-post[data-thread-next='true'] {\r
+  border-bottom-color: transparent;\r
+}\r
+.pv-x-reply[data-thread-next='true'] > .pv-x-avatar-col > .pv-x-thread-line {\r
+  /* 回复行上下内边距 10 */\r
+  margin-bottom: -21px;\r
+}\r
+/* 主贴正文放大，与上下文、回复拉开层级 */\r
+.pv-x-post-focal .pv-x-text {\r
+  font-size: 17px;\r
+  line-height: 24px;\r
 }\r
 .pv-x-main {\r
   min-width: 0;\r
@@ -4360,11 +5919,24 @@ a.xst::after {\r
   line-height: 20px;\r
 }\r
 .pv-x-name {\r
+  min-width: 0;\r
+  flex: 0 1 auto;\r
   font-weight: 700;\r
   color: var(--pv-x-fg, #0f1419);\r
   white-space: nowrap;\r
   overflow: hidden;\r
   text-overflow: ellipsis;\r
+}\r
+/* 空间不够时 @handle 先截断，再轮到昵称；时间不缩 */\r
+.pv-x-head .pv-x-handle {\r
+  min-width: 0;\r
+  flex: 0 1000 auto;\r
+  overflow: hidden;\r
+  text-overflow: ellipsis;\r
+}\r
+.pv-x-head .pv-x-time,\r
+.pv-x-head .pv-x-dot {\r
+  flex: none;\r
 }\r
 .pv-x-badge {\r
   width: 18px;\r
@@ -4424,7 +5996,9 @@ a.xst::after {\r
 .pv-x-actions {\r
   display: flex;\r
   align-items: center;\r
-  gap: 22px;\r
+  justify-content: space-between;\r
+  gap: 4px;\r
+  min-width: 0;\r
   margin-top: 10px;\r
   color: var(--pv-x-muted, #536471);\r
   font-size: 13px;\r
@@ -4432,7 +6006,9 @@ a.xst::after {\r
 .pv-x-action {\r
   display: inline-flex;\r
   align-items: center;\r
+  justify-content: center;\r
   gap: 6px;\r
+  min-width: 0;\r
   /* 按钮复位：X 的全局 CSS 会重置 button，这里显式写全 */\r
   appearance: none;\r
   -webkit-appearance: none;\r
@@ -4480,8 +6056,16 @@ a.xst::after {\r
   font-size: 14px;\r
   line-height: 19px;\r
 }\r
+.pv-x-post-compact .pv-x-head {\r
+  font-size: 13px;\r
+  line-height: 18px;\r
+  gap: 3px;\r
+}\r
+.pv-x-post-compact .pv-x-comment-entry {\r
+  font-size: 12px;\r
+}\r
 .pv-x-post-compact .pv-x-actions {\r
-  gap: 18px;\r
+  gap: 4px;\r
   margin-top: 6px;\r
   font-size: 12px;\r
 }\r
@@ -4598,8 +6182,8 @@ article.pv-x-post[data-reply-target='true'] {\r
   padding: 6px 16px;\r
   border: 0;\r
   border-radius: 999px;\r
-  background-color: var(--pv-x-accent, #1d9bf0);\r
-  color: #fff;\r
+  background-color: var(--pv-x-accent-fill, #0f6fbf);\r
+  color: var(--pv-x-on-accent, #fff);\r
   font: inherit;\r
   font-size: 14px;\r
   font-weight: 600;\r
@@ -4615,9 +6199,43 @@ article.pv-x-post[data-reply-target='true'] {\r
   justify-content: center;\r
   padding: 14px;\r
 }\r
-.pv-x-loading {\r
+.pv-x-loading,\r
+.pv-x-load-done {\r
   color: var(--pv-x-muted, #536471);\r
   font-size: 13px;\r
+}\r
+.pv-x-load-sentinel[data-state='none'] {\r
+  display: none;\r
+}\r
+/* 正文下方「查看 N 条回复 ›」：文字链接，打开评论卡 */\r
+.pv-x-replies-link {\r
+  -webkit-appearance: none;\r
+  appearance: none;\r
+  display: inline-block;\r
+  margin: 6px 0 0;\r
+  padding: 0;\r
+  border: 0;\r
+  background: transparent;\r
+  color: var(--pv-x-accent, #1d9bf0);\r
+  font: inherit;\r
+  font-size: 14px;\r
+  line-height: 20px;\r
+  cursor: pointer;\r
+}\r
+.pv-x-replies-link:hover,\r
+.pv-x-replies-link[aria-expanded='true'] {\r
+  text-decoration: underline;\r
+}\r
+.pv-x-replies-link[hidden] {\r
+  display: none;\r
+}\r
+/* 阅读器加载层：沿用 X 主题色（不用弹窗主题色，避免深色 X 上出现浅色文字底） */\r
+.pv-x-loading-layer {\r
+  --popup-text: var(--pv-x-fg, #0f1419);\r
+  --popup-muted: var(--pv-x-muted, #536471);\r
+  --popup-faint: var(--pv-x-muted, #536471);\r
+  --popup-accent: var(--pv-x-accent, #1d9bf0);\r
+  --popup-accent-soft: var(--pv-x-border, #eff3f4);\r
 }\r
 /* 翻译行 */\r
 .pv-x-translation-row {\r
@@ -4728,20 +6346,19 @@ article.pv-x-post[data-reply-target='true'] {\r
   gap: 10px;\r
   padding: 8px 10px;\r
 }\r
+/* 页码与「在 X 打开」放在深色胶囊上：浅色主题下图片留白处也看得清（白字直接压在浅底上会看不见） */\r
 .pv-x-media-counter,\r
 .pv-x-media-open {\r
+  padding: 2px 8px;\r
+  border-radius: 999px;\r
+  background-color: rgba(0, 0, 0, 0.6);\r
   color: #fff;\r
   font-size: 13px;\r
+  line-height: 20px;\r
   text-decoration: none;\r
 }\r
-.pv-x-media-counter {\r
-  opacity: 0.8;\r
-}\r
-.pv-x-media-open {\r
-  opacity: 0.85;\r
-}\r
 .pv-x-media-open:hover {\r
-  opacity: 1;\r
+  background-color: rgba(0, 0, 0, 0.75);\r
   text-decoration: underline;\r
 }\r
 .pv-x-media-collapse {\r
@@ -4938,6 +6555,9 @@ article.pv-x-post[data-reply-target='true'] {\r
   background-color: rgba(29, 155, 240, 0.1);\r
   color: var(--pv-x-accent, #1d9bf0);\r
 }\r
+.pv-x-comment-entry[hidden] {\r
+  display: none;\r
+}\r
 .pv-x-comment-entry svg {\r
   display: block;\r
   width: 15px;\r
@@ -4962,7 +6582,7 @@ article.pv-x-post[data-reply-target='true'] {\r
   flex-direction: column;\r
   max-height: 340px;\r
   pointer-events: auto;\r
-  border: 1px solid #e3e8ea;\r
+  border: 1px solid var(--pv-x-border, #eff3f4);\r
   border-radius: 14px;\r
   background-color: var(--pv-x-bg, #fff);\r
   box-shadow: 0 14px 34px rgba(0, 0, 0, 0.16), 0 2px 6px rgba(0, 0, 0, 0.06);\r
@@ -4990,13 +6610,13 @@ article.pv-x-post[data-reply-target='true'] {\r
 }\r
 .pv-x-card[data-arrow='up']::before {\r
   top: -6px;\r
-  border-left: 1px solid #e3e8ea;\r
-  border-top: 1px solid #e3e8ea;\r
+  border-left: 1px solid var(--pv-x-border, #eff3f4);\r
+  border-top: 1px solid var(--pv-x-border, #eff3f4);\r
 }\r
 .pv-x-card[data-arrow='down']::before {\r
   bottom: -6px;\r
-  border-right: 1px solid #e3e8ea;\r
-  border-bottom: 1px solid #e3e8ea;\r
+  border-right: 1px solid var(--pv-x-border, #eff3f4);\r
+  border-bottom: 1px solid var(--pv-x-border, #eff3f4);\r
 }\r
 .pv-x-card-head {\r
   display: flex;\r
@@ -5062,20 +6682,53 @@ article.pv-x-post[data-reply-target='true'] {\r
   overflow-y: auto;\r
   overscroll-behavior: contain;\r
   padding: 4px 10px 6px;\r
-  scrollbar-width: none;\r
-}\r
-.pv-x-card-body::-webkit-scrollbar {\r
-  display: none;\r
 }\r
 .pv-x-card-state {\r
   padding: 18px 4px;\r
   color: var(--pv-x-muted, #536471);\r
-  font-size: 12.5px;\r
+  font-size: 13px;\r
   text-align: center;\r
 }\r
 .pv-x-card-state-error {\r
+  display: flex;\r
+  flex-wrap: wrap;\r
+  align-items: center;\r
+  justify-content: center;\r
+  gap: 8px;\r
   padding: 8px 4px;\r
-  color: #c0272d;\r
+  color: var(--pv-x-danger, #d0101c);\r
+}\r
+.pv-x-card-loading {\r
+  display: flex;\r
+  align-items: center;\r
+  justify-content: center;\r
+  gap: 8px;\r
+}\r
+.pv-x-card-spinner {\r
+  width: 14px;\r
+  height: 14px;\r
+  border: 2px solid var(--pv-x-border, #eff3f4);\r
+  border-top-color: var(--pv-x-accent, #1d9bf0);\r
+  border-radius: 50%;\r
+  animation: pv-spin 0.8s linear infinite;\r
+}\r
+.pv-x-card-retry,\r
+.pv-x-load-retry {\r
+  -webkit-appearance: none;\r
+  appearance: none;\r
+  margin: 0;\r
+  padding: 4px 12px;\r
+  border: 1px solid currentColor;\r
+  border-radius: 999px;\r
+  background: transparent;\r
+  color: var(--pv-x-danger, #d0101c);\r
+  font: inherit;\r
+  font-size: 13px;\r
+  cursor: pointer;\r
+}\r
+.pv-x-card-retry:hover,\r
+.pv-x-load-retry:hover {\r
+  background-color: var(--pv-x-hover, rgba(0, 0, 0, 0.03));\r
 }\r
 .pv-x-card-foot {\r
   display: block;\r
@@ -5189,10 +6842,19 @@ article.pv-x-post[data-reply-target='true'] {\r
 .pv-x-profile-follow-hover {\r
   display: none;\r
 }\r
-.pv-x-profile-follow[data-following='true']:hover {\r
-  border-color: #f4212e;\r
-  background-color: rgba(244, 33, 46, 0.1);\r
-  color: #f4212e;\r
+.pv-x-profile-follow[data-following='true']:hover,\r
+.pv-x-profile-follow[data-confirm='true'] {\r
+  border-color: var(--pv-x-danger, #d0101c);\r
+  background-color: transparent;\r
+  color: var(--pv-x-danger, #d0101c);\r
+}\r
+/* 取关确认态：显示「确认取消关注」（default 文字），不切到悬停文字 */\r
+.pv-x-profile-follow[data-confirm='true'] .pv-x-profile-follow-default,\r
+.pv-x-profile-follow[data-confirm='true']:hover .pv-x-profile-follow-default {\r
+  display: inline;\r
+}\r
+.pv-x-profile-follow[data-confirm='true']:hover .pv-x-profile-follow-hover {\r
+  display: none;\r
 }\r
 .pv-x-profile-follow[data-following='true']:hover .pv-x-profile-follow-default {\r
   display: none;\r
@@ -5409,6 +7071,13 @@ article.pv-x-post[data-reply-target='true'] {\r
 .pv-x-toast[data-visible='true'] {\r
   opacity: 1;\r
 }\r
+/* 错误提示：底色同阅读器，危险色描边与文字（三套主题对比度都 ≥ 4.5:1） */\r
+.pv-x-toast[data-tone='error'] {\r
+  border: 1px solid var(--pv-x-danger, #d0101c);\r
+  background-color: var(--pv-x-bg, #fff);\r
+  color: var(--pv-x-danger, #d0101c);\r
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.16);\r
+}\r
 .pv-x-reply {\r
   display: grid;\r
   grid-template-columns: 40px minmax(0, 1fr);\r
@@ -5522,6 +7191,60 @@ article.pv-x-post[data-reply-target='true'] {\r
   font-size: 14px;\r
   text-align: center;\r
 }\r
+/* 资料卡、大图灯箱：淡入 */\r
+@keyframes pv-x-fade-in {\r
+  from {\r
+    opacity: 0;\r
+  }\r
+  to {\r
+    opacity: 1;\r
+  }\r
+}\r
+.pv-x-profile-card,\r
+.pv-x-media-lightbox {\r
+  animation: pv-x-fade-in 0.14s ease-out;\r
+}\r
+@media (prefers-reduced-motion: reduce) {\r
+  .pv-x-profile-card,\r
+  .pv-x-media-lightbox {\r
+    animation: none;\r
+  }\r
+}\r
+/* 触屏：小操作的点击区扩到 ≥ 40px（用 ::before 扩热区，视觉尺寸不变） */\r
+@media (pointer: coarse) {\r
+  .pv-x-action,\r
+  .pv-x-comment-entry,\r
+  .pv-x-replies-link,\r
+  .pv-x-sort-btn,\r
+  .pv-x-more-text,\r
+  .pv-x-card-btn,\r
+  .pv-x-composer-target-clear,\r
+  .pv-x-media-collapse,\r
+  .pv-x-media-open,\r
+  .pv-x-open,\r
+  .pv-x-translation-link {\r
+    position: relative;\r
+  }\r
+  .pv-x-action::before,\r
+  .pv-x-comment-entry::before,\r
+  .pv-x-replies-link::before,\r
+  .pv-x-sort-btn::before,\r
+  .pv-x-more-text::before,\r
+  .pv-x-card-btn::before,\r
+  .pv-x-composer-target-clear::before,\r
+  .pv-x-media-collapse::before,\r
+  .pv-x-media-open::before,\r
+  .pv-x-open::before,\r
+  .pv-x-translation-link::before {\r
+    content: '';\r
+    position: absolute;\r
+    top: 50%;\r
+    left: 50%;\r
+    width: max(100%, 40px);\r
+    height: 40px;\r
+    transform: translate(-50%, -50%);\r
+  }\r
+}\r
 `;
 
   // src/ui/PopupPanel.js
@@ -5529,7 +7252,7 @@ article.pv-x-post[data-reply-target='true'] {\r
   var isSnapTransform = (value) => SNAP_TRANSFORM_RE.test(String(value || "").trim());
   var PopupPanel = class {
     constructor() {
-      gm.addStyle(style_default);
+      this._stylesInstalled = false;
       this.panel = null;
       this.overlay = null;
       this.titleEl = null;
@@ -5542,6 +7265,7 @@ article.pv-x-post[data-reply-target='true'] {\r
       this.forwardBtn = null;
       this.settingsPopover = null;
       this.settingsBtn = null;
+      this.rulesPanel = null;
       this._settingsAnchor = null;
       this.currentPanelSize = null;
       this.currentUrl = "";
@@ -5552,8 +7276,18 @@ article.pv-x-post[data-reply-target='true'] {\r
       this._snapTimer = null;
       this._centerTimer = null;
     }
+    /** 外壳样式：Shadow DOM 可用时装进 shadow root（页面只留论坛装饰那一段），否则按旧方式全局注入。 */
+    _installStyles() {
+      var _a;
+      if (this._stylesInstalled) return;
+      this._stylesInstalled = true;
+      const root = ((_a = config.ui) == null ? void 0 : _a.shadow) === false ? null : createUiHost(style_default);
+      if (!root) gm.addStyle(style_default);
+    }
     ensure() {
       if (this.panel) return this.panel;
+      this._installStyles();
+      if (this._theme) this.applyTheme(this._theme);
       this.overlay = el("div", { id: "popup-panel-overlay", onclick: () => this.close() });
       mountUi(this.overlay);
       const titleMark = el("span", { class: "pv-title-mark" });
@@ -5577,7 +7311,7 @@ article.pv-x-post[data-reply-target='true'] {\r
             this.hideSettings();
             return;
           }
-          this.showSettingsNear(this.settingsBtn.getBoundingClientRect());
+          this.showSettingsNear(this.settingsBtn.getBoundingClientRect(), this.settingsBtn);
         }
       });
       this.settingsBtn = this.toolbar.settings;
@@ -5604,7 +7338,11 @@ article.pv-x-post[data-reply-target='true'] {\r
         }
       });
       this.forwardBtn.appendChild(svgIcon("arrowRight", { size: 14 }));
-      const navGroup = el("div", { class: "pv-footer-nav" }, this.backBtn, this.forwardBtn);
+      this.backBtn.setAttribute("aria-label", "后退");
+      this.forwardBtn.setAttribute("aria-label", "前进");
+      this.navGroup = el("div", { class: "pv-footer-nav pv-no-history" }, this.backBtn, this.forwardBtn);
+      const navGroup = this.navGroup;
+      this.footerHostEl = el("span", { class: "pv-footer-host" });
       this.footerLinkBtn = el("button", {
         id: "popup-panel-footer-link",
         class: "popup-panel-btn",
@@ -5615,35 +7353,36 @@ article.pv-x-post[data-reply-target='true'] {\r
         }
       });
       this.footerLinkBtn.appendChild(svgIcon("external", { size: 14 }));
-      this.footer = el("div", { id: "popup-panel-footer" }, navGroup, this.footerLinkBtn);
-      this.panel = el("div", { id: "popup-content-panel" }, header, this.contentArea, this.footer);
+      this.footerLinkBtn.setAttribute("aria-label", "在新标签页打开");
+      this.footer = el("div", { id: "popup-panel-footer" }, navGroup, this.footerHostEl, this.footerLinkBtn);
+      this.titleTextEl.id = "popup-panel-title-text";
+      this.panel = el(
+        "div",
+        { id: "popup-content-panel", role: "dialog", tabindex: "-1", "aria-labelledby": "popup-panel-title-text" },
+        header,
+        this.contentArea,
+        this.footer
+      );
       mountUi(this.panel);
       this.floatBtn = el("button", { id: "pv-float-settings", title: "脚本设置" });
       this.floatBtn.appendChild(svgIcon("settings", { size: 16 }));
       this.floatBtn.addEventListener("click", () => {
-        if (this.settingsPopover.classList.contains("visible")) {
+        var _a;
+        if ((_a = this.settingsPopover) == null ? void 0 : _a.classList.contains("visible")) {
           this.hideSettings();
           return;
         }
-        this.showSettingsNear(this.floatBtn.getBoundingClientRect());
+        this.showSettingsNear(this.floatBtn.getBoundingClientRect(), this.floatBtn);
       });
       mountUi(this.floatBtn);
-      this.settingsPopover = createSettingsPanel({
-        onChange: (s) => this.applySettings(s),
-        onManageRules: () => this.showRulesPanel(),
-        onClose: () => this.hideSettings()
+      [this.panel, this.overlay].forEach((node) => this._syncInert(node));
+      eventBus.on("picker-start", () => {
+        this.panel.classList.add("pv-picking");
+        this.overlay.classList.add("pv-picking");
       });
-      mountUi(this.settingsPopover);
-      this.rulesPanel = createRulesPanel();
-      mountUi(this.rulesPanel.backdrop);
-      mountUi(this.rulesPanel.root);
-      document.addEventListener("click", (e) => {
-        var _a;
-        if (!((_a = this.settingsPopover) == null ? void 0 : _a.classList.contains("visible"))) return;
-        if (e.target.closest("#popup-settings-popover") || e.target.closest("#popup-panel-settings") || e.target.closest("#pv-float-settings")) {
-          return;
-        }
-        this.hideSettings();
+      eventBus.on("picker-end", () => {
+        this.panel.classList.remove("pv-picking");
+        this.overlay.classList.remove("pv-picking");
       });
       if (!window.matchMedia || !window.matchMedia("(pointer: coarse)").matches) {
         header.addEventListener("dblclick", (e) => {
@@ -5652,26 +7391,56 @@ article.pv-x-post[data-reply-target='true'] {\r
         });
       }
       this.contentArea.addEventListener("click", (e) => {
-        var _a, _b, _c, _d;
-        if (settingsManager.get().linkIntercept !== false) return;
-        const link = (_b = (_a = e.target).closest) == null ? void 0 : _b.call(_a, "a[href]");
+        var _a, _b;
+        if (settingsManager.get().popupLinksNewTab !== false) return;
+        const link = closestInPath(e, "a[href]");
         if (!link) return;
         const href = link.getAttribute("href");
         if (!href || /^(javascript:|#)/i.test(href.trim())) return;
         e.preventDefault();
         e.stopPropagation();
         const url = link.href;
-        (_d = (_c = this.handlers).onOpenInWindow) == null ? void 0 : _d.call(_c, url, (link.textContent || "").trim());
+        (_b = (_a = this.handlers).onOpenInWindow) == null ? void 0 : _b.call(_a, url, (link.textContent || "").trim());
       });
       this._setupDrag(header);
       this._setupResize();
       this._setupKeyboard();
       return this.panel;
     }
+    /** 设置面板按需创建：首次打开设置/规则前不构建它的上百个表单节点。 */
+    ensureSettingsPanel() {
+      if (this.settingsPopover) return this.settingsPopover;
+      this.settingsPopover = createSettingsPanel({
+        onChange: (s) => this.applySettings(s),
+        onManageRules: () => this.showRulesPanel(),
+        onClose: () => this.hideSettings()
+      });
+      mountUi(this.settingsPopover);
+      this._syncInert(this.settingsPopover);
+      document.addEventListener("click", (e) => {
+        var _a;
+        if (!((_a = this.settingsPopover) == null ? void 0 : _a.classList.contains("visible"))) return;
+        if (closestInPath(e, "#popup-settings-popover, #popup-panel-settings, #pv-float-settings")) return;
+        this.hideSettings();
+      });
+      return this.settingsPopover;
+    }
+    /** 规则面板同样按需创建；油猴菜单直接点选时也会先调用这里。 */
+    ensureRulesPanel() {
+      if (this.rulesPanel) return this.rulesPanel;
+      this.rulesPanel = createRulesPanel();
+      mountUi(this.rulesPanel.backdrop);
+      mountUi(this.rulesPanel.root);
+      this._syncInert(this.rulesPanel.root);
+      this._syncInert(this.rulesPanel.backdrop);
+      return this.rulesPanel;
+    }
     show(title, url) {
       var _a;
       debugMark("panel.show");
       this.ensure();
+      clearTimeout(this._clearTimer);
+      this._clearTimer = null;
       (_a = this.floatBtn) == null ? void 0 : _a.classList.add("hidden");
       this.currentUrl = url || "";
       this.titleTextEl.textContent = title || "查看内容";
@@ -5700,11 +7469,19 @@ article.pv-x-post[data-reply-target='true'] {\r
         borderRadius: "",
         zIndex: ""
       });
+      this.panel.classList.remove("pv-fullscreen");
       this.isFullScreen = false;
       this.updateMaximizeIcon();
       this.applySettings(settingsManager.get());
+      if (!this._returnFocus) this._returnFocus = deepActiveElement();
       requestAnimationFrame(() => {
         this.panel.classList.add("visible");
+        this.panel.inert = false;
+        this._interactedInside = true;
+        try {
+          this.panel.focus({ preventScroll: true });
+        } catch {
+        }
         debugMark("panel.visible");
         if (settingsManager.get().windowMode !== "float") this.overlay.classList.add("visible");
         this._fixCentering();
@@ -5720,32 +7497,57 @@ article.pv-x-post[data-reply-target='true'] {\r
       clearTimeout(this._centerTimer);
       this.hideSettings();
       (_a = this.floatBtn) == null ? void 0 : _a.classList.remove("hidden");
+      const focusInside = this.panel.contains(deepActiveElement()) || deepActiveElement() === document.body;
       this.panel.classList.remove("visible");
       this.overlay.classList.remove("visible");
+      const back = this._returnFocus;
+      this._returnFocus = null;
+      this._interactedInside = false;
+      if (focusInside && back && back.isConnected && back !== document.body && typeof back.focus === "function") {
+        try {
+          back.focus({ preventScroll: true });
+        } catch {
+        }
+      }
       (_c = (_b = this.handlers).onClose) == null ? void 0 : _c.call(_b);
-      setTimeout(() => {
+      clearTimeout(this._clearTimer);
+      this._clearTimer = setTimeout(() => {
+        this._clearTimer = null;
         this.contentArea.innerHTML = "";
         this.currentUrl = "";
       }, 350);
     }
     setTitle(text) {
-      if (this.titleTextEl) this.titleTextEl.textContent = text || "查看内容";
+      if (!this.titleTextEl) return;
+      this.titleTextEl.textContent = text || "查看内容";
+      this.titleTextEl.title = text || "";
     }
     updateFooterUrl(url) {
       var _a;
       if (this.footerLinkBtn) this.footerLinkBtn.title = url ? "在新标签页打开：" + url : "在新标签页打开";
+      if (this.footerHostEl) {
+        let host = "";
+        try {
+          host = url ? new URL(url).hostname.replace(/^www\./, "") : "";
+        } catch {
+        }
+        this.footerHostEl.textContent = host;
+        this.footerHostEl.title = url || "";
+      }
       (_a = this.footer) == null ? void 0 : _a.classList.toggle("empty", !url);
     }
-    /** 更新前进/后退按钮可用状态。 */
+    /** 更新前进/后退按钮可用状态；两个都不可用时整组隐藏。 */
     setNavState(canBack, canForward) {
+      var _a;
       if (this.backBtn) this.backBtn.disabled = !canBack;
       if (this.forwardBtn) this.forwardBtn.disabled = !canForward;
+      (_a = this.navGroup) == null ? void 0 : _a.classList.toggle("pv-no-history", !canBack && !canForward);
     }
     /**
      * 应用设置到面板：滚动条显隐 + 窗体大小预设 + 手机模式位置记忆。
      */
     applySettings(s) {
-      var _a, _b, _c, _d, _e, _f, _g;
+      var _a, _b, _c, _d, _e, _f, _g, _h;
       this.ensure();
       const prevSize = this.currentPanelSize;
       const nextSize = s.panelSize || config.popup.defaultSize;
@@ -5753,8 +7555,10 @@ article.pv-x-post[data-reply-target='true'] {\r
       this.applyTheme(s.theme);
       this._setHandedness(s.handedness);
       (_a = this.panel) == null ? void 0 : _a.classList.toggle("pv-locked", s.locked === true);
-      (_b = this.panel) == null ? void 0 : _b.classList.toggle("pv-no-mobile-resize", s.mobileResize === false);
-      (_c = this.contentArea) == null ? void 0 : _c.classList.toggle("pv-hide-scrollbar", s.scrollbarVisible === false);
+      (_b = this.floatBtn) == null ? void 0 : _b.classList.toggle("pv-float-off", s.hideFloatButton === true);
+      if (this.floatBtn) this.floatBtn.style.display = s.hideFloatButton === true ? "none" : "";
+      (_c = this.panel) == null ? void 0 : _c.classList.toggle("pv-no-mobile-resize", s.mobileResize === false);
+      (_d = this.contentArea) == null ? void 0 : _d.classList.toggle("pv-hide-scrollbar", s.scrollbarVisible === false);
       let width;
       let height;
       if (nextSize === "custom" && s.customSize) {
@@ -5773,10 +7577,10 @@ article.pv-x-post[data-reply-target='true'] {\r
         width = size.width;
         height = size.height;
       }
-      (_d = this.panel) == null ? void 0 : _d.style.setProperty("--popup-width", width);
-      (_e = this.panel) == null ? void 0 : _e.style.setProperty("--popup-height", height);
-      if ((_f = this.panel) == null ? void 0 : _f.classList.contains("visible")) this._snapTransform();
-      if (((_g = this.settingsPopover) == null ? void 0 : _g.classList.contains("visible")) && this._settingsAnchor) {
+      (_e = this.panel) == null ? void 0 : _e.style.setProperty("--popup-width", width);
+      (_f = this.panel) == null ? void 0 : _f.style.setProperty("--popup-height", height);
+      if ((_g = this.panel) == null ? void 0 : _g.classList.contains("visible")) this._snapTransform();
+      if (((_h = this.settingsPopover) == null ? void 0 : _h.classList.contains("visible")) && this._settingsAnchor) {
         this.showSettingsNear(this._settingsAnchor);
       }
       if (nextSize === "phone") {
@@ -5788,10 +7592,14 @@ article.pv-x-post[data-reply-target='true'] {\r
     }
     /** 应用外观主题：auto 跟随系统，light/dark 手动覆盖。 */
     applyTheme(theme) {
+      var _a;
       const t = theme || "auto";
-      const root = document.documentElement;
+      this._theme = t;
+      const host = (_a = uiRoot()) == null ? void 0 : _a.host;
+      const root = host || document.documentElement;
       root.classList.toggle("pv-theme-dark", t === "dark");
       root.classList.toggle("pv-theme-light", t === "light");
+      if (host) document.documentElement.classList.remove("pv-theme-dark", "pv-theme-light");
     }
     /** 惯用手：左手模式镜像工具栏（✕ 移到左上角）。 */
     _setHandedness(handedness) {
@@ -5903,55 +7711,97 @@ article.pv-x-post[data-reply-target='true'] {\r
       if ((_a = this.panel) == null ? void 0 : _a.classList.contains("visible")) (_b = this.overlay) == null ? void 0 : _b.classList.add("visible");
     }
     /** 在指定锚点旁显示设置面板（锚点为元素 getBoundingClientRect）。 */
-    showSettingsNear(rect) {
-      var _a;
+    showSettingsNear(rect, trigger = null) {
+      var _a, _b;
+      this.ensure();
+      this.ensureSettingsPanel();
       const margin = 8;
       const pop = this.settingsPopover;
       this._settingsAnchor = rect;
       pop.style.maxHeight = "";
       pop.style.width = "";
-      const popW = pop.offsetWidth || 280;
-      const popH = pop.offsetHeight || 320;
+      pop.style.bottom = "";
+      pop.classList.remove("pv-settings-sheet");
       const vw = window.innerWidth;
       const vh = window.innerHeight;
+      const coarse = !!(window.matchMedia && window.matchMedia("(pointer: coarse)").matches);
+      const isSheet = coarse && (vw <= 560 || vh <= 560);
+      if (isSheet) pop.classList.add("pv-settings-sheet");
+      const popW = pop.offsetWidth || 340;
+      const popH = pop.offsetHeight || 320;
       const spaceBelow = vh - rect.bottom - margin;
       const spaceAbove = rect.top - margin;
-      const isMobile = vw <= 560 || vh <= 560 || window.matchMedia && window.matchMedia("(pointer: coarse)").matches;
       let left;
-      let top;
-      if (popH <= spaceBelow) {
+      let top = null;
+      if (isSheet) {
+        left = 0;
+      } else if (spaceBelow >= 240) {
         top = rect.bottom + margin;
-      } else if (popH <= spaceAbove) {
+        if (popH > spaceBelow) pop.style.maxHeight = `${Math.floor(spaceBelow)}px`;
+      } else if (spaceAbove >= 240) {
         top = rect.top - popH;
-      } else if (isMobile) {
-        top = margin;
-        left = margin;
-        pop.style.width = `${vw - margin * 2}px`;
-        pop.style.maxHeight = `${vh - margin * 2}px`;
       } else {
         top = margin;
       }
-      if (top < margin) top = margin;
-      if (left === void 0) {
+      if (top !== null && top < margin) top = margin;
+      if (!isSheet) {
         left = rect.right - popW;
         if (left < margin) left = margin;
         if (left + popW > vw - margin) left = vw - margin - popW;
         if (left < margin) left = margin;
       }
+      if (!isSheet && ((_a = this.panel) == null ? void 0 : _a.classList.contains("visible"))) {
+        const panelRect = this.panel.getBoundingClientRect();
+        const maxBottom = Math.min(vh - margin, panelRect.bottom - margin);
+        const available = Math.floor(maxBottom - top);
+        if (available >= 240 && popH > available) {
+          pop.style.maxHeight = `${available}px`;
+        }
+      }
       pop.style.left = `${left}px`;
-      pop.style.top = `${top}px`;
+      if (top === null) {
+        pop.style.top = "auto";
+        pop.style.bottom = "0";
+      } else {
+        pop.style.top = `${top}px`;
+      }
+      const wasOpen = pop.classList.contains("visible");
       pop.classList.add("visible");
-      (_a = this.settingsBtn) == null ? void 0 : _a.classList.add("active");
+      (_b = this.settingsBtn) == null ? void 0 : _b.classList.add("active");
+      if (!wasOpen) {
+        this._settingsReturnFocus = trigger || deepActiveElement();
+        pop.inert = false;
+        const first = pop.querySelector('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])');
+        try {
+          first == null ? void 0 : first.focus({ preventScroll: true });
+        } catch {
+        }
+      }
     }
-    hideSettings() {
-      var _a, _b;
-      (_a = this.settingsPopover) == null ? void 0 : _a.classList.remove("visible");
-      (_b = this.settingsBtn) == null ? void 0 : _b.classList.remove("active");
+    hideSettings({ restoreFocus = false } = {}) {
+      var _a;
+      const pop = this.settingsPopover;
+      if (!pop) return;
+      const wasOpen = pop.classList.contains("visible");
+      const focusInside = wasOpen && pop.contains(deepActiveElement());
+      pop.classList.remove("visible");
+      (_a = this.settingsBtn) == null ? void 0 : _a.classList.remove("active");
+      const back = this._settingsReturnFocus;
+      this._settingsReturnFocus = null;
+      if (wasOpen && (restoreFocus || focusInside) && back && back.isConnected && typeof back.focus === "function") {
+        try {
+          back.focus({ preventScroll: true });
+        } catch {
+        }
+      }
     }
     showRulesPanel() {
       var _a;
+      this.ensure();
+      this.ensureRulesPanel();
+      const trigger = this._settingsReturnFocus || this.settingsBtn || deepActiveElement();
       this.hideSettings();
-      (_a = this.rulesPanel) == null ? void 0 : _a.open();
+      (_a = this.rulesPanel) == null ? void 0 : _a.open(trigger);
     }
     getContentArea() {
       this.ensure();
@@ -5971,22 +7821,13 @@ article.pv-x-post[data-reply-target='true'] {\r
           maxHeight: this.panel.style.maxHeight
         };
         this.panel.style.transition = "none";
-        Object.assign(this.panel.style, {
-          width: "100vw",
-          height: "100vh",
-          top: "0px",
-          left: "0px",
-          transform: "none",
-          borderRadius: "0px",
-          maxWidth: "none",
-          maxHeight: "none",
-          zIndex: "10002"
-        });
+        this.panel.classList.add("pv-fullscreen");
         void this.panel.offsetWidth;
         this.panel.style.transition = "";
         this.isFullScreen = true;
       } else {
         this.panel.style.transition = "none";
+        this.panel.classList.remove("pv-fullscreen");
         Object.assign(this.panel.style, {
           width: this.preFullScreen.width || "",
           height: this.preFullScreen.height || "",
@@ -5996,7 +7837,7 @@ article.pv-x-post[data-reply-target='true'] {\r
           borderRadius: this.preFullScreen.borderRadius || "",
           maxWidth: this.preFullScreen.maxWidth || "",
           maxHeight: this.preFullScreen.maxHeight || "",
-          zIndex: "10000"
+          zIndex: ""
         });
         void this.panel.offsetWidth;
         this.panel.style.transition = "";
@@ -6059,74 +7900,196 @@ article.pv-x-post[data-reply-target='true'] {\r
     _clampToViewport() {
       clampToViewport(this.panel, { isFullScreen: this.isFullScreen });
     }
+    /**
+     * 弹窗快捷键。规则（v2.3.0）：
+     * - 正在输入（输入框/文本域/可编辑区、输入法组字中）时不处理任何快捷键；
+     *   Esc 在脚本自己的输入框里只让它失焦，在宿主页面的输入框里完全不管。
+     * - 单字母 F / R 不能带修饰键，且只在「焦点或最近一次点击在弹窗内」或弹窗为模态（有遮罩）时生效，
+     *   避免浮动模式下抢宿主网站自己的快捷键。
+     * fromFrame：来自弹窗内同源 iframe 的按键（焦点在帖子里），视为弹窗内。
+     */
+    handleKeydown(e, { fromFrame = false } = {}) {
+      var _a, _b, _c, _d, _e, _f, _g, _h;
+      if (!this.panel || e.defaultPrevented || e.isComposing || e.keyCode === 229) return;
+      const settingsOpen = (_a = this.settingsPopover) == null ? void 0 : _a.classList.contains("visible");
+      const panelOpen = this.panel.classList.contains("visible");
+      if (!settingsOpen && !panelOpen) return;
+      const target = eventTarget(e);
+      const editable = isEditableEvent(e);
+      const inside = fromFrame || isOwnUiNode(target);
+      if (e.key === "Escape") {
+        if (editable) {
+          if (inside && target && typeof target.blur === "function") {
+            target.blur();
+            e.preventDefault();
+            e.stopImmediatePropagation();
+          }
+          return;
+        }
+        if (settingsOpen) {
+          this.hideSettings({ restoreFocus: true });
+          e.stopImmediatePropagation();
+          return;
+        }
+        this.close();
+        return;
+      }
+      if (!panelOpen || editable) return;
+      if (e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey && (e.key === "ArrowLeft" || e.key === "ArrowRight")) {
+        e.preventDefault();
+        if (e.key === "ArrowLeft") (_c = (_b = this.handlers).onBack) == null ? void 0 : _c.call(_b);
+        else (_e = (_d = this.handlers).onForward) == null ? void 0 : _e.call(_d);
+        return;
+      }
+      if (e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return;
+      const modal = (_f = this.overlay) == null ? void 0 : _f.classList.contains("visible");
+      if (!inside && !modal && !this._interactedInside) return;
+      const key = String(e.key || "").toLowerCase();
+      if (key === "f") {
+        e.preventDefault();
+        this.toggleFullScreen();
+      } else if (key === "r" && this.currentUrl) {
+        e.preventDefault();
+        (_h = (_g = this.handlers).onRefresh) == null ? void 0 : _h.call(_g, this.currentUrl);
+      }
+    }
     _setupKeyboard() {
       if (this._onKeydownBound) return;
-      this._onKeydownBound = (e) => {
-        var _a, _b, _c, _d, _e, _f, _g;
-        if (!this.panel || !this.panel.classList.contains("visible")) return;
-        if (e.key === "Escape") {
-          if ((_a = this.settingsPopover) == null ? void 0 : _a.classList.contains("visible")) {
-            this.hideSettings();
-            e.stopImmediatePropagation();
-            return;
-          }
-          this.close();
-        } else if (e.key === "ArrowLeft" && e.altKey) {
-          e.preventDefault();
-          (_c = (_b = this.handlers).onBack) == null ? void 0 : _c.call(_b);
-        } else if (e.key === "ArrowRight" && e.altKey) {
-          e.preventDefault();
-          (_e = (_d = this.handlers).onForward) == null ? void 0 : _e.call(_d);
-        } else if (e.key === "f" || e.key === "F") this.toggleFullScreen();
-        else if (e.key === "r" || e.key === "R") {
-          if (this.currentUrl && !e.ctrlKey && !e.metaKey && !e.altKey) {
-            e.preventDefault();
-            (_g = (_f = this.handlers).onRefresh) == null ? void 0 : _g.call(_f, this.currentUrl);
-          }
-        }
-      };
+      this._onKeydownBound = (e) => this.handleKeydown(e);
       document.addEventListener("keydown", this._onKeydownBound);
+      document.addEventListener(
+        "pointerdown",
+        (e) => {
+          this._interactedInside = isOwnUiNode(eventTarget(e));
+        },
+        true
+      );
+      this._setupFrameKeys();
       setupWheelScrollChain({
         panel: this.panel,
         contentArea: () => this.contentArea,
         isFullScreen: () => this.isFullScreen
       });
     }
+    /**
+     * 焦点在帖子 iframe 里时，按键事件到不了宿主 document。
+     * 同源 iframe 每次（重新）加载后给它的 document 挂一个转发监听；跨域读不到就跳过。
+     */
+    _setupFrameKeys() {
+      const attach = (iframe) => {
+        const bind = () => {
+          try {
+            const doc = iframe.contentDocument;
+            if (!doc || doc.__pv2Keys) return;
+            doc.__pv2Keys = true;
+            doc.addEventListener("keydown", (e) => this.handleKeydown(e, { fromFrame: true }));
+            doc.addEventListener("pointerdown", () => {
+              this._interactedInside = true;
+            });
+          } catch {
+          }
+        };
+        bind();
+        iframe.addEventListener("load", bind);
+      };
+      const scan = () => {
+        for (const iframe of this.contentArea.querySelectorAll("iframe")) {
+          if (iframe.__pv2KeysWatched) continue;
+          iframe.__pv2KeysWatched = true;
+          attach(iframe);
+        }
+      };
+      new MutationObserver(scan).observe(this.contentArea, { childList: true, subtree: true });
+    }
+    /**
+     * 隐藏中的面板/弹层设为 inert：不能 Tab 进去，读屏也读不到；视觉上的淡入淡出不受影响。
+     * 以 .visible 类为准自动同步，不必在每个显示/隐藏的地方手动维护。
+     */
+    _syncInert(node) {
+      if (!node) return;
+      const sync = () => {
+        const hidden = !node.classList.contains("visible");
+        node.inert = hidden;
+        if (hidden) node.setAttribute("aria-hidden", "true");
+        else node.removeAttribute("aria-hidden");
+      };
+      sync();
+      new MutationObserver(sync).observe(node, { attributes: true, attributeFilter: ["class"] });
+    }
   };
 
   // src/ui/Loading.js
-  function showLoading(container, { title = "正在加载内容..." } = {}) {
+  var SLOW_HINT_MS = 3e3;
+  function showLoading(container, { title = "正在加载内容…", url = "" } = {}) {
     container.classList.remove("iframe-direct-load");
+    const sub = el("div", { class: "pv-loading-sub", text: "请稍候" });
     const view = el(
       "div",
-      { id: "popup-panel-loading" },
-      el("div", { class: "spinner" }),
+      { id: "popup-panel-loading", role: "status", "aria-live": "polite" },
+      el("div", { class: "pv-spinner spinner", "aria-hidden": "true" }),
       el("div", { class: "pv-loading-hint", text: title }),
-      el("div", { class: "pv-loading-sub", text: "请稍候片刻" })
+      sub
     );
     container.replaceChildren(view);
+    setTimeout(() => {
+      if (!view.isConnected) return;
+      sub.textContent = "还在加载，网站响应较慢";
+      if (url) {
+        view.appendChild(
+          el("button", {
+            type: "button",
+            class: "pv-loading-open",
+            text: "在新标签页打开",
+            onclick: () => window.open(url, "_blank", "noopener")
+          })
+        );
+      }
+    }, SLOW_HINT_MS);
     return view;
   }
 
   // src/ui/ErrorView.js
-  function showError(container, message, url) {
+  function describeLoadError(message) {
+    const text = String(message || "");
+    const status = Number((text.match(/HTTP\s*(\d{3})/i) || [])[1]);
+    if (status === 404 || status === 410) {
+      return { title: "帖子不存在或已被删除", detail: `服务器返回 ${status}`, retry: false };
+    }
+    if (status === 401 || status === 403) {
+      return { title: "没有权限查看", detail: `可能需要登录，或被网站拒绝（${status}）`, retry: false };
+    }
+    if (status === 429) return { title: "请求太频繁", detail: "网站暂时限制了访问，稍后再试（429）", retry: true };
+    if (status >= 500) return { title: "网站暂时出错", detail: `服务器返回 ${status}，稍后再试`, retry: true };
+    if (status) return { title: "加载失败", detail: `服务器返回 ${status}`, retry: true };
+    if (/超时|timeout/i.test(text)) return { title: "加载超时", detail: "网络较慢或网站没有响应", retry: true };
+    if (/网络|network/i.test(text)) return { title: "网络请求失败", detail: "请检查网络连接", retry: true };
+    if (/解析/.test(text)) return { title: "内容无法显示", detail: "页面结构无法解析，可在新标签页打开", retry: false };
+    return { title: "加载失败", detail: text || "无法加载请求的内容", retry: true };
+  }
+  function showError(container, message, url, { onRetry } = {}) {
     container.classList.remove("iframe-direct-load");
-    const openBtn = el("button", { text: "在新标签页打开" });
+    const info = describeLoadError(message);
+    const openBtn = el("button", { type: "button", class: "pv-error-open", text: "在新标签页打开" });
     if (!url) {
       openBtn.disabled = true;
     } else {
       openBtn.addEventListener("click", () => window.open(url, "_blank", "noopener"));
     }
+    const actions = el("div", { class: "pv-error-actions" });
+    if (info.retry && onRetry) {
+      actions.appendChild(el("button", { type: "button", class: "pv-error-retry", text: "重试", onclick: () => onRetry() }));
+    }
+    actions.appendChild(openBtn);
     const view = el(
       "div",
-      { id: "popup-panel-error" },
+      { id: "popup-panel-error", role: "alert" },
       svg(
         '<circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line>',
-        { class: "pv-error-icon", width: 52, height: 52, "stroke-width": 1.5 }
+        { class: "pv-error-icon", width: 52, height: 52, "stroke-width": 1.5, "aria-hidden": "true" }
       ),
-      el("h3", { text: "加载失败" }),
-      el("p", { text: message || "无法加载请求的内容" }),
-      openBtn
+      el("h3", { text: info.title }),
+      el("p", { text: info.detail }),
+      actions
     );
     container.replaceChildren(view);
   }
@@ -6143,6 +8106,8 @@ article.pv-x-post[data-reply-target='true'] {\r
       this._pendingNativeNav = false;
       this._pendingNativeTimer = null;
       this._pendingRevertIndex = -1;
+      this._loadToken = 0;
+      this._pendingDispose = null;
       this.popup.handlers = {
         onRefresh: (url) => {
           const e = this._navHistory[this._navIndex];
@@ -6162,9 +8127,8 @@ article.pv-x-post[data-reply-target='true'] {\r
         onBack: () => this.back(),
         onForward: () => this.forward(),
         onClose: () => {
-          var _a;
-          (_a = this._abort) == null ? void 0 : _a.call(this);
-          this._abort = null;
+          this._deferDispose();
+          this._resetHistory();
         }
       };
     }
@@ -6289,6 +8253,7 @@ article.pv-x-post[data-reply-target='true'] {\r
       this._pendingNativeNav = false;
       if (wasNative) clearTimeout(this._pendingNativeTimer);
       if (url === this._currentUrl) return;
+      if (/^(content|about:blank)?$/i.test(String(title || "").trim())) title = "";
       if (wasNative) {
         const entry = this._navHistory[this._navIndex];
         if (entry) {
@@ -6310,12 +8275,15 @@ article.pv-x-post[data-reply-target='true'] {\r
     load(url) {
       var _a;
       debugMark("popup.load: " + url);
+      this._flushDispose();
       (_a = this._abort) == null ? void 0 : _a.call(this);
       this._abort = null;
+      const token = ++this._loadToken;
+      const current = () => token === this._loadToken;
       const contentArea = this.popup.getContentArea();
       contentArea.classList.remove("iframe-direct-load");
       contentArea.innerHTML = "";
-      showLoading(contentArea);
+      showLoading(contentArea, { url });
       let hostname = "unknown";
       try {
         hostname = new URL(url).hostname;
@@ -6326,25 +8294,47 @@ article.pv-x-post[data-reply-target='true'] {\r
         container: contentArea,
         hostname,
         onError: (message) => {
-          this._abort = null;
-          showError(contentArea, message, url);
+          if (!current()) return;
+          showError(contentArea, message, url, { onRetry: () => this.load(url) });
         },
+        // 加载成功后不再清掉 _abort：它同时是清理函数（X 加载器要断开观察器、清翻译队列），
+        // 关窗和下一次加载时都必须调用（v2.3.0 前成功后被置 null，清理从不执行）
         onLoad: () => {
-          this._abort = null;
         },
-        onNavigate: (navUrl, navTitle) => this._onInFrameNavigate(navUrl, navTitle)
+        onNavigate: (navUrl, navTitle) => {
+          if (current()) this._onInFrameNavigate(navUrl, navTitle);
+        }
       });
     }
-    close() {
-      var _a;
-      (_a = this._abort) == null ? void 0 : _a.call(this);
+    /** 关窗时的清理延后到淡出结束，避免内容在动画中途消失；期间重新打开则立即执行。 */
+    _deferDispose() {
+      const dispose = this._abort;
       this._abort = null;
+      this._loadToken++;
+      if (!dispose) return;
+      this._flushDispose();
+      this._pendingDispose = { fn: dispose, timer: setTimeout(() => this._flushDispose(), 360) };
+    }
+    _flushDispose() {
+      const pending = this._pendingDispose;
+      if (!pending) return;
+      this._pendingDispose = null;
+      clearTimeout(pending.timer);
+      try {
+        pending.fn();
+      } catch (err) {
+        logger.warn("[PopupManager] dispose error", err);
+      }
+    }
+    _resetHistory() {
       this._navHistory = [];
       this._navIndex = -1;
       this._pendingNativeNav = false;
       clearTimeout(this._pendingNativeTimer);
       this._pendingNativeTimer = null;
       this._pendingRevertIndex = -1;
+    }
+    close() {
       this.popup.close();
     }
     hideOverlay() {
@@ -6355,64 +8345,6 @@ article.pv-x-post[data-reply-target='true'] {\r
     }
   };
   var popupManager = new PopupManager();
-
-  // src/core/StorageManager.js
-  var StorageManager = class {
-    constructor() {
-      this.historyKey = config.storage.historyKey;
-      this.favoritesKey = config.storage.favoritesKey;
-    }
-    _read(key, fallback) {
-      const value = gm.getValue(key, null);
-      if (value === null || value === void 0) return fallback;
-      if (typeof value === "string") {
-        try {
-          return JSON.parse(value);
-        } catch {
-          return fallback;
-        }
-      }
-      return value;
-    }
-    _write(key, value) {
-      gm.setValue(key, JSON.stringify(value));
-    }
-    getHistory() {
-      return this._read(this.historyKey, []);
-    }
-    addHistory(entry) {
-      const history = this.getHistory();
-      const now = Date.now();
-      const next = [
-        { title: entry.title || "", url: entry.url, time: now },
-        ...history.filter((h) => h.url !== entry.url)
-      ];
-      this._write(this.historyKey, next.slice(0, config.maxHistoryEntries));
-      return next;
-    }
-    clearHistory() {
-      this._write(this.historyKey, []);
-    }
-    getFavorites() {
-      return this._read(this.favoritesKey, []);
-    }
-    addFavorite(entry) {
-      const favorites = this.getFavorites();
-      if (favorites.some((f) => f.url === entry.url)) return favorites;
-      const next = [{ title: entry.title || "", url: entry.url, time: Date.now() }, ...favorites];
-      this._write(this.favoritesKey, next);
-      return next;
-    }
-    removeFavorite(url) {
-      const next = this.getFavorites().filter((f) => f.url !== url);
-      this._write(this.favoritesKey, next);
-      return next;
-    }
-    isFavorite(url) {
-      return this.getFavorites().some((f) => f.url === url);
-    }
-  };
-  var storageManager = new StorageManager();
 
   // src/core/PrefetchManager.js
   var PrefetchManager = class {
@@ -6460,10 +8392,11 @@ article.pv-x-post[data-reply-target='true'] {\r
       logger.debug(`[Prefetch] ${url}`);
       const entry = this.loader.prefetch(url);
       this._current = { url, abort: entry.abort };
-      entry.promise.finally(() => {
+      const done = () => {
         var _a2;
         if (((_a2 = this._current) == null ? void 0 : _a2.url) === url) this._current = null;
-      });
+      };
+      entry.promise.then(done, done);
     }
   };
 
@@ -7805,6 +9738,27 @@ article.pv-x-post[data-reply-target='true'] {\r
       quote: withQuote ? quotedModel(tweet) : null
     };
   }
+  function tweetFromCreateResponse(json) {
+    const data = json && json.data || json;
+    if (!data || typeof data !== "object") return null;
+    const direct = data.create_tweet && data.create_tweet.tweet_results && data.create_tweet.tweet_results.result;
+    const node = direct || collectTweetNodes(data)[0] || null;
+    const model = node ? liteModel(node) : null;
+    return model && model.id ? model : null;
+  }
+  function mergeModel(target, fresh) {
+    if (!target || !fresh || target === fresh) return target || fresh || null;
+    const { depth, author, ...rest } = fresh;
+    Object.assign(target, rest);
+    if (author) {
+      if (target.author && typeof target.author === "object") Object.assign(target.author, author);
+      else target.author = { ...author };
+    }
+    return target;
+  }
+  function threadContinues(model, next) {
+    return Boolean(model && next && model.id && String(next.inReplyToId || "") === String(model.id));
+  }
   function bottomCursor(value) {
     if (!value || typeof value !== "object") return null;
     const seen = /* @__PURE__ */ new Set();
@@ -7898,8 +9852,13 @@ article.pv-x-post[data-reply-target='true'] {\r
     dark: { bg: "#000000", fg: "#e7e9ea", muted: "#71767b", border: "#2f3336", soft: "#16181c", hover: "rgba(255, 255, 255, 0.03)" }
   };
   var ACCENT = "#1d9bf0";
+  var ACCENT_TEXT = { light: "#0b6bcb", dim: "#1d9bf0", dark: "#1d9bf0" };
+  var ACCENT_FILL = "#0f6fbf";
+  var ON_ACCENT = "#ffffff";
+  var SCROLLBAR = { light: "#a9b4c0", dim: "#4a5568", dark: "#4a5568" };
   var LIKE = "#f91880";
   var REPOST = "#00ba7c";
+  var DANGER = { light: "#d0101c", dim: "#ff6b75", dark: "#ff5c66" };
   var VAR_MAP = {
     bg: "--pv-x-bg",
     fg: "--pv-x-fg",
@@ -7908,8 +9867,13 @@ article.pv-x-post[data-reply-target='true'] {\r
     soft: "--pv-x-soft",
     hover: "--pv-x-hover",
     accent: "--pv-x-accent",
+    accentText: "--pv-x-accent-text",
+    accentFill: "--pv-x-accent-fill",
+    onAccent: "--pv-x-on-accent",
+    scrollbar: "--pv-x-scrollbar",
     like: "--pv-x-like",
     repost: "--pv-x-repost",
+    danger: "--pv-x-danger",
     font: "--pv-x-font"
   };
   function computed(node, prop) {
@@ -7946,16 +9910,23 @@ article.pv-x-post[data-reply-target='true'] {\r
     const base = FALLBACK[mode];
     return {
       mode,
-      // 采样只保留来源可靠的几项：body 背景、帖子正文色、话题链接色、body 字体
+      // 采样只保留来源可靠的几项：body 背景、帖子正文色、body 字体；
+      // 链接色不用采样值（X 浅色原生 #1d9bf0 对白底仅 3.0:1），走可读主题表。
       bg: bodyBg || base.bg,
       fg: firstComputed(['[data-testid="tweetText"]', 'article[data-testid="tweet"]'], "color") || base.fg,
       muted: mutedFor(mode),
       border: borderFor(mode),
       soft: base.soft,
       hover: base.hover,
-      accent: firstComputed(['a[href^="/hashtag"]', 'a[href^="/i/hashtag"]'], "color") || ACCENT,
+      // 文字链接用可读色；采样值在浅色下常是 #1d9bf0（3.0:1），所以直接用主题表
+      accent: ACCENT_TEXT[mode] || ACCENT,
+      accentText: ACCENT_TEXT[mode] || ACCENT,
+      accentFill: ACCENT_FILL,
+      onAccent: ON_ACCENT,
+      scrollbar: SCROLLBAR[mode] || SCROLLBAR.light,
       like: LIKE,
       repost: REPOST,
+      danger: DANGER[mode],
       font: computed(document.body, "fontFamily")
     };
   }
@@ -7978,6 +9949,137 @@ article.pv-x-post[data-reply-target='true'] {\r
     if (document.documentElement) observer2.observe(document.documentElement, options);
     return () => observer2.disconnect();
   }
+
+  // src/x/xFormat.js
+  function oneDecimal(value) {
+    const truncated = Math.floor(value * 10) / 10;
+    return Number.isInteger(truncated) ? String(truncated) : truncated.toFixed(1);
+  }
+  function formatCount(value) {
+    const n = Math.max(0, Math.floor(Number(value) || 0));
+    if (n < 1e4) return n.toLocaleString("en-US");
+    if (n < 1e8) return `${oneDecimal(n / 1e4)}万`;
+    return `${oneDecimal(n / 1e8)}亿`;
+  }
+  function parseTime(value) {
+    if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value;
+    if (typeof value === "number") return Number.isFinite(value) && value > 0 ? new Date(value) : null;
+    const text = String(value || "").trim();
+    if (!text) return null;
+    const ms = Date.parse(text);
+    return Number.isFinite(ms) ? new Date(ms) : null;
+  }
+  var pad2 = (n) => String(n).padStart(2, "0");
+  function fullTime(value) {
+    const date = parseTime(value);
+    if (!date) return "";
+    return `${date.getFullYear()}年${date.getMonth() + 1}月${date.getDate()}日 ${pad2(date.getHours())}:${pad2(date.getMinutes())}`;
+  }
+  function sinceLabel(at, now = Date.now()) {
+    if (!at) return "";
+    const seconds = Math.max(0, Math.round((now - at) / 1e3));
+    if (seconds < 45) return "刚刚更新";
+    const minutes = Math.round(seconds / 60);
+    if (minutes < 60) return `${minutes} 分钟前更新`;
+    const hours = Math.round(minutes / 60);
+    if (hours < 24) return `${hours} 小时前更新`;
+    return `${Math.round(hours / 24)} 天前更新`;
+  }
+
+  // src/x/xDrafts.js
+  var DEFAULT_LIMIT = 20;
+  var STORAGE_KEY = "pv2:xDrafts";
+  var MAX_AGE = 7 * 24 * 60 * 60 * 1e3;
+  var SAVE_DELAY = 300;
+  function targetSnapshot(model) {
+    if (!model || !model.id) return null;
+    const author = model.author || {};
+    return {
+      id: String(model.id),
+      depth: model.depth,
+      author: { id: author.id || "", name: author.name || "", handle: author.handle || "" }
+    };
+  }
+  function loadPersisted(limit) {
+    const map = /* @__PURE__ */ new Map();
+    let stored = [];
+    try {
+      stored = gm.getValue(STORAGE_KEY, []);
+    } catch {
+      stored = [];
+    }
+    if (typeof stored === "string") {
+      try {
+        stored = JSON.parse(stored);
+      } catch {
+        stored = [];
+      }
+    }
+    if (!Array.isArray(stored)) return map;
+    const now = Date.now();
+    for (const item of stored) {
+      if (!item || !item.id || !item.text || !String(item.text).trim()) continue;
+      if (item.ts && now - Number(item.ts) > MAX_AGE) continue;
+      map.set(String(item.id), {
+        text: String(item.text),
+        target: item.target || null,
+        ts: Number(item.ts) || now
+      });
+    }
+    while (map.size > limit) map.delete(map.keys().next().value);
+    return map;
+  }
+  function createDraftStore(limit = DEFAULT_LIMIT) {
+    let drafts = null;
+    const store = () => {
+      if (!drafts) drafts = loadPersisted(limit);
+      return drafts;
+    };
+    let saveTimer = 0;
+    const saveNow = () => {
+      saveTimer = 0;
+      try {
+        const list = [];
+        for (const [id, draft] of store()) list.push({ id, text: draft.text, target: draft.target, ts: draft.ts || Date.now() });
+        gm.setValue(STORAGE_KEY, list);
+      } catch {
+      }
+    };
+    const scheduleSave = () => {
+      clearTimeout(saveTimer);
+      saveTimer = setTimeout(saveNow, SAVE_DELAY);
+    };
+    return {
+      /** @returns {{text:string,target:Object|null}|null} */
+      get(focalId) {
+        const draft = store().get(String(focalId || ""));
+        return draft ? { text: draft.text, target: draft.target } : null;
+      },
+      /** 正文为空就删除（只选了回复目标、没写字不算草稿） */
+      set(focalId, text, target = null) {
+        const key = String(focalId || "");
+        if (!key) return;
+        const value = String(text || "");
+        const map = store();
+        map.delete(key);
+        if (!value.trim()) {
+          scheduleSave();
+          return;
+        }
+        map.set(key, { text: value, target: target ? targetSnapshot(target) : null, ts: Date.now() });
+        while (map.size > limit) map.delete(map.keys().next().value);
+        scheduleSave();
+      },
+      clear(focalId) {
+        store().delete(String(focalId || ""));
+        scheduleSave();
+      },
+      get size() {
+        return store().size;
+      }
+    };
+  }
+  var replyDrafts = createDraftStore();
 
   // src/x/xIcons.js
   var SELECTORS = {
@@ -8021,12 +10123,8 @@ article.pv-x-post[data-reply-target='true'] {\r
   // src/x/xProfileCard.js
   var SHOW_DELAY = 1e3;
   var HIDE_DELAY = 650;
-  function formatCount(value) {
-    const n = Number(value) || 0;
-    if (n < 1e3) return String(n);
-    if (n < 1e4) return `${(n / 1e3).toFixed(1)}K`;
-    return `${(n / 1e4).toFixed(1)}万`;
-  }
+  var UNFOLLOW_CONFIRM_MS = 3e3;
+  var FOCUSABLE = 'a[href], button:not([disabled]), [tabindex]:not([tabindex="-1"])';
   function profileHref(author) {
     return author.handle ? `https://x.com/${author.handle}` : `https://x.com/i/user/${author.id}`;
   }
@@ -8043,12 +10141,23 @@ article.pv-x-post[data-reply-target='true'] {\r
       showTimer = null;
       hideTimer = null;
     };
-    const remove = () => {
+    const remove = (returnFocus = false) => {
       clearTimers();
-      card == null ? void 0 : card.remove();
+      const trigger = anchor;
+      const node = card;
+      const active = node && node.getRootNode ? node.getRootNode().activeElement : null;
+      const hadFocus = Boolean(node && active && node.contains(active));
+      node == null ? void 0 : node.remove();
       card = null;
       cardKey = "";
       anchor = null;
+      if ((returnFocus === true || hadFocus) && trigger && trigger.isConnected) {
+        try {
+          trigger.focus({ preventScroll: true });
+        } catch (err) {
+          trigger.focus();
+        }
+      }
     };
     const scheduleHide = () => {
       clearTimers();
@@ -8100,6 +10209,19 @@ article.pv-x-post[data-reply-target='true'] {\r
           return;
         }
         const nextActive = !Boolean(author.viewerFollowing);
+        if (!nextActive && button.dataset.confirm !== "true") {
+          button.dataset.confirm = "true";
+          button.querySelector(".pv-x-profile-follow-default").textContent = "确认取消关注";
+          button.setAttribute("aria-label", `确认取消关注 @${author.handle || author.name || "X 用户"}`);
+          clearTimeout(button.__pvConfirmTimer);
+          button.__pvConfirmTimer = setTimeout(() => {
+            delete button.dataset.confirm;
+            refresh();
+          }, UNFOLLOW_CONFIRM_MS);
+          return;
+        }
+        clearTimeout(button.__pvConfirmTimer);
+        delete button.dataset.confirm;
         button.disabled = true;
         button.setAttribute("aria-busy", "true");
         try {
@@ -8177,8 +10299,30 @@ article.pv-x-post[data-reply-target='true'] {\r
       node.addEventListener("pointerleave", scheduleHide);
       node.addEventListener("focusin", () => clearTimeout(hideTimer));
       node.addEventListener("focusout", scheduleHide);
+      node.addEventListener("keydown", onCardKeydown);
       return node;
     };
+    const focusables = (node) => [...node.querySelectorAll(FOCUSABLE)].filter((item) => !item.hidden);
+    function onCardKeydown(event) {
+      if (!card) return;
+      if (event.key === "Escape") {
+        event.stopPropagation();
+        event.preventDefault();
+        remove(true);
+        return;
+      }
+      if (event.key !== "Tab") return;
+      const items = focusables(card);
+      if (!items.length) return;
+      const active = card.getRootNode ? card.getRootNode().activeElement : null;
+      if (event.shiftKey && active === items[0]) {
+        event.preventDefault();
+        anchor == null ? void 0 : anchor.focus();
+      } else if (!event.shiftKey && active === items[items.length - 1]) {
+        event.preventDefault();
+        remove(true);
+      }
+    }
     const show = (author, href, target) => {
       const root = getRoot();
       if (!root || !target.isConnected) return;
@@ -8209,13 +10353,31 @@ article.pv-x-post[data-reply-target='true'] {\r
         showTimer = setTimeout(() => show(author, href, node), SHOW_DELAY);
       });
       node.addEventListener("pointerleave", scheduleHide);
-      node.addEventListener("focus", () => show(author, href, node));
+      node.addEventListener("focus", () => {
+        clearTimers();
+        show(author, href, node);
+      });
       node.addEventListener("blur", scheduleHide);
+      node.addEventListener("keydown", (event) => {
+        if (!card || anchor !== node) return;
+        if (event.key === "Tab" && !event.shiftKey) {
+          const first = focusables(card)[0];
+          if (!first) return;
+          event.preventDefault();
+          clearTimers();
+          first.focus();
+        } else if (event.key === "Escape") {
+          event.stopPropagation();
+          event.preventDefault();
+          remove(false);
+        }
+      });
     };
     return {
       bind,
-      remove,
-      destroy: remove,
+      remove: () => remove(false),
+      destroy: () => remove(false),
+      isOpen: () => Boolean(card),
       // 弹窗尺寸变化后卡片位置会失效，重新贴回锚点
       reposition: () => {
         if (card && anchor) position(card, anchor);
@@ -8229,18 +10391,6 @@ article.pv-x-post[data-reply-target='true'] {\r
     { key: "latest", label: "最新" },
     { key: "liked", label: "最多喜欢" }
   ];
-  function formatDate(value) {
-    if (!value) return "";
-    const date = new Date(value);
-    if (Number.isNaN(date.getTime())) return "";
-    return date.toLocaleString("zh-CN", { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
-  }
-  function formatCount2(value) {
-    const n = Number(value) || 0;
-    if (n < 1e3) return String(n);
-    if (n < 1e4) return `${(n / 1e3).toFixed(1)}K`;
-    return `${(n / 1e4).toFixed(1)}万`;
-  }
   function profileUrlOf(model) {
     const handle = model.author && model.author.handle;
     if (handle) return `https://x.com/${handle}`;
@@ -8264,25 +10414,38 @@ article.pv-x-post[data-reply-target='true'] {\r
     if (link) bindProfile == null ? void 0 : bindProfile(avatar, model);
     return column;
   }
-  function commentEntry(model, onOpenComments) {
+  function repliesEntry(model, onOpenComments) {
     if (!onOpenComments) return null;
-    const count = Number(model.counts && model.counts.replies) || 0;
-    if (!count) return null;
+    const count = countOf(model, "replies");
     const button = el("button", {
       class: "pv-x-comment-entry",
       type: "button",
+      "aria-haspopup": "dialog",
+      "aria-expanded": "false",
+      "data-replies-for": model.id,
       title: count ? `查看这条的 ${count} 条评论` : "查看这条的评论",
       "aria-label": count ? `查看这条的 ${count} 条评论` : "查看这条的评论"
     });
     const icon = xIcon("reply");
     if (icon) button.appendChild(icon);
-    if (count) button.appendChild(el("span", { class: "pv-x-comment-count", text: formatCount2(count) }));
+    button.appendChild(el("span", { class: "pv-x-comment-count", text: count ? formatCount(count) : "" }));
     button.addEventListener("click", (event) => {
       event.preventDefault();
       event.stopPropagation();
       onOpenComments(model, button);
     });
+    paintRepliesLink(button, model);
     return button;
+  }
+  function paintRepliesLink(button, model) {
+    if (!button) return;
+    const count = countOf(model, "replies");
+    button.hidden = !count;
+    const label = count ? `查看这条的 ${count} 条评论` : "查看这条的评论";
+    button.title = label;
+    button.setAttribute("aria-label", label);
+    const countNode = button.querySelector(".pv-x-comment-count");
+    if (countNode) countNode.textContent = count ? formatCount(count) : "";
   }
   function headNode(model, bindProfile = null, onOpenComments = null) {
     const head = el("div", { class: "pv-x-head" });
@@ -8306,9 +10469,26 @@ article.pv-x-post[data-reply-target='true'] {\r
     }
     if (model.createdAt) {
       head.appendChild(el("span", { class: "pv-x-dot", text: "·" }));
-      head.appendChild(el("time", { class: "pv-x-time", text: formatDate(model.createdAt) }));
+      const full = fullTime(model.createdAt);
+      const date = new Date(model.createdAt);
+      const label = Number.isNaN(date.getTime()) ? full : date.toLocaleString("zh-CN", {
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        hour12: false
+      });
+      head.appendChild(
+        el("time", {
+          class: "pv-x-time",
+          text: label || full,
+          title: full || null,
+          datetime: Number.isNaN(date.getTime()) ? null : date.toISOString()
+        })
+      );
     }
-    const entry = commentEntry(model, onOpenComments);
+    const entry = repliesEntry(model, onOpenComments);
     if (entry) head.appendChild(entry);
     return head;
   }
@@ -8329,12 +10509,18 @@ article.pv-x-post[data-reply-target='true'] {\r
   function paintAction(button, model, key) {
     if (!button) return;
     const flag = FLAG_BY_ACTION[key];
-    if (flag) button.dataset.active = model.flags && model.flags[flag] ? "true" : "false";
+    const active = Boolean(flag && model.flags && model.flags[flag]);
+    if (flag) {
+      button.dataset.active = active ? "true" : "false";
+      if (button.tagName === "BUTTON") button.setAttribute("aria-pressed", active ? "true" : "false");
+    }
     const countNode = button.querySelector(".pv-x-count");
     const countKey = COUNT_BY_ACTION[key];
+    const spec = ACTIONS2.find((item) => item.key === key);
+    const value = countKey ? countOf(model, countKey) : 0;
+    if (spec) button.setAttribute("aria-label", value ? `${spec.label} ${formatCount(value)}` : spec.label);
     if (!countNode || !countKey) return;
-    const value = countOf(model, countKey);
-    countNode.textContent = value ? formatCount2(value) : "";
+    countNode.textContent = value ? formatCount(value) : "";
   }
   function actionsNode(model, onAction) {
     const row = el("div", { class: "pv-x-actions" });
@@ -8351,7 +10537,7 @@ article.pv-x-post[data-reply-target='true'] {\r
         title: spec.label
       });
       if (icon) node.appendChild(icon);
-      if (spec.count) node.appendChild(el("span", { class: "pv-x-count", text: value ? formatCount2(value) : "" }));
+      if (spec.count) node.appendChild(el("span", { class: "pv-x-count", text: value ? formatCount(value) : "" }));
       if (!spec.readonly && onAction) {
         node.addEventListener("click", (event) => {
           event.preventDefault();
@@ -8574,7 +10760,12 @@ article.pv-x-post[data-reply-target='true'] {\r
     if (!photos.length) return null;
     let current = Math.max(0, Math.min(startIndex, photos.length - 1));
     const framePhoto = photos[0];
-    const stage = el("div", { class: `pv-x-media-stage pv-x-media-stage-${variant}`, tabindex: "-1" });
+    const stage = el("div", {
+      class: `pv-x-media-stage pv-x-media-stage-${variant}`,
+      tabindex: variant === "inline" ? "0" : "-1",
+      "aria-roledescription": variant === "inline" ? "图片轮播" : null,
+      "aria-label": variant === "inline" ? `${photos.length} 张图片，按 Enter 放大` : null
+    });
     if (framePhoto.width && framePhoto.height) stage.style.aspectRatio = `${framePhoto.width} / ${framePhoto.height}`;
     const track = el("div", { class: "pv-x-media-track" });
     const slides = photos.map((photo) => {
@@ -8712,6 +10903,7 @@ article.pv-x-post[data-reply-target='true'] {\r
     const project = (v, deceleration = 0.998) => v / 1e3 * deceleration / (1 - deceleration);
     const rubberband = (overshoot, dimension, constant = 0.55) => overshoot * dimension * constant / (dimension + constant * Math.abs(overshoot));
     let drag = null;
+    let suppressClick = false;
     const onPointerDown = (event) => {
       if (photos.length < 2 || event.target.closest("button, a")) return;
       stopAnim();
@@ -8746,6 +10938,7 @@ article.pv-x-post[data-reply-target='true'] {\r
       const v0 = dt > 0 ? (last[1] - first[1]) / dt * 1e3 : 0;
       const projected = x + project(v0);
       const targetIndex = Math.max(0, Math.min(Math.round(-projected / width()), photos.length - 1));
+      suppressClick = Math.abs(x - drag.base) > 6;
       drag = null;
       settle(targetIndex, v0);
     };
@@ -8776,6 +10969,9 @@ article.pv-x-post[data-reply-target='true'] {\r
         event.stopPropagation();
         event.preventDefault();
         show(current - 1);
+      } else if ((event.key === "Enter" || event.key === " ") && variant === "inline" && onZoom && event.target === stage) {
+        event.preventDefault();
+        onZoom(current, stage);
       }
     }
     closeButton.addEventListener("click", close);
@@ -8786,8 +10982,12 @@ article.pv-x-post[data-reply-target='true'] {\r
     stage.addEventListener("pointercancel", onPointerUp);
     if (variant === "inline" && onZoom) {
       stage.addEventListener("click", (event) => {
+        if (suppressClick) {
+          suppressClick = false;
+          return;
+        }
         if (event.target.closest("button, a")) return;
-        onZoom(current);
+        onZoom(current, stage);
       });
     }
     stage.append(track, bar);
@@ -8806,7 +11006,7 @@ article.pv-x-post[data-reply-target='true'] {\r
       }
     };
   }
-  function openMediaLightbox(anchor, photos, index, openUrl) {
+  function openMediaLightbox(anchor, photos, index, openUrl, returnFocus = null) {
     const root = anchor && anchor.closest && anchor.closest(".pv-x-reader") || anchor && anchor.parentElement;
     if (!root || !photos.length || root.querySelector(".pv-x-media-lightbox")) return;
     const layer = el("div", {
@@ -8819,6 +11019,13 @@ article.pv-x-post[data-reply-target='true'] {\r
     const close = () => {
       carousel == null ? void 0 : carousel.destroy();
       layer.remove();
+      if (returnFocus && returnFocus.isConnected) {
+        try {
+          returnFocus.focus({ preventScroll: true });
+        } catch (err) {
+          returnFocus.focus();
+        }
+      }
     };
     carousel = createMediaCarousel(photos, { openUrl, variant: "overlay", startIndex: index, onClose: close });
     layer.appendChild(carousel.node);
@@ -8842,7 +11049,7 @@ article.pv-x-post[data-reply-target='true'] {\r
       const carousel = createMediaCarousel(photos, {
         openUrl,
         variant: "inline",
-        onZoom: (index) => openMediaLightbox(grid, photos, index, openUrl)
+        onZoom: (index, stageNode) => openMediaLightbox(grid, photos, index, openUrl, stageNode)
       });
       grid.classList.add("pv-x-media-carousel");
       grid.appendChild(carousel.node);
@@ -8862,7 +11069,7 @@ article.pv-x-post[data-reply-target='true'] {\r
         button.addEventListener("click", (event) => {
           event.preventDefault();
           event.stopPropagation();
-          openMediaLightbox(grid, photos, photos.indexOf(item), openUrl);
+          openMediaLightbox(grid, photos, photos.indexOf(item), openUrl, button);
         });
         grid.appendChild(button);
         continue;
@@ -8949,12 +11156,15 @@ article.pv-x-post[data-reply-target='true'] {\r
     translation = null,
     bindProfile = null,
     compact = false,
+    focal = false,
     onOpenComments = null
   } = {}) {
     const article = el("article", { class: compact ? "pv-x-post pv-x-post-compact" : "pv-x-post" });
+    if (focal) article.classList.add("pv-x-post-focal");
     article.dataset.tweetId = model.id;
+    article.dataset.threadNext = threadLine ? "true" : "false";
     const column = avatarColumn(model, { bindProfile });
-    if (threadLine) column.appendChild(el("span", { class: "pv-x-thread-line" }));
+    column.appendChild(el("span", { class: "pv-x-thread-line", "aria-hidden": "true" }));
     article.appendChild(column);
     const isArticle = model.attachment && model.attachment.type === "article";
     const main = el(
@@ -8971,14 +11181,21 @@ article.pv-x-post[data-reply-target='true'] {\r
     article.appendChild(main);
     return article;
   }
-  function renderReply(model, options = {}) {
-    const article = renderPost(model, { ...options, threadLine: true, compact: true });
+  function renderReply(model, { depth = model.depth, ...options } = {}) {
+    const article = renderPost(model, { threadLine: false, ...options, compact: true });
     article.classList.add("pv-x-reply");
-    article.style.setProperty("--pv-x-depth", String(Math.min(Number(model.depth) || 0, 3)));
+    article.style.setProperty("--pv-x-depth", String(Math.min(Number(depth) || 0, 3)));
     return article;
   }
+  function syncThreadLines(nodes, modelOf) {
+    for (let i = 0; i < nodes.length; i += 1) {
+      const current = modelOf(nodes[i].dataset.tweetId);
+      const next = i + 1 < nodes.length ? modelOf(nodes[i + 1].dataset.tweetId) : null;
+      nodes[i].dataset.threadNext = threadContinues(current, next) ? "true" : "false";
+    }
+  }
   function sortControl(current, onSort) {
-    const group = el("div", { class: "pv-x-sort", role: "group", "aria-label": "评论排序" });
+    const group = el("div", { class: "pv-x-sort", role: "group", "aria-label": "回复排序（仅已加载的回复）" });
     for (const sort of SORTS) {
       const button = el("button", {
         class: "pv-x-sort-btn",
@@ -8998,28 +11215,33 @@ article.pv-x-post[data-reply-target='true'] {\r
       button.setAttribute("aria-pressed", button.dataset.sort === current ? "true" : "false");
     }
   }
-  function composer({ avatar, onSubmit, focalId }) {
+  function composer({ avatar, onSubmit, focalId, draftText = "", onDraftChange = null }) {
     const section = el("section", { class: "pv-x-composer" });
     const avatarHolder = el("span", { class: "pv-x-avatar pv-x-avatar-sm" });
     if (avatar) avatarHolder.appendChild(el("img", { src: avatar, alt: "" }));
-    const input = el("textarea", { class: "pv-x-composer-input", rows: "1", placeholder: "发布你的回复" });
+    const input = el("textarea", { class: "pv-x-composer-input", rows: "1", placeholder: "发布你的回复", "aria-label": "回复内容" });
+    if (draftText) input.value = draftText;
+    const reportDraft = () => onDraftChange == null ? void 0 : onDraftChange(input.value, targetModel);
     const submit = el("button", { class: "pv-x-composer-submit", type: "button", text: "回复", disabled: "" });
     const hint = el("span", { class: "pv-x-composer-hint" });
     let targetModel = null;
     const targetRow = el("div", { class: "pv-x-composer-target" });
     const targetLabel = el("span", { class: "pv-x-composer-target-label" });
-    const clearTarget = el("button", { class: "pv-x-composer-target-clear", type: "button", "aria-label": "取消回复该评论", text: "✕" });
+    const clearTarget = el("button", { class: "pv-x-composer-target-clear", type: "button", "aria-label": "取消回复这条", text: "✕" });
     targetRow.append(targetLabel, clearTarget);
     targetRow.hidden = true;
     clearTarget.addEventListener("click", () => setTarget(null));
     function setTarget(model) {
       targetModel = model && String(model.id) !== String(focalId) ? model : null;
+      const who = targetModel && (targetModel.author && (targetModel.author.handle || targetModel.author.name) || "X 用户");
       if (targetModel) {
-        targetLabel.textContent = `回复 @${targetModel.author && (targetModel.author.handle || targetModel.author.name) || "X 用户"}`;
+        targetLabel.textContent = `回复 @${who}`;
         targetRow.hidden = false;
       } else {
         targetRow.hidden = true;
       }
+      input.setAttribute("aria-label", targetModel ? `回复 @${who} 的内容` : "回复内容");
+      reportDraft();
       return targetModel;
     }
     const autoGrow = () => {
@@ -9029,18 +11251,21 @@ article.pv-x-post[data-reply-target='true'] {\r
     input.addEventListener("input", () => {
       autoGrow();
       submit.disabled = !input.value.trim();
+      reportDraft();
     });
+    if (draftText) submit.disabled = !draftText.trim();
     const send = async () => {
       const text = input.value.trim();
       if (!text || submit.disabled) return;
       submit.disabled = true;
-      hint.textContent = "正在发布...";
+      hint.textContent = "正在发布…";
       try {
         await onSubmit(text, targetModel);
         input.value = "";
         autoGrow();
         hint.textContent = "";
         setTarget(null);
+        reportDraft();
       } catch (err) {
         hint.textContent = `发布失败：${err && err.message ? err.message : err}`;
       } finally {
@@ -9058,14 +11283,30 @@ article.pv-x-post[data-reply-target='true'] {\r
       avatarHolder,
       el("div", { class: "pv-x-composer-body" }, targetRow, input, el("div", { class: "pv-x-composer-foot" }, hint, submit))
     );
-    return { node: section, setTarget, focus: () => input.focus() };
+    return {
+      node: section,
+      setTarget,
+      focus: () => input.focus(),
+      // 挂到文档后再量高度（恢复草稿时 scrollHeight 在挂载前为 0）
+      syncHeight: autoGrow
+    };
+  }
+  function toastRegions() {
+    return [
+      el("div", { class: "pv-x-toast", role: "status", "aria-live": "polite", "data-kind": "status", "data-visible": "false" }),
+      el("div", { class: "pv-x-toast", role: "alert", "aria-live": "assertive", "data-kind": "alert", "data-visible": "false" })
+    ];
   }
   function notify(reader, message, tone = "error") {
     if (!reader) return;
-    let toast = reader.querySelector(".pv-x-toast");
+    const kind = tone === "error" ? "alert" : "status";
+    let toast = reader.querySelector(`.pv-x-toast[data-kind="${kind}"]`);
     if (!toast) {
-      toast = el("div", { class: "pv-x-toast" });
-      reader.appendChild(toast);
+      for (const region of toastRegions()) reader.appendChild(region);
+      toast = reader.querySelector(`.pv-x-toast[data-kind="${kind}"]`);
+    }
+    for (const other of reader.querySelectorAll(".pv-x-toast")) {
+      if (other !== toast) other.dataset.visible = "false";
     }
     toast.textContent = message;
     toast.dataset.tone = tone;
@@ -9073,7 +11314,7 @@ article.pv-x-post[data-reply-target='true'] {\r
     clearTimeout(toast.__pvTimer);
     toast.__pvTimer = setTimeout(() => {
       toast.dataset.visible = "false";
-    }, 3200);
+    }, tone === "error" ? 5e3 : 3200);
   }
   function renderReader({
     focal,
@@ -9085,10 +11326,13 @@ article.pv-x-post[data-reply-target='true'] {\r
     onSubmitReply,
     translationFor,
     bindProfile,
-    composerAvatar
+    composerAvatar,
+    draftText = "",
+    onDraftChange = null
   }) {
     const reader = el("div", { class: "pv-x-reader" });
-    const postPane = el("section", { class: "pv-x-pane pv-x-pane-post" });
+    const columns = el("div", { class: "pv-x-columns" });
+    const postPane = el("section", { class: "pv-x-pane pv-x-pane-post", "aria-label": "帖子" });
     for (const ancestor of ancestors) {
       postPane.appendChild(
         renderPost(ancestor, {
@@ -9100,10 +11344,9 @@ article.pv-x-post[data-reply-target='true'] {\r
         })
       );
     }
-    postPane.appendChild(
-      renderPost(focal, { threadLine: true, onAction, bindProfile, translation: translationFor == null ? void 0 : translationFor(focal) })
-    );
-    const countLabel = el("span", { class: "pv-x-reply-count", text: `评论（${replyCount}）` });
+    const focalNode = renderPost(focal, { threadLine: false, focal: true, onAction, bindProfile, translation: translationFor == null ? void 0 : translationFor(focal) });
+    postPane.appendChild(focalNode);
+    const countLabel = el("span", { class: "pv-x-reply-count", text: `回复 ${formatCount(replyCount)}` });
     const sort = onSort ? sortControl("relevant", onSort) : null;
     const tools = el(
       "div",
@@ -9111,30 +11354,31 @@ article.pv-x-post[data-reply-target='true'] {\r
       el("div", { class: "pv-x-tools-left" }, countLabel, sort),
       el("a", { class: "pv-x-open", href: openUrl, target: "_blank", rel: "noreferrer", text: "在 X 打开" })
     );
-    const replyPane = el("section", { class: "pv-x-pane pv-x-pane-replies" }, tools);
-    const composerView = onSubmitReply ? composer({ avatar: composerAvatar, onSubmit: onSubmitReply, focalId: focal.id }) : null;
+    const replyPane = el("section", { class: "pv-x-pane pv-x-pane-replies", "aria-label": "回复" }, tools);
+    const composerView = onSubmitReply ? composer({ avatar: composerAvatar, onSubmit: onSubmitReply, focalId: focal.id, draftText, onDraftChange }) : null;
     if (composerView) replyPane.appendChild(composerView.node);
     const list = el("div", { class: "pv-x-reply-list" });
     replyPane.appendChild(list);
-    reader.append(postPane, replyPane);
-    return { reader, list, countLabel, composer: composerView, sort };
+    columns.append(postPane, replyPane);
+    reader.append(columns, ...toastRegions());
+    return { reader, columns, postPane, replyPane, tools, list, countLabel, composer: composerView, sort, focalNode };
   }
 
   // src/x/xCommentCard.js
-  function sinceLabel(at) {
-    if (!at) return "";
-    const seconds = Math.max(0, Math.round((Date.now() - at) / 1e3));
-    if (seconds < 45) return "刚刚更新";
-    const minutes = Math.round(seconds / 60);
-    if (minutes < 60) return `${minutes} 分钟前更新`;
-    const hours = Math.round(minutes / 60);
-    if (hours < 24) return `${hours} 小时前更新`;
-    return `${Math.round(hours / 24)} 天前更新`;
-  }
   var CARD_WIDTH = 340;
   var CARD_GAP = 8;
   var CARD_MAX_HEIGHT = 340;
-  function createCommentCard({ getRoot, getPane, load, onAction = null, bindProfile = null, onOpenExternal = null }) {
+  var CARD_MIN_HEIGHT = 96;
+  var SCROLL_CLOSE_DISTANCE = 24;
+  function createCommentCard({
+    getRoot,
+    getBounds,
+    load,
+    onAction = null,
+    bindProfile = null,
+    onOpenExternal = null,
+    replyCountOf = null
+  }) {
     let layer = null;
     let card = null;
     let body = null;
@@ -9144,28 +11388,32 @@ article.pv-x-post[data-reply-target='true'] {\r
     let currentId = "";
     let refreshing = false;
     const cache2 = /* @__PURE__ */ new Map();
+    let anchorTopAtPlace = null;
+    let scrollRoot = null;
+    const cardAction = onAction ? (key, model, node) => {
+      if (key === "reply") close("reply");
+      return onAction(key, model, node);
+    } : null;
     const isOpen = () => Boolean(card);
-    const current = () => currentId;
     const place = () => {
       if (!card || !layer) return;
       const root = getRoot();
-      const pane = getPane && getPane();
-      if (!root || !pane) return;
+      const bounds = getBounds && getBounds();
+      if (!root || !bounds) return;
       const rootRect = root.getBoundingClientRect();
-      const paneRect = pane.getBoundingClientRect();
-      const paneWidth = paneRect.width;
-      if (!paneWidth) return;
+      const paneWidth = bounds.right - bounds.left;
+      if (paneWidth <= 0) return;
       const width = Math.max(180, Math.min(CARD_WIDTH, paneWidth - CARD_GAP * 2));
       card.style.width = `${Math.round(width)}px`;
-      card.style.maxHeight = `${CARD_MAX_HEIGHT}px`;
-      const paneLeft = paneRect.left - rootRect.left;
-      const paneRight = paneRect.right - rootRect.left;
+      const paneRight = bounds.right - rootRect.left;
       const right = Math.max(rootRect.width - paneRight + CARD_GAP, CARD_GAP);
       card.style.right = `${Math.round(right)}px`;
       card.style.left = "auto";
-      const measured = card.offsetHeight || 220;
-      const paneTop = paneRect.top - rootRect.top;
-      const paneBottom = paneRect.bottom - rootRect.top;
+      const paneTop = Math.max(bounds.top, rootRect.top) - rootRect.top;
+      const paneBottom = Math.min(bounds.bottom, rootRect.bottom) - rootRect.top;
+      const maxHeight = Math.max(CARD_MIN_HEIGHT, Math.min(CARD_MAX_HEIGHT, paneBottom - paneTop - CARD_GAP * 2));
+      card.style.maxHeight = `${Math.round(maxHeight)}px`;
+      const measured = Math.min(card.offsetHeight || 220, maxHeight);
       let top = paneTop + 8;
       let arrow = null;
       if (anchorNode && anchorNode.isConnected) {
@@ -9188,16 +11436,18 @@ article.pv-x-post[data-reply-target='true'] {\r
         const arrowLeft = Math.max(14, Math.min(anchorCenter - cardLeft, width - 14));
         card.style.setProperty("--pv-card-arrow-left", `${Math.round(arrowLeft)}px`);
       }
-      const maxTop = paneBottom - 8 - Math.min(measured, CARD_MAX_HEIGHT);
-      card.style.top = `${Math.round(Math.max(paneTop + 8, Math.min(top, maxTop)))}px`;
-      card.dataset.arrow = arrow || "none";
+      const maxTop = paneBottom - 8 - measured;
+      const finalTop = Math.max(paneTop + 8, Math.min(top, maxTop));
+      card.style.top = `${Math.round(finalTop)}px`;
+      card.dataset.arrow = arrow && Math.abs(finalTop - top) < 1 ? arrow : "none";
+      anchorTopAtPlace = anchorNode && anchorNode.isConnected ? anchorNode.getBoundingClientRect().top : null;
     };
     const paintHead = (data) => {
       if (!head) return;
       head.replaceChildren();
-      const count = data ? data.replies.length : 0;
+      const count = data ? replyCountOf && data.post ? replyCountOf(data.post) : data.replies.length : 0;
       const title = el("span", { class: "pv-x-card-title" });
-      title.appendChild(el("b", { text: count ? `${count} 条回复` : "暂无回复" }));
+      title.appendChild(el("b", { text: data ? count ? `${formatCount(count)} 条回复` : "暂无回复" : "回复" }));
       if (data && data.at) title.appendChild(el("span", { class: "pv-x-card-when", text: `· ${sinceLabel(data.at)}` }));
       head.appendChild(title);
       refreshButton = el("button", {
@@ -9217,24 +11467,52 @@ article.pv-x-post[data-reply-target='true'] {\r
         "aria-label": "关闭",
         text: "✕"
       });
-      closeButton.addEventListener("click", close);
+      closeButton.addEventListener("click", () => close("button"));
       head.appendChild(closeButton);
+    };
+    const retryButton = (label) => {
+      const button = el("button", { class: "pv-x-card-retry", type: "button", text: label });
+      button.addEventListener("click", () => {
+        const id = currentId;
+        if (!id) return;
+        cache2.delete(id);
+        startLoad(id);
+      });
+      return button;
     };
     const paintBody = (data, error) => {
       if (!body) return;
       body.replaceChildren();
+      body.removeAttribute("aria-busy");
       if (error) {
-        body.appendChild(el("div", { class: "pv-x-card-state", text: `读取失败：${error.message || error}` }));
+        body.appendChild(
+          el(
+            "div",
+            { class: "pv-x-card-state pv-x-card-state-error", role: "alert" },
+            el("span", { text: `读取失败：${error.message || error}` }),
+            retryButton("重试")
+          )
+        );
         return;
       }
-      if (!data) return;
+      if (!data) {
+        body.setAttribute("aria-busy", "true");
+        body.appendChild(
+          el("div", { class: "pv-x-card-state pv-x-card-loading", role: "status" }, el("span", { class: "pv-x-card-spinner", "aria-hidden": "true" }), "正在读取回复…")
+        );
+        return;
+      }
       if (!data.replies.length) {
         body.appendChild(el("div", { class: "pv-x-card-state", text: "这条还没有回复" }));
         return;
       }
+      const depths = data.depths || /* @__PURE__ */ new Map();
       for (const reply of data.replies) {
-        body.appendChild(renderReply(reply, { onAction, bindProfile, compact: true }));
+        const depth = depths.has(reply.id) ? depths.get(reply.id) : reply.depth;
+        body.appendChild(renderReply(reply, { onAction: cardAction, bindProfile, compact: true, depth }));
       }
+      const byId = new Map(data.replies.map((reply) => [reply.id, reply]));
+      syncThreadLines([...body.querySelectorAll(".pv-x-reply")], (id) => byId.get(id));
     };
     const paintFoot = (data) => {
       if (!card) return;
@@ -9257,7 +11535,13 @@ article.pv-x-post[data-reply-target='true'] {\r
     async function open(model, anchor) {
       const id = String(model && model.id || "");
       if (!id) return;
+      if (card && currentId === id && anchor && anchor === anchorNode) {
+        close("toggle");
+        return;
+      }
+      if (anchorNode && anchorNode !== anchor) anchorNode.setAttribute("aria-expanded", "false");
       anchorNode = anchor || null;
+      anchorNode == null ? void 0 : anchorNode.setAttribute("aria-expanded", "true");
       currentId = id;
       if (!card) mount();
       if (!card) return;
@@ -9270,8 +11554,12 @@ article.pv-x-post[data-reply-target='true'] {\r
         place();
         return;
       }
+      await startLoad(id);
+    }
+    async function startLoad(id) {
+      if (!card) return;
       paintHead(null);
-      body.replaceChildren(el("div", { class: "pv-x-card-state", text: "正在读取…" }));
+      paintBody(null);
       paintFoot(null);
       place();
       try {
@@ -9292,12 +11580,14 @@ article.pv-x-post[data-reply-target='true'] {\r
         at: Date.now(),
         post: result.post,
         replies: result.replies || [],
+        depths: result.depths || null,
         url: result.url || ""
       };
       cache2.set(id, data);
       return data;
     }
     async function refresh() {
+      var _a;
       const id = currentId;
       if (!id || refreshing) return;
       refreshing = true;
@@ -9311,8 +11601,16 @@ article.pv-x-post[data-reply-target='true'] {\r
         place();
       } catch (err) {
         logger.warn("[xCommentCard] refresh failed", err);
-        if (currentId === id) {
-          const note = el("div", { class: "pv-x-card-state pv-x-card-state-error", text: `刷新失败：${err.message || err}` });
+        if (currentId === id && body) {
+          (_a = body.querySelector(".pv-x-card-refresh-error")) == null ? void 0 : _a.remove();
+          const note = el(
+            "div",
+            { class: "pv-x-card-state pv-x-card-state-error pv-x-card-refresh-error", role: "alert" },
+            el("span", { text: `刷新失败：${err.message || err}` })
+          );
+          const again = el("button", { class: "pv-x-card-retry", type: "button", text: "重试" });
+          again.addEventListener("click", () => refresh());
+          note.appendChild(again);
           body.prepend(note);
         }
       } finally {
@@ -9324,19 +11622,34 @@ article.pv-x-post[data-reply-target='true'] {\r
       if (event.key !== "Escape") return;
       event.stopPropagation();
       event.preventDefault();
-      close();
+      close("escape");
     };
     const onDocPointer = (event) => {
       if (!card) return;
-      if (card.contains(event.target)) return;
-      if (anchorNode && anchorNode.contains(event.target)) return;
-      close();
+      for (const node of eventPath(event)) {
+        if (node === card || node === anchorNode) return;
+        if (node && node.nodeType === 1 && node.classList && (node.classList.contains("pv-x-profile-card") || node.classList.contains("pv-x-media-lightbox"))) return;
+      }
+      close("outside");
+    };
+    const onRootScroll = (event) => {
+      if (!card) return;
+      const target = event.target;
+      if (target && target.nodeType === 1) {
+        if (card.contains(target)) return;
+        if (target.closest && target.closest(".pv-x-profile-card, .pv-x-media-lightbox")) return;
+      }
+      if (anchorNode && anchorNode.isConnected && anchorTopAtPlace !== null) {
+        const moved = Math.abs(anchorNode.getBoundingClientRect().top - anchorTopAtPlace);
+        if (moved < SCROLL_CLOSE_DISTANCE) return;
+      }
+      close("scroll");
     };
     function mount() {
       const root = getRoot();
       if (!root) return;
       layer = el("div", { class: "pv-x-card-layer" });
-      card = el("div", { class: "pv-x-card", role: "dialog", "aria-label": "评论", tabindex: "-1" });
+      card = el("div", { class: "pv-x-card", role: "dialog", "aria-label": "回复", tabindex: "-1" });
       head = el("div", { class: "pv-x-card-head" });
       body = el("div", { class: "pv-x-card-body" });
       card.append(head, body);
@@ -9344,7 +11657,9 @@ article.pv-x-post[data-reply-target='true'] {\r
       card.addEventListener("click", (event) => event.stopPropagation());
       layer.appendChild(card);
       root.appendChild(layer);
+      scrollRoot = root;
       document.addEventListener("pointerdown", onDocPointer, true);
+      scrollRoot.addEventListener("scroll", onRootScroll, { capture: true, passive: true });
       requestAnimationFrame(() => card && card.classList.add("visible"));
       try {
         card.focus({ preventScroll: true });
@@ -9352,18 +11667,36 @@ article.pv-x-post[data-reply-target='true'] {\r
         card.focus();
       }
     }
-    function close() {
+    const focusInside = (node) => {
+      let active = node.getRootNode ? node.getRootNode().activeElement : document.activeElement;
+      if (!active) active = document.activeElement;
+      return Boolean(active && (active === node || node.contains(active)));
+    };
+    function close(reason = "button") {
       if (!card) return;
       const cardNode = card;
       const layerNode = layer;
+      const trigger = anchorNode;
+      const restoreFocus = reason !== "outside" && reason !== "reply" && reason !== "destroy" && reason !== "toggle" && (reason !== "scroll" || focusInside(cardNode));
       card = null;
       body = null;
       head = null;
       refreshButton = null;
       currentId = "";
       anchorNode = null;
+      anchorTopAtPlace = null;
       layer = null;
       document.removeEventListener("pointerdown", onDocPointer, true);
+      scrollRoot == null ? void 0 : scrollRoot.removeEventListener("scroll", onRootScroll, { capture: true });
+      scrollRoot = null;
+      trigger == null ? void 0 : trigger.setAttribute("aria-expanded", "false");
+      if (restoreFocus && trigger && trigger.isConnected) {
+        try {
+          trigger.focus({ preventScroll: true });
+        } catch (err) {
+          trigger.focus();
+        }
+      }
       cardNode.classList.remove("visible");
       setTimeout(() => {
         cardNode.remove();
@@ -9377,9 +11710,13 @@ article.pv-x-post[data-reply-target='true'] {\r
       current: () => currentId,
       /** 面板尺寸/布局变化后由调用方通知，重新夹紧位置 */
       reposition: place,
+      /** 某条帖子的缓存失效（例如刚给它发了回复） */
+      invalidate(id) {
+        cache2.delete(String(id || ""));
+      },
       destroy() {
         cache2.clear();
-        close();
+        close("destroy");
       }
     };
   }
@@ -9393,10 +11730,13 @@ article.pv-x-post[data-reply-target='true'] {\r
   function currentAccount() {
     const button = document.querySelector('[data-testid="SideNav_AccountSwitcher_Button"]');
     const img = button && button.querySelector("img");
-    const handleMatch = button && String(button.innerText || "").match(/@([A-Za-z0-9_]+)/);
+    const text = String(button && button.innerText || "");
+    const handleMatch = text.match(/@([A-Za-z0-9_]+)/);
+    const name = text.split("\n").map((line) => line.trim()).find((line) => line && !line.startsWith("@")) || "";
     return {
       avatar: img && (img.currentSrc || img.src) || "",
-      handle: handleMatch ? handleMatch[1] : ""
+      handle: handleMatch ? handleMatch[1] : "",
+      name
     };
   }
   var XThreadLoader = class {
@@ -9418,11 +11758,22 @@ article.pv-x-post[data-reply-target='true'] {\r
         return () => {
         };
       }
-      const panel = document.getElementById("popup-content-panel");
+      const panel = container.closest && container.closest("#popup-content-panel") || null;
       const account = currentAccount();
       const replies = [];
       const seen = /* @__PURE__ */ new Set();
       const modelsById = /* @__PURE__ */ new Map();
+      const listDepths = /* @__PURE__ */ new Map();
+      const canonical = (model) => {
+        if (!model || !model.id) return model;
+        const existing = modelsById.get(model.id);
+        if (existing) return mergeModel(existing, model);
+        modelsById.set(model.id, model);
+        return model;
+      };
+      let focalModel = null;
+      let columnsEl = null;
+      let sentinelState = "idle";
       let aborted = false;
       let cursor = null;
       let sortMode = "relevant";
@@ -9448,7 +11799,7 @@ article.pv-x-post[data-reply-target='true'] {\r
       panel == null ? void 0 : panel.classList.add("pv-x-skin");
       container.classList.add("pv-x-reader-mode");
       const stopThemeWatch = watchXTheme((theme) => applyXSkin([panel, container], theme));
-      const loadingView = showLoading(container, { title: "正在通过 X 会话读取帖子..." });
+      const loadingView = showLoading(container, { title: "正在通过 X 会话读取帖子…" });
       container.replaceChildren(el("div", { class: "pv-x-loading-layer" }, loadingView));
       const syncLayout = () => {
         if (!readerEl) return;
@@ -9456,9 +11807,26 @@ article.pv-x-post[data-reply-target='true'] {\r
         profileCard == null ? void 0 : profileCard.reposition();
         commentCard == null ? void 0 : commentCard.reposition();
       };
+      const scrollFocalIntoView = (focalNode, hasAncestors) => {
+        if (!hasAncestors || !focalNode || !readerEl) return;
+        const single = readerEl.classList.contains("pv-x-single");
+        const scroller = single ? columnsEl : readerEl.querySelector(".pv-x-pane-post");
+        if (!scroller) return;
+        const offset = focalNode.getBoundingClientRect().top - scroller.getBoundingClientRect().top;
+        scroller.scrollTop += offset;
+      };
+      const onReaderScroll = (event) => {
+        const target = event.target;
+        if (target && target.nodeType === 1 && target.closest && target.closest(".pv-x-profile-card, .pv-x-media-lightbox, .pv-x-card")) return;
+        profileCard == null ? void 0 : profileCard.remove();
+      };
+      let disposed = false;
       const cleanup = () => {
+        if (disposed) return;
+        disposed = true;
         aborted = true;
         stopThemeWatch();
+        readerEl == null ? void 0 : readerEl.removeEventListener("scroll", onReaderScroll, true);
         resizeObserver == null ? void 0 : resizeObserver.disconnect();
         resizeObserver = null;
         sentinelObserver == null ? void 0 : sentinelObserver.disconnect();
@@ -9471,7 +11839,7 @@ article.pv-x-post[data-reply-target='true'] {\r
         translationQueue.length = 0;
         queuedKeys.clear();
         translationCache.clear();
-        this.lastThread = null;
+        if (this.lastThread && this.lastThread.models === modelsById) this.lastThread = null;
         container.classList.remove("pv-x-reader-mode");
         panel == null ? void 0 : panel.classList.remove("pv-x-skin");
       };
@@ -9581,31 +11949,34 @@ article.pv-x-post[data-reply-target='true'] {\r
         refreshTranslation(model.id);
         pumpTranslations();
       };
-      const scheduleTranslationWork = () => {
-        translationObserver == null ? void 0 : translationObserver.disconnect();
-        translationObserver = null;
-        if (!readerEl) return;
-        for (const model of modelsById.values()) {
-          if (model.depth === void 0) enqueueTranslation(model, true);
+      const observeTranslations = (nodes) => {
+        if (aborted || !readerEl) return;
+        const blocks = [];
+        for (const node of nodes) {
+          for (const block of node.querySelectorAll(".pv-x-translatable")) {
+            if (block.__pvObserved) continue;
+            block.__pvObserved = true;
+            blocks.push(block);
+          }
         }
-        const replyBlocks = [...readerEl.querySelectorAll(".pv-x-reply .pv-x-translatable")];
-        if (!replyBlocks.length) return;
+        if (!blocks.length) return;
         if (typeof IntersectionObserver !== "function") {
-          for (const block of replyBlocks) enqueueTranslation(modelsById.get(block.dataset.translationId));
+          for (const block of blocks) enqueueTranslation(modelsById.get(block.dataset.translationId));
           return;
         }
-        translationObserver = new IntersectionObserver(
-          (entries) => {
-            for (const entry of entries) {
-              if (!entry.isIntersecting) continue;
-              translationObserver == null ? void 0 : translationObserver.unobserve(entry.target);
-              enqueueTranslation(modelsById.get(entry.target.dataset.translationId));
-            }
-          },
-          // 评论列表是右栏唯一滚动区
-          { root: replyList, rootMargin: "180px 0px", threshold: 0.01 }
-        );
-        for (const block of replyBlocks) translationObserver.observe(block);
+        if (!translationObserver) {
+          translationObserver = new IntersectionObserver(
+            (entries) => {
+              for (const entry of entries) {
+                if (!entry.isIntersecting) continue;
+                translationObserver == null ? void 0 : translationObserver.unobserve(entry.target);
+                enqueueTranslation(modelsById.get(entry.target.dataset.translationId));
+              }
+            },
+            { root: null, rootMargin: "180px 0px", threshold: 0.01 }
+          );
+        }
+        for (const block of blocks) translationObserver.observe(block);
       };
       const applyFollowState = (author, result) => {
         if (result && result.confirmed === false) {
@@ -9642,48 +12013,97 @@ article.pv-x-post[data-reply-target='true'] {\r
         return copy;
       };
       const updateCount = () => {
-        if (countLabel) countLabel.textContent = `评论（${seen.size}）`;
+        if (!countLabel) return;
+        const total = Math.max(Number(focalModel && focalModel.counts && focalModel.counts.replies) || 0, seen.size);
+        countLabel.textContent = `回复 ${formatCount(total)}`;
+        countLabel.title = `已加载 ${seen.size} 条`;
       };
-      const renderReplies = () => {
+      const replyNodes = /* @__PURE__ */ new Map();
+      const replyNodeFor = (reply) => {
+        let node = replyNodes.get(reply.id);
+        if (!node) {
+          node = renderReply(reply, {
+            onAction: handleAction,
+            bindProfile,
+            // 评论列表里的每条评论都有「查看 N 条回复」入口：点它看这条评论自己的回复
+            onOpenComments: openCommentsFor,
+            translation: translationFor(reply),
+            depth: listDepths.has(reply.id) ? listDepths.get(reply.id) : reply.depth
+          });
+          replyNodes.set(reply.id, node);
+        }
+        return node;
+      };
+      const placeReplies = () => {
+        var _a;
         if (!replyList) return;
-        const scrollTop = replyList.scrollTop;
-        replyList.replaceChildren();
         const list = sortedReplies();
-        if (!list.length) {
-          replyList.appendChild(el("div", { class: "pv-x-empty", text: "这条帖子暂时没有可显示的评论" }));
-        }
+        const fresh = [];
+        (_a = replyList.querySelector(":scope > .pv-x-empty")) == null ? void 0 : _a.remove();
+        let ref = replyList.firstChild;
         for (const reply of list) {
-          replyList.appendChild(
-            renderReply(reply, {
-              onAction: handleAction,
-              bindProfile,
-              // 评论列表里的每条评论都要有 💬 入口：点它看这条评论自己的回复
-              onOpenComments: openCommentsFor,
-              translation: translationFor(reply)
-            })
-          );
+          const isNew = !replyNodes.has(reply.id);
+          const node = replyNodeFor(reply);
+          if (isNew) fresh.push(node);
+          if (node === ref) {
+            ref = ref.nextSibling;
+            continue;
+          }
+          replyList.insertBefore(node, ref);
         }
-        if (cursor) {
-          sentinel = el("div", { class: "pv-x-load-sentinel" }, el("span", { class: "pv-x-loading", text: "正在加载更多评论..." }));
-          replyList.appendChild(sentinel);
-          observeSentinel();
-        } else {
-          sentinel = null;
+        if (sentinel && sentinel.parentNode !== replyList) replyList.appendChild(sentinel);
+        else if (sentinel && replyList.lastChild !== sentinel) replyList.appendChild(sentinel);
+        if (!list.length && !cursor) {
+          replyList.insertBefore(el("div", { class: "pv-x-empty", text: "这条帖子暂时没有可显示的回复" }), sentinel || null);
         }
-        if (replyList) replyList.scrollTop = scrollTop;
+        syncThreadLines(list.map((reply) => replyNodes.get(reply.id)), (id) => modelsById.get(id));
         markReplyTarget();
-        scheduleTranslationWork();
+        observeTranslations(fresh);
+      };
+      const setSentinel = (state, message = "") => {
+        sentinelState = state;
+        if (!replyList) return;
+        if (!sentinel) {
+          sentinel = el("div", { class: "pv-x-load-sentinel" });
+          replyList.appendChild(sentinel);
+        }
+        sentinel.dataset.state = state;
+        sentinel.removeAttribute("role");
+        if (state === "loading") {
+          sentinel.replaceChildren(el("span", { class: "pv-x-loading", text: "正在加载更多回复…" }));
+          observeSentinel();
+        } else if (state === "error") {
+          sentinelObserver == null ? void 0 : sentinelObserver.disconnect();
+          const retry = el("button", { class: "pv-x-load-retry", type: "button", text: "加载失败 · 重试", title: message || null });
+          retry.addEventListener("click", () => {
+            setSentinel("loading");
+            loadMore();
+          });
+          sentinel.setAttribute("role", "alert");
+          sentinel.replaceChildren(retry);
+        } else if (state === "done") {
+          sentinelObserver == null ? void 0 : sentinelObserver.disconnect();
+          sentinel.replaceChildren(el("span", { class: "pv-x-load-done", text: `已显示全部 ${seen.size} 条` }));
+        } else {
+          sentinelObserver == null ? void 0 : sentinelObserver.disconnect();
+          sentinel.replaceChildren();
+        }
+      };
+      const settleSentinel = () => {
+        if (cursor) setSentinel("loading");
+        else setSentinel(seen.size ? "done" : "none");
       };
       const observeSentinel = () => {
-        sentinelObserver == null ? void 0 : sentinelObserver.disconnect();
-        if (!sentinel || typeof IntersectionObserver !== "function" || !replyList) return;
-        sentinelObserver = new IntersectionObserver(
-          (entries) => {
-            if (entries.some((entry) => entry.isIntersecting)) loadMore();
-          },
-          // 评论列表是右栏唯一滚动区
-          { root: replyList, rootMargin: "0px 0px 240px 0px", threshold: 0.01 }
-        );
+        if (!sentinel || typeof IntersectionObserver !== "function") return;
+        if (!sentinelObserver) {
+          sentinelObserver = new IntersectionObserver(
+            (entries) => {
+              if (sentinelState === "loading" && entries.some((entry) => entry.isIntersecting)) loadMore();
+            },
+            { root: null, rootMargin: "0px 0px 240px 0px", threshold: 0.01 }
+          );
+        }
+        sentinelObserver.unobserve(sentinel);
         sentinelObserver.observe(sentinel);
       };
       const markReplyTarget = () => {
@@ -9695,15 +12115,40 @@ article.pv-x-post[data-reply-target='true'] {\r
         const article = readerEl.querySelector(`article[data-tweet-id="${replyTarget.id}"]`);
         if (article) article.dataset.replyTarget = "true";
       };
-      const setReplyTarget = (model) => {
+      const setReplyTarget = (model, { focus = true } = {}) => {
         replyTarget = model && String(model.id) !== String(tweetId) ? model : null;
         composerView == null ? void 0 : composerView.setTarget(replyTarget);
         markReplyTarget();
-        composerView == null ? void 0 : composerView.focus();
+        if (focus) composerView == null ? void 0 : composerView.focus();
+      };
+      const onDraftChange = (text, target) => {
+        if (target !== replyTarget) {
+          replyTarget = target || null;
+          markReplyTarget();
+        }
+        replyDrafts.set(tweetId, text, target);
+      };
+      const repaintActions = (model, key) => {
+        if (!readerEl) return;
+        for (const article of readerEl.querySelectorAll(`article[data-tweet-id="${model.id}"]`)) {
+          const button = article.querySelector(`:scope > .pv-x-main > .pv-x-actions > .pv-x-action-${key}`);
+          if (button) paintAction(button, model, key);
+        }
+      };
+      const repaintReplies = (model) => {
+        if (!readerEl || !model) return;
+        for (const link of readerEl.querySelectorAll(`.pv-x-comment-entry[data-replies-for="${model.id}"]`)) {
+          paintRepliesLink(link, model);
+        }
+        repaintActions(model, "reply");
       };
       const handleAction = async (key, model, button) => {
         if (key === "reply") {
           setReplyTarget(model);
+          return;
+        }
+        if (String(model.id).startsWith("local-")) {
+          notify(readerEl, "这条回复还在同步，请稍后刷新再操作", "info");
           return;
         }
         if (key === "share") {
@@ -9723,6 +12168,7 @@ article.pv-x-post[data-reply-target='true'] {\r
         model.flags[flag] = !wasActive;
         model.counts[countKey] = Math.max(0, (Number(model.counts[countKey]) || 0) + (wasActive ? -1 : 1));
         paintAction(button, model, key);
+        repaintActions(model, key);
         try {
           await bridge.toggleAction(key, model.id, wasActive);
         } catch (err) {
@@ -9730,6 +12176,7 @@ article.pv-x-post[data-reply-target='true'] {\r
           model.flags[flag] = wasActive;
           model.counts[countKey] = Math.max(0, (Number(model.counts[countKey]) || 0) + (wasActive ? 1 : -1));
           paintAction(button, model, key);
+          repaintActions(model, key);
           notify(readerEl, `${ACTION_LABEL[key] || key}失败：${err && err.message ? err.message : err}`, "error");
         }
       };
@@ -9737,55 +12184,83 @@ article.pv-x-post[data-reply-target='true'] {\r
         if (next === sortMode) return;
         sortMode = next;
         paintSort(group, next);
-        renderReplies();
+        placeReplies();
       };
       const commentCard = createCommentCard({
         getRoot: () => readerEl,
         // 卡片只在右栏内活动：位置由右栏 rect 反算并夹紧，结构上不会压到左侧主贴
-        getPane: () => (readerEl == null ? void 0 : readerEl.querySelector(".pv-x-pane-replies")) || null,
+        // 垂直方向夹在评论列表的可见部分里：卡片上沿不会越过回复框下沿
+        getBounds: () => {
+          if (!replyList || !readerEl) return null;
+          const pane = readerEl.querySelector(".pv-x-pane-replies");
+          const list = replyList.getBoundingClientRect();
+          const paneRect = pane ? pane.getBoundingClientRect() : list;
+          const scroller = (columnsEl && readerEl.classList.contains("pv-x-single") ? columnsEl : replyList).getBoundingClientRect();
+          const tools = readerEl.querySelector(".pv-x-reply-tools");
+          const toolsBottom = tools ? tools.getBoundingClientRect().bottom : scroller.top;
+          return {
+            top: Math.max(list.top, scroller.top, toolsBottom),
+            bottom: Math.min(list.bottom, scroller.bottom),
+            left: paneRect.left,
+            right: paneRect.right
+          };
+        },
         bindProfile,
         onAction: handleAction,
+        replyCountOf: (model) => Number(model && model.counts && model.counts.replies) || 0,
         load: async (id) => {
           const json = await bridge.readThread(String(id));
+          if (aborted) throw new Error("已关闭");
           const summary = parseThreadSummary(json, String(id));
-          if (!summary.focalFound || !summary.focal) throw new Error("X 没有返回这条评论");
-          modelsById.set(summary.focal.id, summary.focal);
-          for (const reply of summary.replies) modelsById.set(reply.id, reply);
-          return { post: summary.focal, replies: summary.replies, url: openUrlOf(summary.focal) };
+          if (!summary.focalFound || !summary.focal) throw new Error("X 没有返回这条回复");
+          const depths = new Map(summary.replies.map((reply) => [reply.id, reply.depth]));
+          const post = canonical(summary.focal);
+          const cardReplies = summary.replies.map(canonical);
+          post.counts.replies = Math.max(Number(post.counts.replies) || 0, cardReplies.length);
+          repaintReplies(post);
+          return { post, replies: cardReplies, depths, url: openUrlOf(post) };
         }
       });
       const openCommentsFor = (model, anchor) => {
         if (!model || !model.id) return;
-        if (commentCard.isOpen() && commentCard.current() === String(model.id)) {
-          commentCard.close();
-          return;
-        }
         commentCard.open(model, anchor);
       };
       const submitReply = async (text, target) => {
+        if (target && String(target.id).startsWith("local-")) throw new Error("这条回复还在同步，暂时不能回复它");
         const inReplyTo = target && target.id ? String(target.id) : tweetId;
-        await bridge.createReply(inReplyTo, text);
+        const json = await bridge.createReply(inReplyTo, text);
+        replyDrafts.clear(tweetId);
         if (aborted) return;
-        const local = {
+        const targetDepth = target ? listDepths.has(target.id) ? listDepths.get(target.id) : Number(target.depth) || 0 : -1;
+        const real = tweetFromCreateResponse(json);
+        const posted = real ? canonical(real) : {
           id: `local-${Date.now()}`,
           text,
+          entities: [],
           createdAt: (/* @__PURE__ */ new Date()).toISOString(),
-          author: { name: account.handle ? `@${account.handle}` : "我", handle: account.handle, avatar: account.avatar, verified: false },
+          author: { id: "", name: account.name || account.handle || "我", handle: account.handle, avatar: account.avatar, verified: false },
           counts: { replies: 0, likes: 0, reposts: 0, bookmarks: 0, views: 0 },
           flags: { liked: false, reposted: false, bookmarked: false },
           media: [],
-          depth: target && target.depth !== void 0 ? Math.min(Number(target.depth) + 1, 3) : 0,
           inReplyToId: inReplyTo
         };
-        replies.unshift(local);
-        seen.add(local.id);
-        modelsById.set(local.id, local);
-        replyTarget = null;
-        composerView == null ? void 0 : composerView.setTarget(null);
+        if (!real) modelsById.set(posted.id, posted);
+        listDepths.set(posted.id, Math.min(targetDepth + 1, 3));
+        const parent = target ? modelsById.get(String(target.id)) || target : focalModel;
+        if (parent && parent.counts) {
+          parent.counts.replies = (Number(parent.counts.replies) || 0) + 1;
+          repaintReplies(parent);
+        }
+        if (target) commentCard.invalidate(target.id);
+        if (!seen.has(posted.id)) {
+          replies.unshift(posted);
+          seen.add(posted.id);
+        }
         sortMode = "relevant";
         paintSort(sortGroup, "relevant");
         updateCount();
-        renderReplies();
+        placeReplies();
+        if (sentinelState === "done" || sentinelState === "none") settleSentinel();
         notify(readerEl, target ? `已回复 @${target.author && target.author.handle || ""}` : "回复已发布", "ok");
       };
       const loadMore = async () => {
@@ -9800,34 +12275,35 @@ article.pv-x-post[data-reply-target='true'] {\r
           for (const reply of next.replies) {
             if (seen.has(reply.id)) continue;
             seen.add(reply.id);
-            replies.push(reply);
-            modelsById.set(reply.id, reply);
+            listDepths.set(reply.id, reply.depth);
+            replies.push(canonical(reply));
             added += 1;
           }
           cursor = replyCursorAfterPage(previousCursor, next.cursor, added);
           updateCount();
-          renderReplies();
+          placeReplies();
+          settleSentinel();
         } catch (err) {
+          if (aborted) return;
           logger.warn("[XThreadLoader] load more failed", err);
-          notify(readerEl, `加载更多评论失败：${err && err.message ? err.message : err}`, "error");
+          setSentinel("error", err && err.message ? err.message : String(err));
         } finally {
           loadingMore = false;
         }
       };
       (async () => {
-        var _a;
         try {
           const json = await bridge.readThread(tweetId);
           if (aborted) return;
           const summary = parseThreadSummary(json, tweetId);
           if (!summary.focalFound) throw new Error("X 返回了数据，但没有找到这条原帖。");
           cursor = summary.cursor;
-          modelsById.set(summary.focal.id, summary.focal);
-          for (const ancestor of summary.ancestors) modelsById.set(ancestor.id, ancestor);
+          focalModel = canonical(summary.focal);
+          for (const ancestor of summary.ancestors) canonical(ancestor);
           for (const reply of summary.replies) {
             seen.add(reply.id);
-            replies.push(reply);
-            modelsById.set(reply.id, reply);
+            listDepths.set(reply.id, reply.depth);
+            replies.push(canonical(reply));
           }
           await hydrateArticle(summary.focal);
           if (aborted) return;
@@ -9839,21 +12315,26 @@ article.pv-x-post[data-reply-target='true'] {\r
               applyFollowState(author, result);
               return result;
             },
-            onNotify: (message, tone) => notify(readerEl, message, tone === "ok" ? "ok" : "error")
+            // ok / info / error 原样传：info 走礼貌播报，不再被当成错误
+            onNotify: (message, tone) => notify(readerEl, message, tone || "error")
           });
+          const draft = replyDrafts.get(tweetId);
           const built = renderReader({
-            focal: summary.focal,
-            ancestors: summary.ancestors,
-            replyCount: seen.size,
-            openUrl: openUrlOf(summary.focal),
+            focal: focalModel,
+            ancestors: summary.ancestors.map((ancestor) => modelsById.get(ancestor.id) || ancestor),
+            replyCount: Math.max(Number(focalModel.counts && focalModel.counts.replies) || 0, seen.size),
+            openUrl: openUrlOf(focalModel),
             onAction: handleAction,
             onSort: handleSort,
             onSubmitReply: submitReply,
             translationFor,
             bindProfile,
-            composerAvatar: account.avatar
+            composerAvatar: account.avatar,
+            draftText: draft ? draft.text : "",
+            onDraftChange
           });
           readerEl = built.reader;
+          columnsEl = built.columns;
           replyList = built.list;
           countLabel = built.countLabel;
           sortGroup = built.sort;
@@ -9864,11 +12345,18 @@ article.pv-x-post[data-reply-target='true'] {\r
             resizeObserver = new ResizeObserver(syncLayout);
             resizeObserver.observe(container);
           }
+          composerView == null ? void 0 : composerView.syncHeight();
+          if (draft && draft.target) {
+            setReplyTarget(modelsById.get(draft.target.id) || draft.target, { focus: false });
+          }
           updateCount();
-          renderReplies();
-          (_a = readerEl.querySelector(".pv-x-pane-replies")) == null ? void 0 : _a.addEventListener("scroll", () => commentCard.close(), {
-            passive: true
-          });
+          placeReplies();
+          settleSentinel();
+          enqueueTranslation(focalModel, true);
+          for (const ancestor of summary.ancestors) enqueueTranslation(modelsById.get(ancestor.id), true);
+          observeTranslations([built.postPane]);
+          scrollFocalIntoView(built.focalNode, summary.ancestors.length > 0);
+          readerEl.addEventListener("scroll", onReaderScroll, { capture: true, passive: true });
         } catch (err) {
           if (aborted) return;
           logger.warn("[XThreadLoader] read thread failed", err);
@@ -9957,9 +12445,9 @@ article.pv-x-post[data-reply-target='true'] {\r
             faded
           };
         };
-        const panel = document.getElementById("popup-content-panel");
+        const panel = uiQuery("#popup-content-panel");
         return {
-          mine: describe(document.querySelector("#popup-content-area .pv-x-text")),
+          mine: describe(uiQuery("#popup-content-area .pv-x-text")),
           xTweet: describe(document.querySelector('[data-testid="tweetText"]')),
           chirpLoaded: typeof ((_a = document.fonts) == null ? void 0 : _a.check) === "function" ? document.fonts.check('15px "TwitterChirp"') : "unsupported",
           panelTransform: panel ? getComputedStyle(panel).transform : null
@@ -9972,7 +12460,8 @@ article.pv-x-post[data-reply-target='true'] {\r
       },
       // 定位自检：面板是否被宿主页面的 transform / CSS 影响而无法居中
       positionDiag: () => {
-        const panel = document.getElementById("popup-content-panel");
+        var _a;
+        const panel = uiQuery("#popup-content-panel");
         const panelStyle = panel ? getComputedStyle(panel) : null;
         const rect = panel ? panel.getBoundingClientRect() : null;
         const bodyStyle = getComputedStyle(document.body);
@@ -9992,16 +12481,21 @@ article.pv-x-post[data-reply-target='true'] {\r
           html: { transform: htmlStyle.transform, position: htmlStyle.position, width: htmlStyle.width },
           bodyHijacksFixed: hijacksFixed(document.body),
           htmlHijacksFixed: hijacksFixed(document.documentElement),
-          mount: panel && panel.parentElement ? `${panel.parentElement.tagName}#${panel.parentElement.id}` : null
+          mount: uiRoot() ? `shadow:${((_a = uiRoot().host.parentElement) == null ? void 0 : _a.tagName) || "?"}` : panel && panel.parentElement ? `${panel.parentElement.tagName}#${panel.parentElement.id}` : null
         };
       },
       // 样式自检：区分「整表没生效」（CSP 拦内联样式）与「只有 X 皮肤没生效」
       styleDiag: () => {
-        const panel = document.getElementById("popup-content-panel");
-        const area = document.getElementById("popup-content-area");
-        const reader = document.querySelector(".pv-x-reader");
+        const panel = uiQuery("#popup-content-panel");
+        const area = uiQuery("#popup-content-area");
+        const reader = uiQuery(".pv-x-reader");
         let xRulesFound = false;
-        for (const sheet of Array.from(document.styleSheets)) {
+        const shadow = uiRoot();
+        const sheets = [
+          ...Array.from(document.styleSheets),
+          ...shadow ? Array.from(shadow.styleSheets || []).concat(shadow.adoptedStyleSheets || []) : []
+        ];
+        for (const sheet of sheets) {
           try {
             if (Array.from(sheet.cssRules).some((rule) => String(rule.selectorText || "").includes("pv-x-reader"))) {
               xRulesFound = true;
@@ -10099,6 +12593,30 @@ article.pv-x-post[data-reply-target='true'] {\r
       }
     });
   }
+  function setupMenu() {
+    const popup = popupManager.popup;
+    const cornerRect = () => {
+      const x = window.innerWidth - 20;
+      const y = window.innerHeight - 20;
+      return { left: x, right: x, top: y, bottom: y, width: 0, height: 0 };
+    };
+    gm.registerMenuCommand("打开设置", () => {
+      const btn = popup.floatBtn;
+      const visible = btn && !btn.classList.contains("hidden") && !btn.classList.contains("pv-float-off");
+      popup.showSettingsNear(visible ? btn.getBoundingClientRect() : cornerRect());
+    });
+    gm.registerMenuCommand("在此站点点选链接", () => {
+      var _a, _b;
+      popup.ensure();
+      popup.ensureRulesPanel();
+      (_b = (_a = popup.rulesPanel) == null ? void 0 : _a.startPick) == null ? void 0 : _b.call(_a);
+    });
+    gm.registerMenuCommand("显示/隐藏右下角设置按钮（本站）", () => {
+      const next = !settingsManager.get().hideFloatButton;
+      settingsManager.set({ hideFloatButton: next });
+      popup.applySettings(settingsManager.get());
+    });
+  }
   var observer = null;
   var debouncedRunEnhancements = null;
   function setupObserver() {
@@ -10143,12 +12661,26 @@ article.pv-x-post[data-reply-target='true'] {\r
       return;
     }
     popupManager.popup.applyTheme(settingsManager.get().theme);
-    popupManager.popup.ensure();
+    const buildUi = () => {
+      try {
+        popupManager.popup.ensure();
+        debugMark("ui ready");
+      } catch (err) {
+        logger.error("[main] build UI error", err);
+        showErr("build-ui", err);
+      }
+    };
+    if (typeof window.requestIdleCallback === "function") {
+      window.requestIdleCallback(buildUi, { timeout: 1200 });
+    } else {
+      setTimeout(buildUi, 0);
+    }
     registerAdapters();
     installXSupport();
     applyForumMarker();
     setupEvents();
     setupObserver();
+    if (!isInIframe()) setupMenu();
     debugMark("init ok");
     logger.log("Popup Viewer V2 已启用");
   }

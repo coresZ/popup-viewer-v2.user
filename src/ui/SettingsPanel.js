@@ -1,12 +1,14 @@
-import { el, svgIcon } from '../utils/dom.js';
+import { el, svgIcon, mountUi, closestInPath, eventTarget } from '../utils/dom.js';
 import { config } from '../config.js';
 import { gm } from '../utils/gm.js';
 import { settingsManager } from '../core/SettingsManager.js';
 import { eventBus } from '../core/EventBus.js';
+import { storageManager } from '../core/StorageManager.js';
 
 export function createSettingsPanel({ onChange, onManageRules, onClose }) {
-  const SIZE_ORDER = ['small', 'medium', 'large', 'phone'];
-  const SIZE_LABELS = { small: '小', medium: '中', large: '大', phone: '手机' };
+  // custom：拖拽缩放后的自定义尺寸，只作为状态显示，不可点选
+  const SIZE_ORDER = ['small', 'medium', 'large', 'phone', 'custom'];
+  const SIZE_LABELS = { small: '小', medium: '中', large: '大', phone: '手机', custom: '自定义' };
   const THEME_ORDER = ['auto', 'light', 'dark'];
   const THEME_LABELS = { auto: '跟随系统', light: '浅色', dark: '深色' };
   const DEFAULT_SIZE = 'medium';
@@ -22,7 +24,7 @@ export function createSettingsPanel({ onChange, onManageRules, onClose }) {
 
   // ---- 说明 Tooltip ----
   const tipEl = el('div', { id: 'pv-settings-tip', class: 'hidden' });
-  document.body.appendChild(tipEl);
+  mountUi(tipEl);
   let tipTarget = null;
   function toggleTip(btn, text) {
     if (tipTarget === btn) {
@@ -59,7 +61,7 @@ export function createSettingsPanel({ onChange, onManageRules, onClose }) {
   }
   document.addEventListener('click', (e) => {
     if (tipEl.classList.contains('hidden')) return;
-    if (e.target.closest('.pv-settings-tip') || e.target === tipEl) return;
+    if (closestInPath(e, '.pv-settings-tip') || eventTarget(e) === tipEl) return;
     hideTip();
   });
   document.addEventListener('keydown', (e) => {
@@ -67,15 +69,28 @@ export function createSettingsPanel({ onChange, onManageRules, onClose }) {
   });
 
   // ---- 分段控件 ----
-  const makeSeg = (order, labels, getKey, setKey, { icons = {}, defaultOf, onChange, onSet } = {}) => {
+  // statusOnly：只在当前值等于它时显示、不可点（如「自定义」尺寸）；
+  // disabledOf(k)：返回原因字符串时该项置灰不可选，原因写进 title 并通过 onDisabled 回调外显
+  const makeSeg = (order, labels, getKey, setKey, { icons = {}, defaultOf, onChange, onSet, statusOnly = [], disabledOf, onDisabled } = {}) => {
     const btns = {};
-    const group = el('div', { class: 'pv-seg' });
+    const group = el('div', { class: 'pv-seg', role: 'group' });
     const sync = () => {
       const current = getKey();
+      let reason = '';
       Object.entries(btns).forEach(([k, b]) => {
-        b.classList.toggle('active', k === current);
+        const active = k === current;
+        b.classList.toggle('active', active);
+        b.setAttribute('aria-pressed', active ? 'true' : 'false');
         b.classList.toggle('is-default', !!defaultOf && k === defaultOf);
+        if (statusOnly.includes(k)) b.classList.toggle('hidden', !active);
+        const why = disabledOf ? disabledOf(k) : '';
+        b.disabled = !!why;
+        if (why) {
+          b.title = why;
+          reason = why;
+        } else b.removeAttribute('title');
       });
+      onDisabled?.(reason);
     };
     order.forEach((k) => {
       const children = [];
@@ -87,6 +102,7 @@ export function createSettingsPanel({ onChange, onManageRules, onClose }) {
           type: 'button',
           class: 'pv-seg-item',
           onclick: () => {
+            if (statusOnly.includes(k) || btn.disabled) return;
             settingsManager.set(onSet ? onSet(k) : { [setKey]: k });
             sync();
             onChange?.();
@@ -106,16 +122,29 @@ export function createSettingsPanel({ onChange, onManageRules, onClose }) {
     icons: { phone: svgIcon('smartphone', { size: 12 }) },
     defaultOf: DEFAULT_SIZE,
     onChange: syncPhoneModels,
-    onSet: (k) => ({ panelSize: k, customSize: null })
+    onSet: (k) => ({ panelSize: k, customSize: null }),
+    statusOnly: ['custom']
   });
+  // 拖拽缩放会把 panelSize 改成 custom：设置变化时刷新尺寸分段的高亮
+  eventBus.on?.('settings-changed', () => sizeSeg.sync());
   const themeSeg = makeSeg(THEME_ORDER, THEME_LABELS, () => settingsManager.get().theme || 'auto', 'theme', {
     defaultOf: DEFAULT_THEME
   });
+  // 「遮罩」不可选时的原因说明（S2）
+  const windowModeNote = el('div', { class: 'pv-settings-note hidden', role: 'note' });
   const windowModeSeg = makeSeg(
     ['coupled', 'float'],
-    { coupled: '跟随页面', float: '独立悬浮' },
+    { coupled: '遮罩（点空白关闭）', float: '悬浮（不挡页面）' },
     () => settingsManager.get().windowMode || 'coupled',
-    'windowMode'
+    'windowMode',
+    {
+      // 不变量：关闭页面链接拦截时只能悬浮（SettingsManager._applyInvariants），置灰并说明原因
+      disabledOf: (k) => (k === 'coupled' && settingsManager.get().linkIntercept === false ? '已关闭「页面链接拦截」，只能使用悬浮' : ''),
+      onDisabled: (reason) => {
+        windowModeNote.textContent = reason;
+        windowModeNote.classList.toggle('hidden', !reason);
+      }
+    }
   );
   const handednessSeg = makeSeg(
     ['right', 'left'],
@@ -163,10 +192,19 @@ export function createSettingsPanel({ onChange, onManageRules, onClose }) {
   linkInterceptSwitch.checked = settingsManager.get().linkIntercept !== false;
   linkInterceptSwitch.addEventListener('change', () => {
     settingsManager.set({ linkIntercept: linkInterceptSwitch.checked });
-    if (!linkInterceptSwitch.checked) windowModeSeg.sync();
+    windowModeSeg.sync(); // 开关两个方向都要刷新「遮罩」项的可用状态
     persist();
   });
   const linkInterceptSwitchWrap = el('label', { class: 'pv-switch' }, linkInterceptSwitch, el('span', { class: 'pv-switch-track' }));
+
+  // 窗体内链接新标签页打开（S2：从 linkIntercept 拆出的独立开关，按站点保存）
+  const popupLinksSwitch = el('input', { type: 'checkbox', id: 'pv-settings-popup-links' });
+  popupLinksSwitch.checked = settingsManager.get().popupLinksNewTab !== false;
+  popupLinksSwitch.addEventListener('change', () => {
+    settingsManager.set({ popupLinksNewTab: popupLinksSwitch.checked });
+    persist();
+  });
+  const popupLinksSwitchWrap = el('label', { class: 'pv-switch' }, popupLinksSwitch, el('span', { class: 'pv-switch-track' }));
 
   const allowInFrameSwitch = el('input', { type: 'checkbox', id: 'pv-settings-iframe' });
   allowInFrameSwitch.checked = settingsManager.get().allowInFrame === true;
@@ -193,9 +231,31 @@ export function createSettingsPanel({ onChange, onManageRules, onClose }) {
   });
   const debugSwitchWrap = el('label', { class: 'pv-switch' }, debugSwitch, el('span', { class: 'pv-switch-track' }));
 
-  const resetBtn = el('button', { type: 'button', class: 'pv-settings-reset', text: '恢复默认' });
+  // 恢复默认：两步确认。第一次点击进入确认态（约 3 秒），再点才重置全局 + 本站设置
+  const RESET_LABEL = '恢复默认';
+  const resetBtn = el('button', {
+    type: 'button',
+    class: 'pv-settings-reset',
+    text: RESET_LABEL,
+    title: '重置全部全局设置和本站设置（不影响其他站点和链接规则）'
+  });
+  let resetTimer = 0;
+  const disarmReset = () => {
+    clearTimeout(resetTimer);
+    resetTimer = 0;
+    resetBtn.classList.remove('confirming');
+    resetBtn.textContent = RESET_LABEL;
+  };
   resetBtn.addEventListener('click', () => {
+    if (!resetTimer) {
+      resetBtn.classList.add('confirming');
+      resetBtn.textContent = '确认恢复全局+本站设置？';
+      resetTimer = setTimeout(disarmReset, 3000);
+      return;
+    }
+    disarmReset();
     settingsManager.reset();
+    popupLinksSwitch.checked = settingsManager.get().popupLinksNewTab !== false;
     scrollSwitch.checked = settingsManager.get().scrollbarVisible !== false;
     lockSwitch.checked = settingsManager.get().locked === true;
     linkInterceptSwitch.checked = settingsManager.get().linkIntercept !== false;
@@ -212,7 +272,13 @@ export function createSettingsPanel({ onChange, onManageRules, onClose }) {
   const manageRulesBtn = el('button', { type: 'button', class: 'pv-settings-reset', text: '管理', onclick: () => onManageRules?.() });
 
   // ---- 弹窗头：标题 + 关闭按钮（小屏上弹窗可能盖住 ⚙ 锚点，必须有独立关闭入口） ----
-  const closeBtn = el('button', { type: 'button', class: 'pv-settings-close', title: '关闭设置', onclick: () => onClose?.() });
+  const closeBtn = el('button', {
+    type: 'button',
+    class: 'pv-settings-close',
+    title: '关闭设置',
+    'aria-label': '关闭设置',
+    onclick: () => onClose?.()
+  });
   closeBtn.appendChild(svgIcon('close', { size: 14 }));
   const head = el(
     'div',
@@ -223,69 +289,201 @@ export function createSettingsPanel({ onChange, onManageRules, onClose }) {
 
   // ---- 布局 ----
   const group = (title) => el('div', { class: 'pv-settings-group' }, el('div', { class: 'pv-settings-group-title', text: title }));
-  const titleCol = (label, sub, tip) =>
-    el(
+  // settingKey：对应的设置键；按站点保存的键在标题旁标「仅本站」（S1）
+  let labelSeq = 0;
+  const titleCol = (label, sub, tip, settingKey) => {
+    const n = ++labelSeq;
+    const labelId = `pv-settings-label-${n}`;
+    const subId = `pv-settings-sub-${n}`;
+    const site = !!settingKey && settingsManager.isSiteKey(settingKey);
+    const col = el(
       'div',
       { class: 'pv-settings-title-col' },
       el(
         'div',
         { class: 'pv-settings-label-line' },
-        el('span', { class: 'pv-settings-label', text: label }),
+        el('span', { class: 'pv-settings-label', id: labelId, text: label }),
+        site ? el('span', { class: 'pv-settings-scope', title: '此项按站点分别保存，只影响当前网站', text: '仅本站' }) : null,
         tip ? makeTip(tip) : null
       ),
-      sub ? el('div', { class: 'pv-settings-sub', text: sub }) : null
+      sub ? el('div', { class: 'pv-settings-sub', id: subId, text: sub }) : null
     );
-  // 开关行：标题在左，控件在右
-  const rowBlock = (label, sub, control, tip) =>
-    el(
-      'div',
-      { class: 'pv-settings-item' },
-      el('div', { class: 'pv-settings-item-head' }, titleCol(label, sub, tip), control)
-    );
-  // 分段行：标题在上，控件占满整行
-  const colBlock = (label, sub, control, tip) =>
-    el(
-      'div',
-      { class: 'pv-settings-item' },
-      el('div', { class: 'pv-settings-item-head' }, titleCol(label, sub, tip)),
-      control
-    );
-  const sizeBlock = el(
-    'div',
-    { class: 'pv-settings-item' },
-    el('div', { class: 'pv-settings-item-head' }, titleCol('窗体大小', '弹窗的默认尺寸')),
-    sizeSeg.group,
-    phoneModelsWrap
-  );
-
-  // ---- 通用 / 移动端 标签 ----
-  const commonTab = el('button', { type: 'button', class: 'pv-settings-tab active', text: '通用' });
-  const mobileTab = el('button', { type: 'button', class: 'pv-settings-tab', text: '移动端' });
-  const tabs = el('div', { class: 'pv-settings-tabs' }, commonTab, mobileTab);
-  const commonPane = el('div', { class: 'pv-settings-pane active' });
-  const mobilePane = el('div', { class: 'pv-settings-pane' });
-  const switchTab = (which) => {
-    const isCommon = which === 'common';
-    commonTab.classList.toggle('active', isCommon);
-    mobileTab.classList.toggle('active', !isCommon);
-    commonPane.classList.toggle('active', isCommon);
-    mobilePane.classList.toggle('active', !isCommon);
+    return { col, labelId, subId: sub ? subId : null };
   };
-  commonTab.addEventListener('click', () => switchTab('common'));
-  mobileTab.addEventListener('click', () => switchTab('mobile'));
+  // 给控件补可访问名称：开关 input / 分段 group 指向标题与说明（V4）
+  const labelControl = (control, t) => {
+    if (control.tagName === 'BUTTON') return; // 按钮保留自身文字作为名称
+    const target = control.querySelector('input') || control;
+    target.setAttribute('aria-labelledby', t.labelId);
+    if (t.subId) target.setAttribute('aria-describedby', t.subId);
+  };
+  // 开关行：标题在左，控件在右
+  const rowBlock = (label, sub, control, tip, settingKey) => {
+    const t = titleCol(label, sub, tip, settingKey);
+    labelControl(control, t);
+    return el('div', { class: 'pv-settings-item' }, el('div', { class: 'pv-settings-item-head' }, t.col, control));
+  };
+  // 分段行：标题在上，控件占满整行；extra 为控件下方的附加节点
+  const colBlock = (label, sub, control, tip, settingKey, ...extra) => {
+    const t = titleCol(label, sub, tip, settingKey);
+    labelControl(control, t);
+    return el('div', { class: 'pv-settings-item' }, el('div', { class: 'pv-settings-item-head' }, t.col), control, ...extra);
+  };
+  const sizeBlock = colBlock('窗体大小', '弹窗的默认尺寸', sizeSeg.group, null, 'panelSize', phoneModelsWrap);
+
+  const footer = el('div', { class: 'pv-settings-footer' }, resetBtn);
+
+  // ---- 最近（E3）：最近打开的 20 条，点击在弹窗里重新打开 ----
+  const RECENT_LIMIT = 20;
+  const recentList = el('div', { class: 'pv-recent-list' });
+  const clearLabel = '清空本站';
+  const clearBtn = el('button', { type: 'button', class: 'pv-settings-reset pv-recent-clear', text: clearLabel });
+  let clearTimer = 0;
+  const disarmClear = () => {
+    clearTimeout(clearTimer);
+    clearTimer = 0;
+    clearBtn.classList.remove('confirming');
+    clearBtn.textContent = clearLabel;
+  };
+  clearBtn.addEventListener('click', () => {
+    if (!clearTimer) {
+      clearBtn.classList.add('confirming');
+      clearBtn.textContent = '确认清空本站记录？';
+      clearTimer = setTimeout(disarmClear, 3000);
+      return;
+    }
+    disarmClear();
+    storageManager.clearHistory(window.location.hostname);
+    renderRecent();
+  });
+  const recentHead = el(
+    'div',
+    { class: 'pv-recent-head' },
+    el('span', { class: 'pv-settings-group-title', text: '最近打开（本站）' }),
+    clearBtn
+  );
+  function renderRecent() {
+    disarmClear();
+    recentList.textContent = '';
+    let items = [];
+    try {
+      items = storageManager.getHistory();
+    } catch {}
+    const currentHost = window.location.hostname;
+    // 设置面板的「最近」只展示当前站点的历史，避免跨站记录串台；
+    // 存储层仍然保留全部记录，后续如需「全部站点」视图可直接放开这个过滤。
+    items = (Array.isArray(items) ? items : [])
+      .filter((h) => h && h.url && hostOf(h.url) === currentHost)
+      .slice(0, RECENT_LIMIT);
+    clearBtn.classList.toggle('hidden', !items.length);
+    if (!items.length) {
+      recentList.appendChild(el('div', { class: 'pv-recent-empty', text: '本站还没有记录，打开过的帖子会显示在这里' }));
+      return;
+    }
+    for (const h of items) {
+      const title = h.title || h.url;
+      recentList.appendChild(
+        el(
+          'button',
+          {
+            type: 'button',
+            class: 'pv-recent-item',
+            title: h.url,
+            onclick: () => {
+              onClose?.();
+              eventBus.emit('open-page', { url: h.url, title: h.title || '' });
+            }
+          },
+          el('span', { class: 'pv-recent-title', text: title }),
+          el('span', { class: 'pv-recent-meta', text: relativeTime(h.time) })
+        )
+      );
+    }
+  }
+
+  // ---- 通用 / 移动端 / 最近 标签 ----
+  const commonTab = el('button', {
+    type: 'button',
+    id: 'pv-settings-tab-common',
+    class: 'pv-settings-tab active',
+    'aria-controls': 'pv-settings-pane-common',
+    text: '通用'
+  });
+  const mobileTab = el('button', {
+    type: 'button',
+    id: 'pv-settings-tab-mobile',
+    class: 'pv-settings-tab',
+    'aria-controls': 'pv-settings-pane-mobile',
+    text: '移动端'
+  });
+  const recentTab = el('button', {
+    type: 'button',
+    id: 'pv-settings-tab-recent',
+    class: 'pv-settings-tab',
+    'aria-controls': 'pv-settings-pane-recent',
+    text: '最近'
+  });
+  const tabs = el('div', { class: 'pv-settings-tabs', role: 'tablist', 'aria-label': '设置分类' }, commonTab, mobileTab, recentTab);
+  const commonPane = el('div', {
+    id: 'pv-settings-pane-common',
+    class: 'pv-settings-pane active',
+    role: 'tabpanel',
+    'aria-labelledby': 'pv-settings-tab-common'
+  });
+  const mobilePane = el('div', {
+    id: 'pv-settings-pane-mobile',
+    class: 'pv-settings-pane',
+    role: 'tabpanel',
+    'aria-labelledby': 'pv-settings-tab-mobile'
+  });
+  const recentPane = el('div', {
+    id: 'pv-settings-pane-recent',
+    class: 'pv-settings-pane pv-recent-pane',
+    role: 'tabpanel',
+    'aria-labelledby': 'pv-settings-tab-recent'
+  });
+  const TAB_PANES = { common: [commonTab, commonPane], mobile: [mobileTab, mobilePane], recent: [recentTab, recentPane] };
+  const TAB_ORDER = ['common', 'mobile', 'recent'];
+  const switchTab = (which) => {
+    for (const [k, [tab, pane]] of Object.entries(TAB_PANES)) {
+      tab.classList.toggle('active', k === which);
+      tab.setAttribute('aria-selected', k === which ? 'true' : 'false');
+      tab.tabIndex = k === which ? 0 : -1;
+      pane.classList.toggle('active', k === which);
+    }
+    // 「最近」页不需要「恢复默认」
+    footer.classList.toggle('hidden', which === 'recent');
+    if (which === 'recent') renderRecent();
+  };
+  for (const [k, [tab]] of Object.entries(TAB_PANES)) {
+    tab.setAttribute('role', 'tab');
+    tab.addEventListener('click', () => switchTab(k));
+  }
+  tabs.addEventListener('keydown', (e) => {
+    if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+    e.preventDefault();
+    const current = TAB_ORDER.findIndex((k) => TAB_PANES[k][0].classList.contains('active'));
+    const next = (current + (e.key === 'ArrowRight' ? 1 : -1) + TAB_ORDER.length) % TAB_ORDER.length;
+    switchTab(TAB_ORDER[next]);
+    TAB_PANES[TAB_ORDER[next]][0].focus();
+  });
+  // 初始只有当前 tab 在 Tab 键序列里，符合 tablist 的 roving tabindex 约定
+  switchTab('common');
+  recentPane.append(recentHead, recentList);
 
   // 通用页：全部通用设置
   commonPane.append(
     group('窗体行为'),
-    colBlock('窗体驻留方式', '弹窗遮罩与页面交互', windowModeSeg.group, '跟随页面：弹窗带遮罩；独立悬浮：无遮罩、页面可交互，点击链接仍在弹窗内打开内容'),
+    colBlock('窗体驻留方式', '弹窗遮罩与页面交互', windowModeSeg.group, '遮罩：弹窗带遮罩，点空白处关闭；悬浮：无遮罩、不挡页面，页面可继续操作，点击链接仍在弹窗内打开', 'windowMode', windowModeNote),
     sizeBlock,
-    rowBlock('窗体滚动条', '显示或隐藏窗体内的滚动条', scrollSwitchWrap),
-    rowBlock('锁定窗体', '锁定后窗体不可拖动、不可缩放', lockSwitchWrap),
+    rowBlock('窗体滚动条', '显示或隐藏窗体内的滚动条', scrollSwitchWrap, null, 'scrollbarVisible'),
+    rowBlock('锁定窗体', '锁定后窗体不可拖动、不可缩放', lockSwitchWrap, null, 'locked'),
     group('交互控制'),
-    rowBlock('页面链接拦截', '开启后页面链接在弹窗内打开', linkInterceptSwitchWrap, '开启：页面链接点击在弹窗内打开；关闭：页面链接原页面打开，窗体内容里的链接在窗体内部打开（禁止新标签页），窗体自动切换为独立悬浮'),
-    rowBlock('链接规则', '拦截本站指定链接并在弹窗打开', manageRulesBtn, '规则按当前站点生效；点「取选」直接在页面上点一下链接即可生成，无需写选择器'),
+    rowBlock('页面链接拦截', '开启后页面链接在弹窗内打开', linkInterceptSwitchWrap, '开启：点击页面链接在弹窗内打开；关闭：页面链接按原样在页面打开，窗体只能悬浮（不挡页面）', 'linkIntercept'),
+    rowBlock('窗体内链接新标签页打开', '弹窗内容里的链接在新标签页打开', popupLinksSwitchWrap, '开启：弹窗内容里的链接在新标签页打开；关闭：在弹窗内部跳转', 'popupLinksNewTab'),
+    rowBlock('链接规则', '拦截本站指定链接并在弹窗打开', manageRulesBtn, '规则按当前站点生效；点「点选链接」后在页面上点一下链接即可生成，无需写选择器'),
     group('外观'),
-    colBlock('外观主题', '跟随系统或手动指定', themeSeg.group),
+    colBlock('外观主题', '跟随系统或手动指定', themeSeg.group, null, 'theme'),
     group('高级'),
     rowBlock('在 iframe 中运行', '默认关闭（等同 @noframes）', allowInFrameWrap, '风险：开启后脚本会在页面内所有 iframe 中运行（含广告、嵌入内容等），可能增加页面开销、出现多个悬浮按钮，或与嵌入页面产生样式冲突；仅在确有需要时开启。脚本自己的弹窗 iframe 始终跳过，不会套娃'),
     rowBlock('调试标记', '在页面左上角/右侧显示脚本运行状态与错误标记（下次刷新生效），仅排查问题时开启', debugSwitchWrap, '开启后每次刷新页面会显示：紫色 boot 版本、右侧模块加载序号、橙色初始化状态、红色错误信息；排查完请关闭')
@@ -293,17 +491,42 @@ export function createSettingsPanel({ onChange, onManageRules, onClose }) {
   // 移动端页：仅移动端专属设置（移动端特殊处理）
   mobilePane.append(
     group('移动端专属'),
-    rowBlock('四角缩放把手', '触屏下窗体四角显示缩放把手，可自由调整窗体大小', mobileResizeSwitchWrap),
+    rowBlock('四角缩放把手', '触屏下窗体四角显示缩放把手，可自由调整窗体大小（默认关闭）', mobileResizeSwitchWrap),
     colBlock('惯用手', '左手：工具栏镜像，关闭按钮移到左上角（移动端单手使用）', handednessSeg.group)
   );
 
+  // sticky 顶部：标题 + 关闭 + tab 一起固定，滚动时不会只剩 tab 或漏出下方内容
+  const topArea = el('div', { class: 'pv-settings-top' }, head, tabs);
+
   return el(
     'div',
-    { id: 'popup-settings-popover' },
-    head,
-    tabs,
+    { id: 'popup-settings-popover', role: 'dialog', 'aria-label': '设置' },
+    topArea,
     commonPane,
     mobilePane,
-    el('div', { class: 'pv-settings-footer' }, resetBtn)
+    recentPane,
+    footer
   );
+}
+
+/** 相对时间：刚刚 / N 分钟前 / N 小时前 / N 天前 / 日期 */
+function relativeTime(t) {
+  const diff = Date.now() - Number(t || 0);
+  if (!t || diff < 0) return '';
+  const min = Math.floor(diff / 60000);
+  if (min < 1) return '刚刚';
+  if (min < 60) return min + ' 分钟前';
+  const h = Math.floor(min / 60);
+  if (h < 24) return h + ' 小时前';
+  const d = Math.floor(h / 24);
+  if (d < 30) return d + ' 天前';
+  const date = new Date(Number(t));
+  return date.getFullYear() + '-' + (date.getMonth() + 1) + '-' + date.getDate();
+}
+function hostOf(url) {
+  try {
+    return new URL(url).hostname;
+  } catch {
+    return '';
+  }
 }

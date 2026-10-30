@@ -31,6 +31,25 @@ export class IframeLoader {
       fn(...args);
     };
     const timer = setTimeout(() => {
+      if (settled) return;
+      // 部分站点（Discourse/linux.do）页面已经可见，但 iframe 的 load 事件被
+      // 长连接/客户端路由拖住：同源时地址已不是 about:blank，直接按加载成功处理。
+      try {
+        const href = iframe.contentWindow && iframe.contentWindow.location.href;
+        if (href && href !== 'about:blank') {
+          container.querySelector(loadingSelector)?.remove();
+          container.classList.add('iframe-direct-load');
+          finish(onLoad);
+          return;
+        }
+      } catch {
+        // 跨域文档已经提交（location 读取被安全策略拒绝），同样按已加载处理，
+        // 不再用错误页覆盖用户已经看到的界面。
+        container.querySelector(loadingSelector)?.remove();
+        container.classList.add('iframe-direct-load');
+        finish(onLoad);
+        return;
+      }
       logger.warn(`[IframeLoader] timeout loading ${url}`);
       onError(`加载 ${url} 超时或被阻止，请尝试在新标签页打开。`);
     }, config.loader.timeout);
@@ -48,6 +67,11 @@ export class IframeLoader {
       }
     }, 800);
     iframe.addEventListener('load', () => {
+      // 忽略初次插入 iframe 时的 about:blank load：否则会把真正的页面 load
+      // 当成「iframe 内部跳转」，导致 linux.do 这类站点 15 秒后被超时错误覆盖。
+      try {
+        if (iframe.contentWindow && iframe.contentWindow.location.href === 'about:blank') return;
+      } catch {}
       // 首次 load = 打开时的初始页面；之后每次 load = iframe 内部整页跳转，上报给历史
       if (firstLoad) {
         firstLoad = false;
@@ -68,8 +92,9 @@ export class IframeLoader {
     });
     iframe.addEventListener('error', () => finish(onError, `加载 ${url} 失败。`));
     container.querySelector(loadingSelector)?.remove();
-    container.appendChild(iframe);
+    // 先设置 src 再挂载，避免插入时浏览器先产生一次 about:blank load。
     iframe.src = url;
+    container.appendChild(iframe);
     return () => {
       clearTimeout(timer);
       clearInterval(pollTimer);

@@ -23,7 +23,7 @@ export function readIframeLocation(iframe) {
   }
 }
 
-export function renderIntoIframe({ html, url, container, sandboxAttrs, head = '', linkIntercept, loadingSelector = '#popup-panel-loading', onNavigate }) {
+export function renderIntoIframe({ html, url, container, sandboxAttrs, head = '', title = '', linkIntercept, loadingSelector = '#popup-panel-loading', onNavigate }) {
   container.querySelector(loadingSelector)?.remove();
   container.classList.add('iframe-direct-load');
   const iframe = el('iframe', {
@@ -38,7 +38,7 @@ export function renderIntoIframe({ html, url, container, sandboxAttrs, head = ''
   container.appendChild(iframe);
   const iframeDoc = iframe.contentWindow.document;
   iframeDoc.open();
-  iframeDoc.write(buildDocument(html, url, head));
+  iframeDoc.write(buildDocument(html, url, head, title));
   iframeDoc.close();
   const runFixes = () => {
     if (!iframe.isConnected || !iframe.contentWindow) return;
@@ -63,7 +63,9 @@ export function renderIntoIframe({ html, url, container, sandboxAttrs, head = ''
     }
     if (onNavigate) {
       const loc = readIframeLocation(iframe);
-      if (loc) onNavigate(loc.url, loc.title);
+      // document.write 进去的文档，地址就是宿主页面的地址：它触发的 load 不是用户在弹窗里跳转，
+      // 不能记成历史（否则后退按钮提前可点却无效、标题变成占位、底部提示指向宿主页）
+      if (loc && !isHostDocumentUrl(loc.url)) onNavigate(loc.url, loc.title);
     }
   });
   if (iframeDoc.readyState === 'complete') iframe.dispatchEvent(new Event('load'));
@@ -72,12 +74,27 @@ export function renderIntoIframe({ html, url, container, sandboxAttrs, head = ''
   return iframe;
 }
 
-function buildDocument(html, url, head = '') {
+/** iframe 地址是否就是宿主页面本身（document.write 后的继承地址）。 */
+function isHostDocumentUrl(href) {
+  try {
+    return String(href).split('#')[0] === String(window.location.href).split('#')[0];
+  } catch {
+    return false;
+  }
+}
+
+function escapeHtml(text) {
+  return String(text || '').replace(/[&<>"]/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[ch]);
+}
+
+function buildDocument(html, url, head = '', title = '') {
   const baseHref = buildBaseHref(url);
   return (
     '<!DOCTYPE html><html><head><base href="' +
-    baseHref +
-    '"><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Content</title>' +
+    escapeHtml(baseHref) +
+    '"><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>' +
+    escapeHtml(title) +
+    '</title>' +
     head +
     '</head><body>' +
     html +
@@ -97,8 +114,14 @@ function buildBaseHref(url) {
   }
 }
 
+/** 窗体内链接是否新标签页打开：调用方显式传入（PopupKit）优先，否则读设置 popupLinksNewTab（v2.3.0 起与「页面链接拦截」分开）。 */
+export function popupLinksOpenNewTab(explicit) {
+  if (explicit !== undefined) return explicit;
+  return settingsManager.get().popupLinksNewTab !== false;
+}
+
 function fixLinks(iframeDoc, linkIntercept) {
-  const openNewTab = linkIntercept !== undefined ? linkIntercept : settingsManager.get().linkIntercept !== false;
+  const openNewTab = popupLinksOpenNewTab(linkIntercept);
   iframeDoc.querySelectorAll('a[href]').forEach((link) => {
     if (openNewTab) link.target = '_blank';
     const href = link.getAttribute('href');

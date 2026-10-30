@@ -15,8 +15,12 @@ import {
   replyCursorAfterPage,
   shouldOfferTranslation,
   articleContentFromPayload,
-  fullTextFromPayload
+  fullTextFromPayload,
+  tweetFromCreateResponse,
+  mergeModel
 } from '../x/xModel.js';
+import { formatCount } from '../x/xFormat.js';
+import { replyDrafts } from '../x/xDrafts.js';
 import { applyXSkin, watchXTheme } from '../x/xTheme.js';
 import { primeXIcons } from '../x/xIcons.js';
 import { createProfileCard } from '../x/xProfileCard.js';
@@ -27,6 +31,8 @@ import {
   renderTextBlock,
   paintAction,
   paintSort,
+  paintRepliesLink,
+  syncThreadLines,
   notify,
   openUrlOf,
   profileUrlOf,
@@ -44,10 +50,14 @@ const MAX_TRANSLATION_CONCURRENCY = 2;
 function currentAccount() {
   const button = document.querySelector('[data-testid="SideNav_AccountSwitcher_Button"]');
   const img = button && button.querySelector('img');
-  const handleMatch = button && String(button.innerText || '').match(/@([A-Za-z0-9_]+)/);
+  const text = String((button && button.innerText) || '');
+  const handleMatch = text.match(/@([A-Za-z0-9_]+)/);
+  // 按钮文字是「昵称\n@handle」：取 @ 之前的第一行做昵称
+  const name = text.split('\n').map((line) => line.trim()).find((line) => line && !line.startsWith('@')) || '';
   return {
     avatar: (img && (img.currentSrc || img.src)) || '',
-    handle: handleMatch ? handleMatch[1] : ''
+    handle: handleMatch ? handleMatch[1] : '',
+    name
   };
 }
 
@@ -69,11 +79,26 @@ export class XThreadLoader {
       return () => {};
     }
 
-    const panel = document.getElementById('popup-content-panel');
+    // 从内容区往上找面板（外壳迁入 Shadow DOM 后 document.getElementById 找不到它）
+    const panel = (container.closest && container.closest('#popup-content-panel')) || null;
     const account = currentAccount();
     const replies = [];
     const seen = new Set();
+    // 同一条推文全阅读器只有一个模型对象（列表、评论卡、点赞状态共用）
     const modelsById = new Map();
+    // 列表里评论相对主帖的层级（视图属性，不写在共享模型上）
+    const listDepths = new Map();
+    /** 新数据并入已有的同 id 模型并返回那个对象；第一次见到就登记 */
+    const canonical = (model) => {
+      if (!model || !model.id) return model;
+      const existing = modelsById.get(model.id);
+      if (existing) return mergeModel(existing, model);
+      modelsById.set(model.id, model);
+      return model;
+    };
+    let focalModel = null;
+    let columnsEl = null;
+    let sentinelState = 'idle';
     let aborted = false;
     let cursor = null;
     let sortMode = 'relevant';
@@ -106,7 +131,7 @@ export class XThreadLoader {
 
     // 加载层：阅读器模式下内容区是 flex/滚动容器，loading 视图直接放进去会贴左，
     // 故套一层绝对定位的居中层（内容区本身是 position: relative）
-    const loadingView = showLoading(container, { title: '正在通过 X 会话读取帖子...' });
+    const loadingView = showLoading(container, { title: '正在通过 X 会话读取帖子…' });
     container.replaceChildren(el('div', { class: 'pv-x-loading-layer' }, loadingView));
 
     const syncLayout = () => {
@@ -118,9 +143,34 @@ export class XThreadLoader {
       commentCard?.reposition();
     };
 
+    /**
+     * 把主贴滚到所在滚动区顶部（有上下文链时，否则它本来就在顶部）。
+     * 双栏时滚的是左栏，单栏时滚的是 .pv-x-columns。之后的图片加载由浏览器的滚动锚定保持位置。
+     */
+    const scrollFocalIntoView = (focalNode, hasAncestors) => {
+      if (!hasAncestors || !focalNode || !readerEl) return;
+      const single = readerEl.classList.contains('pv-x-single');
+      const scroller = single ? columnsEl : readerEl.querySelector('.pv-x-pane-post');
+      if (!scroller) return;
+      const offset = focalNode.getBoundingClientRect().top - scroller.getBoundingClientRect().top;
+      scroller.scrollTop += offset;
+    };
+
+    /** 资料卡贴着锚点：任一滚动区滚动（资料卡、灯箱、评论卡内部除外）就收起 */
+    const onReaderScroll = (event) => {
+      const target = event.target;
+      if (target && target.nodeType === 1 && target.closest && target.closest('.pv-x-profile-card, .pv-x-media-lightbox, .pv-x-card')) return;
+      profileCard?.remove();
+    };
+
+    // 幂等：PopupManager 会在关窗和下一次 load 前调用它，渲染成功后再调也安全；调多次只生效一次
+    let disposed = false;
     const cleanup = () => {
+      if (disposed) return;
+      disposed = true;
       aborted = true;
       stopThemeWatch();
+      readerEl?.removeEventListener('scroll', onReaderScroll, true);
       resizeObserver?.disconnect();
       resizeObserver = null;
       sentinelObserver?.disconnect();
@@ -135,8 +185,8 @@ export class XThreadLoader {
       translationQueue.length = 0;
       queuedKeys.clear();
       translationCache.clear();
-      // 自检数据不跨会话保留（否则会一直钉住整张模型图）
-      this.lastThread = null;
+      // 自检数据不跨会话保留（否则会一直钉住整张模型图）；只清自己这次的，别清掉后一次加载的
+      if (this.lastThread && this.lastThread.models === modelsById) this.lastThread = null;
       // 图片就地放大不注册任何全局监听（键盘事件挂在展开容器上，随 DOM 一起回收），
       // 因此这里无需额外注销
       container.classList.remove('pv-x-reader-mode');
@@ -278,31 +328,39 @@ export class XThreadLoader {
     };
 
     /** 原帖与上下文优先翻译；评论在滚动到附近时才翻译（并发上限 2，避免打爆接口） */
-    const scheduleTranslationWork = () => {
-      translationObserver?.disconnect();
-      translationObserver = null;
-      if (!readerEl) return;
-      for (const model of modelsById.values()) {
-        if (model.depth === undefined) enqueueTranslation(model, true);
+    /**
+     * 只观察新加进列表的评论（追加/插入时调用，已观察过的不再重复）。
+     * root 用 null（视口）：双栏时滚的是评论列表、单栏时滚的是 .pv-x-columns，
+     * 祖先的 overflow 裁剪对隐式 root 同样生效，两种布局共用一个观察器。
+     */
+    const observeTranslations = (nodes) => {
+      if (aborted || !readerEl) return;
+      const blocks = [];
+      for (const node of nodes) {
+        for (const block of node.querySelectorAll('.pv-x-translatable')) {
+          if (block.__pvObserved) continue;
+          block.__pvObserved = true;
+          blocks.push(block);
+        }
       }
-      const replyBlocks = [...readerEl.querySelectorAll('.pv-x-reply .pv-x-translatable')];
-      if (!replyBlocks.length) return;
+      if (!blocks.length) return;
       if (typeof IntersectionObserver !== 'function') {
-        for (const block of replyBlocks) enqueueTranslation(modelsById.get(block.dataset.translationId));
+        for (const block of blocks) enqueueTranslation(modelsById.get(block.dataset.translationId));
         return;
       }
-      translationObserver = new IntersectionObserver(
-        (entries) => {
-          for (const entry of entries) {
-            if (!entry.isIntersecting) continue;
-            translationObserver?.unobserve(entry.target);
-            enqueueTranslation(modelsById.get(entry.target.dataset.translationId));
-          }
-        },
-        // 评论列表是右栏唯一滚动区
-        { root: replyList, rootMargin: '180px 0px', threshold: 0.01 }
-      );
-      for (const block of replyBlocks) translationObserver.observe(block);
+      if (!translationObserver) {
+        translationObserver = new IntersectionObserver(
+          (entries) => {
+            for (const entry of entries) {
+              if (!entry.isIntersecting) continue;
+              translationObserver?.unobserve(entry.target);
+              enqueueTranslation(modelsById.get(entry.target.dataset.translationId));
+            }
+          },
+          { root: null, rootMargin: '180px 0px', threshold: 0.01 }
+        );
+      }
+      for (const block of blocks) translationObserver.observe(block);
     };
 
     // ---------- 作者资料卡与关注 ----------
@@ -350,51 +408,118 @@ export class XThreadLoader {
       return copy;
     };
 
+    /** 工具行「回复 N」：取 X 给的总数与已加载数中较大的那个（与主贴操作栏同一口径） */
     const updateCount = () => {
-      if (countLabel) countLabel.textContent = `评论（${seen.size}）`;
+      if (!countLabel) return;
+      const total = Math.max(Number(focalModel && focalModel.counts && focalModel.counts.replies) || 0, seen.size);
+      countLabel.textContent = `回复 ${formatCount(total)}`;
+      countLabel.title = `已加载 ${seen.size} 条`;
     };
 
-    const renderReplies = () => {
-      if (!replyList) return;
-      const scrollTop = replyList.scrollTop;
-      replyList.replaceChildren();
-      const list = sortedReplies();
-      if (!list.length) {
-        replyList.appendChild(el('div', { class: 'pv-x-empty', text: '这条帖子暂时没有可显示的评论' }));
+    /** 列表里每条评论的节点（按 id 复用：追加、排序都不重建已有节点，视频播放/展开状态不丢） */
+    const replyNodes = new Map();
+    const replyNodeFor = (reply) => {
+      let node = replyNodes.get(reply.id);
+      if (!node) {
+        node = renderReply(reply, {
+          onAction: handleAction,
+          bindProfile,
+          // 评论列表里的每条评论都有「查看 N 条回复」入口：点它看这条评论自己的回复
+          onOpenComments: openCommentsFor,
+          translation: translationFor(reply),
+          depth: listDepths.has(reply.id) ? listDepths.get(reply.id) : reply.depth
+        });
+        replyNodes.set(reply.id, node);
       }
+      return node;
+    };
+
+    /**
+     * 把列表摆成 sortedReplies() 的顺序：已有节点原地移动，新节点插入，哨兵永远在最后。
+     * 不再 replaceChildren 整表重建（滚动位置、播放中的视频、已展开的正文都保留）。
+     */
+    const placeReplies = () => {
+      if (!replyList) return;
+      const list = sortedReplies();
+      const fresh = [];
+      replyList.querySelector(':scope > .pv-x-empty')?.remove();
+      let ref = replyList.firstChild;
       for (const reply of list) {
-        replyList.appendChild(
-          renderReply(reply, {
-            onAction: handleAction,
-            bindProfile,
-            // 评论列表里的每条评论都要有 💬 入口：点它看这条评论自己的回复
-            onOpenComments: openCommentsFor,
-            translation: translationFor(reply)
-          })
+        const isNew = !replyNodes.has(reply.id);
+        const node = replyNodeFor(reply);
+        if (isNew) fresh.push(node);
+        if (node === ref) {
+          ref = ref.nextSibling;
+          continue;
+        }
+        replyList.insertBefore(node, ref);
+      }
+      if (sentinel && sentinel.parentNode !== replyList) replyList.appendChild(sentinel);
+      else if (sentinel && replyList.lastChild !== sentinel) replyList.appendChild(sentinel);
+      if (!list.length && !cursor) {
+        replyList.insertBefore(el('div', { class: 'pv-x-empty', text: '这条帖子暂时没有可显示的回复' }), sentinel || null);
+      }
+      syncThreadLines(list.map((reply) => replyNodes.get(reply.id)), (id) => modelsById.get(id));
+      markReplyTarget();
+      observeTranslations(fresh);
+    };
+
+    /**
+     * 哨兵四态：loading（滚动到底自动加载）/ error（「加载失败 · 重试」按钮，不再自动重试）/
+     * done（「已显示全部 N 条」）/ none（没有回复时不显示）
+     */
+    const setSentinel = (state, message = '') => {
+      sentinelState = state;
+      if (!replyList) return;
+      if (!sentinel) {
+        sentinel = el('div', { class: 'pv-x-load-sentinel' });
+        replyList.appendChild(sentinel);
+      }
+      sentinel.dataset.state = state;
+      sentinel.removeAttribute('role');
+      if (state === 'loading') {
+        sentinel.replaceChildren(el('span', { class: 'pv-x-loading', text: '正在加载更多回复…' }));
+        observeSentinel();
+      } else if (state === 'error') {
+        sentinelObserver?.disconnect();
+        const retry = el('button', { class: 'pv-x-load-retry', type: 'button', text: '加载失败 · 重试', title: message || null });
+        retry.addEventListener('click', () => {
+          setSentinel('loading');
+          loadMore();
+        });
+        sentinel.setAttribute('role', 'alert');
+        sentinel.replaceChildren(retry);
+      } else if (state === 'done') {
+        sentinelObserver?.disconnect();
+        sentinel.replaceChildren(el('span', { class: 'pv-x-load-done', text: `已显示全部 ${seen.size} 条` }));
+      } else {
+        sentinelObserver?.disconnect();
+        sentinel.replaceChildren();
+      }
+    };
+
+    /** 加载完一页后的哨兵状态 */
+    const settleSentinel = () => {
+      if (cursor) setSentinel('loading');
+      else setSentinel(seen.size ? 'done' : 'none');
+    };
+
+    /**
+     * 观察哨兵。root 用 null：单栏时滚的是 .pv-x-columns、双栏时是评论列表，隐式 root 两种都对。
+     * 每次重新 observe：追加后哨兵若仍在可视区，IntersectionObserver 不会再报一次「进入」，
+     * 重新 observe 会立即给出当前状态，从而继续加载下一页。
+     */
+    const observeSentinel = () => {
+      if (!sentinel || typeof IntersectionObserver !== 'function') return;
+      if (!sentinelObserver) {
+        sentinelObserver = new IntersectionObserver(
+          (entries) => {
+            if (sentinelState === 'loading' && entries.some((entry) => entry.isIntersecting)) loadMore();
+          },
+          { root: null, rootMargin: '0px 0px 240px 0px', threshold: 0.01 }
         );
       }
-      if (cursor) {
-        sentinel = el('div', { class: 'pv-x-load-sentinel' }, el('span', { class: 'pv-x-loading', text: '正在加载更多评论...' }));
-        replyList.appendChild(sentinel);
-        observeSentinel();
-      } else {
-        sentinel = null;
-      }
-      if (replyList) replyList.scrollTop = scrollTop;
-      markReplyTarget();
-      scheduleTranslationWork();
-    };
-
-    const observeSentinel = () => {
-      sentinelObserver?.disconnect();
-      if (!sentinel || typeof IntersectionObserver !== 'function' || !replyList) return;
-      sentinelObserver = new IntersectionObserver(
-        (entries) => {
-          if (entries.some((entry) => entry.isIntersecting)) loadMore();
-        },
-        // 评论列表是右栏唯一滚动区
-        { root: replyList, rootMargin: '0px 0px 240px 0px', threshold: 0.01 }
-      );
+      sentinelObserver.unobserve(sentinel);
       sentinelObserver.observe(sentinel);
     };
 
@@ -410,11 +535,38 @@ export class XThreadLoader {
       if (article) article.dataset.replyTarget = 'true';
     };
 
-    const setReplyTarget = (model) => {
+    const setReplyTarget = (model, { focus = true } = {}) => {
       replyTarget = model && String(model.id) !== String(tweetId) ? model : null;
       composerView?.setTarget(replyTarget);
       markReplyTarget();
-      composerView?.focus();
+      if (focus) composerView?.focus();
+    };
+
+    /** 回复框上报的草稿：按主帖 id 暂存；回复框里点 ✕ 取消目标时也同步到这里 */
+    const onDraftChange = (text, target) => {
+      if (target !== replyTarget) {
+        replyTarget = target || null;
+        markReplyTarget();
+      }
+      replyDrafts.set(tweetId, text, target);
+    };
+
+    /** 同一条推文可能同时出现在列表和评论卡里：刷新所有副本的按钮 */
+    const repaintActions = (model, key) => {
+      if (!readerEl) return;
+      for (const article of readerEl.querySelectorAll(`article[data-tweet-id="${model.id}"]`)) {
+        const button = article.querySelector(`:scope > .pv-x-main > .pv-x-actions > .pv-x-action-${key}`);
+        if (button) paintAction(button, model, key);
+      }
+    };
+
+    /** 回复数变化后刷新「查看 N 条回复」与回复按钮 */
+    const repaintReplies = (model) => {
+      if (!readerEl || !model) return;
+      for (const link of readerEl.querySelectorAll(`.pv-x-comment-entry[data-replies-for="${model.id}"]`)) {
+        paintRepliesLink(link, model);
+      }
+      repaintActions(model, 'reply');
     };
 
     // ---------- 交互 ----------
@@ -422,6 +574,11 @@ export class XThreadLoader {
     const handleAction = async (key, model, button) => {
       if (key === 'reply') {
         setReplyTarget(model);
+        return;
+      }
+      // 接口没返回真实推文时的本地占位：没有真实 id，互动和链接都无从谈起
+      if (String(model.id).startsWith('local-')) {
+        notify(readerEl, '这条回复还在同步，请稍后刷新再操作', 'info');
         return;
       }
       if (key === 'share') {
@@ -442,6 +599,7 @@ export class XThreadLoader {
       model.flags[flag] = !wasActive;
       model.counts[countKey] = Math.max(0, (Number(model.counts[countKey]) || 0) + (wasActive ? -1 : 1));
       paintAction(button, model, key);
+      repaintActions(model, key);
       try {
         await bridge.toggleAction(key, model.id, wasActive);
       } catch (err) {
@@ -449,6 +607,7 @@ export class XThreadLoader {
         model.flags[flag] = wasActive;
         model.counts[countKey] = Math.max(0, (Number(model.counts[countKey]) || 0) + (wasActive ? 1 : -1));
         paintAction(button, model, key);
+        repaintActions(model, key);
         notify(readerEl, `${ACTION_LABEL[key] || key}失败：${err && err.message ? err.message : err}`, 'error');
       }
     };
@@ -457,7 +616,7 @@ export class XThreadLoader {
       if (next === sortMode) return;
       sortMode = next;
       paintSort(group, next);
-      renderReplies();
+      placeReplies();
     };
 
     // ---------- 小巧评论卡：点时间右侧的 💬 图标打开 ----------
@@ -466,56 +625,92 @@ export class XThreadLoader {
     const commentCard = createCommentCard({
       getRoot: () => readerEl,
       // 卡片只在右栏内活动：位置由右栏 rect 反算并夹紧，结构上不会压到左侧主贴
-      getPane: () => readerEl?.querySelector('.pv-x-pane-replies') || null,
+      // 垂直方向夹在评论列表的可见部分里：卡片上沿不会越过回复框下沿
+      getBounds: () => {
+        if (!replyList || !readerEl) return null;
+        const pane = readerEl.querySelector('.pv-x-pane-replies');
+        const list = replyList.getBoundingClientRect();
+        const paneRect = pane ? pane.getBoundingClientRect() : list;
+        const scroller = (columnsEl && readerEl.classList.contains('pv-x-single') ? columnsEl : replyList).getBoundingClientRect();
+        // 单栏时工具行吸顶，卡片也不能盖住它
+        const tools = readerEl.querySelector('.pv-x-reply-tools');
+        const toolsBottom = tools ? tools.getBoundingClientRect().bottom : scroller.top;
+        return {
+          top: Math.max(list.top, scroller.top, toolsBottom),
+          bottom: Math.min(list.bottom, scroller.bottom),
+          left: paneRect.left,
+          right: paneRect.right
+        };
+      },
       bindProfile,
       onAction: handleAction,
+      replyCountOf: (model) => Number(model && model.counts && model.counts.replies) || 0,
       load: async (id) => {
         const json = await bridge.readThread(String(id));
+        if (aborted) throw new Error('已关闭');
         const summary = parseThreadSummary(json, String(id));
-        if (!summary.focalFound || !summary.focal) throw new Error('X 没有返回这条评论');
-        modelsById.set(summary.focal.id, summary.focal);
-        for (const reply of summary.replies) modelsById.set(reply.id, reply);
-        return { post: summary.focal, replies: summary.replies, url: openUrlOf(summary.focal) };
+        if (!summary.focalFound || !summary.focal) throw new Error('X 没有返回这条回复');
+        const depths = new Map(summary.replies.map((reply) => [reply.id, reply.depth]));
+        const post = canonical(summary.focal);
+        const cardReplies = summary.replies.map(canonical);
+        // 标题与列表入口同一个数：取 X 的计数与实际拿到的条数中较大者
+        post.counts.replies = Math.max(Number(post.counts.replies) || 0, cardReplies.length);
+        repaintReplies(post);
+        return { post, replies: cardReplies, depths, url: openUrlOf(post) };
       }
     });
 
-    /** 帖子头部 💬 图标：打开这条的评论卡（同一条再点是关闭） */
+    /** 「查看 N 条回复」：打开这条的评论卡（同一个入口再点是关闭，由卡片自己处理） */
     const openCommentsFor = (model, anchor) => {
       if (!model || !model.id) return;
-      if (commentCard.isOpen() && commentCard.current() === String(model.id)) {
-        commentCard.close();
-        return;
-      }
       commentCard.open(model, anchor);
     };
 
     const submitReply = async (text, target) => {
+      if (target && String(target.id).startsWith('local-')) throw new Error('这条回复还在同步，暂时不能回复它');
       // 定向回复：点了某条评论的「回复」就回到那条，否则回主帖
       const inReplyTo = target && target.id ? String(target.id) : tweetId;
-      await bridge.createReply(inReplyTo, text);
+      const json = await bridge.createReply(inReplyTo, text);
+      // 已经发出去了：先清草稿，即使弹窗这时已关闭，下次打开也不会带着已发送的内容
+      replyDrafts.clear(tweetId);
       if (aborted) return;
-      const local = {
-        id: `local-${Date.now()}`,
-        text,
-        createdAt: new Date().toISOString(),
-        author: { name: account.handle ? `@${account.handle}` : '我', handle: account.handle, avatar: account.avatar, verified: false },
-        counts: { replies: 0, likes: 0, reposts: 0, bookmarks: 0, views: 0 },
-        flags: { liked: false, reposted: false, bookmarked: false },
-        media: [],
-        depth: target && target.depth !== undefined ? Math.min(Number(target.depth) + 1, 3) : 0,
-        inReplyToId: inReplyTo
-      };
-      // 新回复固定显示在评论最前（与 peek 一致，便于立刻确认）
-      replies.unshift(local);
-      seen.add(local.id);
-      modelsById.set(local.id, local);
-      replyTarget = null;
-      composerView?.setTarget(null);
+      const targetDepth = target ? (listDepths.has(target.id) ? listDepths.get(target.id) : Number(target.depth) || 0) : -1;
+      // 优先用接口返回的真实推文（真实 id、作者信息，点赞/复制链接都可用）；取不到才用本地占位
+      const real = tweetFromCreateResponse(json);
+      const posted = real
+        ? canonical(real)
+        : {
+            id: `local-${Date.now()}`,
+            text,
+            entities: [],
+            createdAt: new Date().toISOString(),
+            author: { id: '', name: account.name || account.handle || '我', handle: account.handle, avatar: account.avatar, verified: false },
+            counts: { replies: 0, likes: 0, reposts: 0, bookmarks: 0, views: 0 },
+            flags: { liked: false, reposted: false, bookmarked: false },
+            media: [],
+            inReplyToId: inReplyTo
+          };
+      if (!real) modelsById.set(posted.id, posted);
+      listDepths.set(posted.id, Math.min(targetDepth + 1, 3));
+      // 被回复的那条（或主帖）回复数 +1，并作废它的评论卡缓存
+      const parent = target ? modelsById.get(String(target.id)) || target : focalModel;
+      if (parent && parent.counts) {
+        parent.counts.replies = (Number(parent.counts.replies) || 0) + 1;
+        repaintReplies(parent);
+      }
+      if (target) commentCard.invalidate(target.id);
+      // 新回复固定显示在列表最前（便于立刻确认）
+      if (!seen.has(posted.id)) {
+        replies.unshift(posted);
+        seen.add(posted.id);
+      }
       sortMode = 'relevant';
       paintSort(sortGroup, 'relevant');
       updateCount();
-      renderReplies();
+      placeReplies();
+      if (sentinelState === 'done' || sentinelState === 'none') settleSentinel();
       notify(readerEl, target ? `已回复 @${(target.author && target.author.handle) || ''}` : '回复已发布', 'ok');
+      // 回复框自己会清空正文、取消目标并上报（onDraftChange 会把 replyTarget 置空）
     };
 
     const loadMore = async () => {
@@ -530,16 +725,20 @@ export class XThreadLoader {
         for (const reply of next.replies) {
           if (seen.has(reply.id)) continue;
           seen.add(reply.id);
-          replies.push(reply);
-          modelsById.set(reply.id, reply);
+          listDepths.set(reply.id, reply.depth);
+          replies.push(canonical(reply));
           added += 1;
         }
         cursor = replyCursorAfterPage(previousCursor, next.cursor, added);
         updateCount();
-        renderReplies();
+        // 只追加新节点，已有节点不动
+        placeReplies();
+        settleSentinel();
       } catch (err) {
+        if (aborted) return;
         logger.warn('[XThreadLoader] load more failed', err);
-        notify(readerEl, `加载更多评论失败：${err && err.message ? err.message : err}`, 'error');
+        // 哨兵换成「加载失败 · 重试」，不再自动重试（避免失败后无限循环请求）
+        setSentinel('error', err && err.message ? err.message : String(err));
       } finally {
         loadingMore = false;
       }
@@ -554,12 +753,12 @@ export class XThreadLoader {
         const summary = parseThreadSummary(json, tweetId);
         if (!summary.focalFound) throw new Error('X 返回了数据，但没有找到这条原帖。');
         cursor = summary.cursor;
-        modelsById.set(summary.focal.id, summary.focal);
-        for (const ancestor of summary.ancestors) modelsById.set(ancestor.id, ancestor);
+        focalModel = canonical(summary.focal);
+        for (const ancestor of summary.ancestors) canonical(ancestor);
         for (const reply of summary.replies) {
           seen.add(reply.id);
-          replies.push(reply);
-          modelsById.set(reply.id, reply);
+          listDepths.set(reply.id, reply.depth);
+          replies.push(canonical(reply));
         }
         // 长文帖：先把正文补全再渲染，避免首屏只有封面
         await hydrateArticle(summary.focal);
@@ -577,21 +776,27 @@ export class XThreadLoader {
             applyFollowState(author, result);
             return result;
           },
-          onNotify: (message, tone) => notify(readerEl, message, tone === 'ok' ? 'ok' : 'error')
+          // ok / info / error 原样传：info 走礼貌播报，不再被当成错误
+          onNotify: (message, tone) => notify(readerEl, message, tone || 'error')
         });
+        // 草稿：同一主帖重开/刷新时恢复正文和回复目标
+        const draft = replyDrafts.get(tweetId);
         const built = renderReader({
-          focal: summary.focal,
-          ancestors: summary.ancestors,
-          replyCount: seen.size,
-          openUrl: openUrlOf(summary.focal),
+          focal: focalModel,
+          ancestors: summary.ancestors.map((ancestor) => modelsById.get(ancestor.id) || ancestor),
+          replyCount: Math.max(Number(focalModel.counts && focalModel.counts.replies) || 0, seen.size),
+          openUrl: openUrlOf(focalModel),
           onAction: handleAction,
           onSort: handleSort,
           onSubmitReply: submitReply,
           translationFor,
           bindProfile,
-          composerAvatar: account.avatar
+          composerAvatar: account.avatar,
+          draftText: draft ? draft.text : '',
+          onDraftChange
         });
         readerEl = built.reader;
+        columnsEl = built.columns;
         replyList = built.list;
         countLabel = built.countLabel;
         sortGroup = built.sort;
@@ -602,12 +807,21 @@ export class XThreadLoader {
           resizeObserver = new ResizeObserver(syncLayout);
           resizeObserver.observe(container);
         }
+        composerView?.syncHeight();
+        if (draft && draft.target) {
+          setReplyTarget(modelsById.get(draft.target.id) || draft.target, { focus: false });
+        }
         updateCount();
-        renderReplies();
-        // 评论卡贴着图标定位：栏一滚动锚点就跑了，直接关掉（卡片是"随手看一眼"的东西）
-        readerEl.querySelector('.pv-x-pane-replies')?.addEventListener('scroll', () => commentCard.close(), {
-          passive: true
-        });
+        placeReplies();
+        settleSentinel();
+        // 主贴与上下文优先翻译
+        enqueueTranslation(focalModel, true);
+        for (const ancestor of summary.ancestors) enqueueTranslation(modelsById.get(ancestor.id), true);
+        observeTranslations([built.postPane]);
+        // 有上下文链时把主贴滚到栏顶（上下文在上方，往上滚可看）
+        scrollFocalIntoView(built.focalNode, summary.ancestors.length > 0);
+        // 资料卡贴着锚点定位：所在栏滚动后锚点跑了，收起
+        readerEl.addEventListener('scroll', onReaderScroll, { capture: true, passive: true });
       } catch (err) {
         if (aborted) return;
         logger.warn('[XThreadLoader] read thread failed', err);

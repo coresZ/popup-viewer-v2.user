@@ -18,7 +18,8 @@ import { parseThreadSummary } from './x/xModel.js';
 import { readXTheme } from './x/xTheme.js';
 import { XThreadLoader } from './loaders/XThreadLoader.js';
 import { debugMark, showErr, debugEnabled } from './utils/debugFlag.js';
-import { hijacksFixed } from './utils/dom.js';
+import { hijacksFixed, uiQuery, uiRoot } from './utils/dom.js';
+import { gm } from './utils/gm.js';
 
 const prefetch = new PrefetchManager(loaderManager);
 
@@ -81,9 +82,9 @@ function installXSupport() {
           faded
         };
       };
-      const panel = document.getElementById('popup-content-panel');
+      const panel = uiQuery('#popup-content-panel');
       return {
-        mine: describe(document.querySelector('#popup-content-area .pv-x-text')),
+        mine: describe(uiQuery('#popup-content-area .pv-x-text')),
         xTweet: describe(document.querySelector('[data-testid="tweetText"]')),
         chirpLoaded:
           typeof document.fonts?.check === 'function' ? document.fonts.check('15px "TwitterChirp"') : 'unsupported',
@@ -97,7 +98,7 @@ function installXSupport() {
     },
     // 定位自检：面板是否被宿主页面的 transform / CSS 影响而无法居中
     positionDiag: () => {
-      const panel = document.getElementById('popup-content-panel');
+      const panel = uiQuery('#popup-content-panel');
       const panelStyle = panel ? getComputedStyle(panel) : null;
       const rect = panel ? panel.getBoundingClientRect() : null;
       const bodyStyle = getComputedStyle(document.body);
@@ -121,16 +122,25 @@ function installXSupport() {
         html: { transform: htmlStyle.transform, position: htmlStyle.position, width: htmlStyle.width },
         bodyHijacksFixed: hijacksFixed(document.body),
         htmlHijacksFixed: hijacksFixed(document.documentElement),
-        mount: panel && panel.parentElement ? `${panel.parentElement.tagName}#${panel.parentElement.id}` : null
+        mount: uiRoot()
+          ? `shadow:${uiRoot().host.parentElement?.tagName || '?'}`
+          : panel && panel.parentElement
+            ? `${panel.parentElement.tagName}#${panel.parentElement.id}`
+            : null
       };
     },
     // 样式自检：区分「整表没生效」（CSP 拦内联样式）与「只有 X 皮肤没生效」
     styleDiag: () => {
-      const panel = document.getElementById('popup-content-panel');
-      const area = document.getElementById('popup-content-area');
-      const reader = document.querySelector('.pv-x-reader');
+      const panel = uiQuery('#popup-content-panel');
+      const area = uiQuery('#popup-content-area');
+      const reader = uiQuery('.pv-x-reader');
       let xRulesFound = false;
-      for (const sheet of Array.from(document.styleSheets)) {
+      const shadow = uiRoot();
+      const sheets = [
+        ...Array.from(document.styleSheets),
+        ...(shadow ? Array.from(shadow.styleSheets || []).concat(shadow.adoptedStyleSheets || []) : [])
+      ];
+      for (const sheet of sheets) {
         try {
           if (Array.from(sheet.cssRules).some((rule) => String(rule.selectorText || '').includes('pv-x-reader'))) {
             xRulesFound = true;
@@ -237,6 +247,31 @@ function setupEvents() {
   });
 }
 
+// 油猴菜单入口（v2.3.0）：不依赖右下角齿轮，齿轮可以按站点隐藏
+function setupMenu() {
+  const popup = popupManager.popup;
+  const cornerRect = () => {
+    const x = window.innerWidth - 20;
+    const y = window.innerHeight - 20;
+    return { left: x, right: x, top: y, bottom: y, width: 0, height: 0 };
+  };
+  gm.registerMenuCommand('打开设置', () => {
+    const btn = popup.floatBtn;
+    const visible = btn && !btn.classList.contains('hidden') && !btn.classList.contains('pv-float-off');
+    popup.showSettingsNear(visible ? btn.getBoundingClientRect() : cornerRect());
+  });
+  gm.registerMenuCommand('在此站点点选链接', () => {
+    popup.ensure();
+    popup.ensureRulesPanel();
+    popup.rulesPanel?.startPick?.();
+  });
+  gm.registerMenuCommand('显示/隐藏右下角设置按钮（本站）', () => {
+    const next = !settingsManager.get().hideFloatButton;
+    settingsManager.set({ hideFloatButton: next });
+    popup.applySettings(settingsManager.get());
+  });
+}
+
 let observer = null;
 let debouncedRunEnhancements = null;
 
@@ -290,13 +325,28 @@ function init() {
     return;
   }
   popupManager.popup.applyTheme(settingsManager.get().theme);
-  // 立即构建 UI（含右下角设置按钮/规则面板），未匹配内置适配器的网站也能访问设置与规则
-  popupManager.popup.ensure();
+  // 首屏不构建整套 UI：设置/规则面板按需创建，核心外壳也延迟到浏览器空闲时构建。
+  // 点击链接/齿轮/油猴菜单时各自的入口会 ensure()，不会因为延迟构建而不可用。
+  const buildUi = () => {
+    try {
+      popupManager.popup.ensure();
+      debugMark('ui ready');
+    } catch (err) {
+      logger.error('[main] build UI error', err);
+      showErr('build-ui', err);
+    }
+  };
+  if (typeof window.requestIdleCallback === 'function') {
+    window.requestIdleCallback(buildUi, { timeout: 1200 });
+  } else {
+    setTimeout(buildUi, 0);
+  }
   registerAdapters();
   installXSupport();
   applyForumMarker();
   setupEvents();
   setupObserver();
+  if (!isInIframe()) setupMenu();
   debugMark('init ok');
   logger.log('Popup Viewer V2 已启用');
 }

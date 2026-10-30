@@ -131,9 +131,100 @@ export function pickMountPoint() {
   return body || html;
 }
 
-/** 按 pickMountPoint 的结果挂载 UI 节点 */
+// ===== UI 根（Shadow DOM）=====
+// 外壳挂进一个开放 shadow root，宿主页面的 CSS 进不来，脚本的令牌/类名也不外泄。
+// 失败（极老浏览器、attachShadow 被禁）时 uiRoot() 返回 null，mountUi 回退到直接挂 body。
+let uiShadowRoot = null;
+
+/** 记录外壳所在的 shadow root（由 PopupPanel 创建宿主后调用）。 */
+export function setUiRoot(root) {
+  uiShadowRoot = root || null;
+}
+
+/** 外壳所在的 shadow root；未启用时为 null。 */
+export function uiRoot() {
+  return uiShadowRoot;
+}
+
+/** 在外壳内查找元素（shadow root 优先，否则在 document 里找）。 */
+export function uiQuery(selector) {
+  return (uiShadowRoot || document).querySelector(selector);
+}
+
+/** 挂载 UI 节点：有 shadow root 时挂进去，否则按 pickMountPoint 挂到 body/html。 */
 export function mountUi(node) {
+  if (uiShadowRoot) {
+    uiShadowRoot.appendChild(node);
+    return uiShadowRoot;
+  }
   const parent = pickMountPoint();
   if (parent) parent.appendChild(node);
   return parent;
+}
+
+// ===== 事件辅助 =====
+
+/** 事件的真实路径（穿透 shadow root）；不支持时退回 target 的祖先链。 */
+export function eventPath(event) {
+  if (event && typeof event.composedPath === 'function') {
+    const path = event.composedPath();
+    if (path && path.length) return path;
+  }
+  const out = [];
+  for (let node = event && event.target; node; node = node.parentNode || node.host) out.push(node);
+  return out;
+}
+
+/** 事件的最内层元素目标（shadow 内的真实元素，而不是被重定向后的宿主）。 */
+export function eventTarget(event) {
+  for (const node of eventPath(event)) if (node && node.nodeType === 1) return node;
+  return event ? event.target : null;
+}
+
+/** 在事件路径上找第一个匹配选择器的元素（替代 event.target.closest，能穿透 shadow root）。 */
+export function closestInPath(event, selector) {
+  for (const node of eventPath(event)) {
+    if (node && node.nodeType === 1 && typeof node.matches === 'function') {
+      try {
+        if (node.matches(selector)) return node;
+      } catch {
+        return null;
+      }
+    }
+  }
+  return null;
+}
+
+const EDITABLE_INPUT_TYPES = /^(text|search|email|url|tel|password|number|date|datetime-local|month|time|week)$/i;
+
+/** 元素是否为可输入的控件（input 文本类 / textarea / select / contenteditable）。 */
+export function isEditableElement(node) {
+  if (!node || node.nodeType !== 1) return false;
+  const tag = node.tagName;
+  if (tag === 'TEXTAREA' || tag === 'SELECT') return true;
+  if (tag === 'INPUT') return EDITABLE_INPUT_TYPES.test(node.type || 'text');
+  return node.isContentEditable === true;
+}
+
+/** 按键事件是否发生在可输入控件里（含 shadow 内、同源 iframe 内的焦点）。 */
+export function isEditableEvent(event) {
+  return isEditableElement(eventTarget(event));
+}
+
+/** 当前真正获得焦点的元素（穿透 shadow root）。 */
+export function deepActiveElement() {
+  let node = document.activeElement;
+  while (node && node.shadowRoot && node.shadowRoot.activeElement) node = node.shadowRoot.activeElement;
+  return node;
+}
+
+/** 节点是否属于脚本自己的 UI（shadow 宿主内，或旧的 popup-/pv- 前缀元素）。 */
+export function isOwnUiNode(node) {
+  if (!node || node.nodeType !== 1) return false;
+  if (uiShadowRoot && (node.getRootNode?.() === uiShadowRoot || node === uiShadowRoot.host)) return true;
+  try {
+    return !!node.closest('[id^="popup-"], [id^="pv-"], [id^="pv2-"]');
+  } catch {
+    return false;
+  }
 }

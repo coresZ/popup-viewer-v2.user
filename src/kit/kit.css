@@ -14,7 +14,6 @@
     margin: 0;
     padding: 0;
     border: 0;
-    outline: 0;
     background: transparent;
     vertical-align: baseline;
     text-decoration: none;
@@ -60,6 +59,7 @@
 
 @media (prefers-color-scheme: dark) {
   :root {
+    --pvk-on-accent: #0f172a; /* 浅蓝底上的文字用深色（白字只有 2.5:1） */
     --pvk-accent: #60a5fa;
     --pvk-accent-hover: #93c5fd;
     --pvk-accent-soft: rgba(96, 165, 250, 0.14);
@@ -205,9 +205,11 @@
 .pvk-btn:active {
   transform: scale(0.92);
 }
-.pvk-btn:focus-visible {
-  outline: 2px solid var(--pvk-focus-ring);
-  outline-offset: 1px;
+/* 实色焦点框（半透明焦点环对背景不足 3:1） */
+.pvk-btn:focus-visible,
+#pvk-error button:focus-visible {
+  outline: 2px solid var(--pvk-accent);
+  outline-offset: 2px;
 }
 #pvk-close:hover {
   color: var(--pvk-danger);
@@ -337,7 +339,7 @@
 #pvk-error button {
   padding: 10px 20px;
   background: var(--pvk-accent);
-  color: #fff;
+  color: var(--pvk-on-accent, #fff);
   border: none;
   border-radius: 8px;
   cursor: pointer;

@@ -27,7 +27,7 @@ export class CacheLoader {
       const oldest = this.cache.keys().next().value;
       this.cache.delete(oldest);
     }
-    this.cache.set(url, { head: result.head, body: result.body, time: Date.now() });
+    this.cache.set(url, { head: result.head, body: result.body, title: result.title || '', time: Date.now() });
   }
   /**
    * 发起抓取并缓存，返回 { promise, abort }。
@@ -39,7 +39,9 @@ export class CacheLoader {
     const existing = this.inflight.get(url);
     if (existing) return existing;
     const entry = this._fetch(url, keepScripts, mobileUA);
-    entry.promise.finally(() => this.inflight.delete(url));
+    // then(cleanup, cleanup) 而不是 finally：finally 派生的 Promise 会把原拒绝再抛一次，无人接住就成了未处理拒绝
+    const cleanup = () => this.inflight.delete(url);
+    entry.promise.then(cleanup, cleanup);
     this.inflight.set(url, entry);
     return entry;
   }
@@ -67,7 +69,7 @@ export class CacheLoader {
         },
         onerror: (error) => {
           logger.error('[CacheLoader] request error', error);
-          reject(new Error('网络请求失败'));
+          reject(new Error(error && error.timeout ? '请求超时' : '网络请求失败'));
         }
       });
       abort = () => {
@@ -86,6 +88,7 @@ export class CacheLoader {
       renderIntoIframe({
         html: cached.body,
         head: cached.head,
+        title: cached.title,
         url,
         container,
         sandboxAttrs: contentSandboxAttrs(keepScripts),
@@ -104,6 +107,7 @@ export class CacheLoader {
         renderIntoIframe({
           html: result.body,
           head: result.head,
+          title: result.title,
           url,
           container,
           sandboxAttrs: contentSandboxAttrs(keepScripts),

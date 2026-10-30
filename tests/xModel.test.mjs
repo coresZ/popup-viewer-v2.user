@@ -13,8 +13,13 @@ import {
   shouldOfferTranslation,
   sourceLanguageLabel,
   articleContentFromPayload,
-  fullTextFromPayload
+  fullTextFromPayload,
+  tweetFromCreateResponse,
+  mergeModel,
+  threadContinues
 } from '../src/x/xModel.js';
+import { formatCount, relativeTime, fullTime } from '../src/x/xFormat.js';
+import { createDraftStore } from '../src/x/xDrafts.js';
 
 const user = (id, name, handle, extra = {}) => ({
   result: {
@@ -779,6 +784,81 @@ check('引用帖：被引用的是 X 长文时，带出标题与封面（正文�
   // 被引用长文的正文通常只剩一条 t.co（渲染层会去掉它，改用标题）
   assert.equal(model.quote.text, 'https://t.co/art');
   assert.equal(model.quote.media.length, 0);
+});
+
+// ---------- 阅读器纯逻辑：格式化 / 草稿 / 模型合并 ----------
+
+check('formatCount：千分位、万、亿，截断不进位', () => {
+  assert.equal(formatCount(0), '0');
+  assert.equal(formatCount(999), '999');
+  assert.equal(formatCount(1234), '1,234');
+  assert.equal(formatCount(10000), '1万');
+  assert.equal(formatCount(12345), '1.2万');
+  assert.equal(formatCount(99999), '9.9万');
+  assert.equal(formatCount(150000000), '1.5亿');
+  assert.equal(formatCount('abc'), '0');
+});
+
+check('relativeTime：相对值、同年日期、跨年日期、未来时间', () => {
+  const now = new Date(2026, 9, 30, 12, 0, 0).getTime();
+  assert.equal(relativeTime(now - 10 * 1000, now), '刚刚');
+  assert.equal(relativeTime(now + 30 * 1000, now), '刚刚');
+  assert.equal(relativeTime(now - 5 * 60000, now), '5分钟');
+  assert.equal(relativeTime(now - 3 * 3600000, now), '3小时');
+  assert.equal(relativeTime(now - 2 * 86400000, now), '2天');
+  assert.equal(relativeTime(new Date(2026, 2, 3, 8).getTime(), now), '3月3日');
+  assert.equal(relativeTime(new Date(2023, 9, 3, 8).getTime(), now), '2023年10月3日');
+  assert.equal(relativeTime('', now), '');
+  assert.equal(relativeTime('not a date', now), '');
+});
+
+check('relativeTime / fullTime：能解析 X 的 created_at 格式', () => {
+  const value = 'Wed Oct 10 20:19:24 +0000 2018';
+  assert.match(relativeTime(value, Date.UTC(2026, 0, 1)), /^2018年10月1[01]日$/);
+  assert.match(fullTime(value), /^2018年10月1[01]日 \d\d:19$/);
+});
+
+check('草稿：按主帖保存、空文本删除、超上限淘汰最旧', () => {
+  const store = createDraftStore(2);
+  store.set('1', 'hello', { id: '9', depth: 1, author: { id: 'u', name: 'N', handle: 'h' }, text: 'x' });
+  assert.deepEqual(store.get('1'), { text: 'hello', target: { id: '9', depth: 1, author: { id: 'u', name: 'N', handle: 'h' } } });
+  store.set('1', '   ');
+  assert.equal(store.get('1'), null);
+  store.set('a', 'A');
+  store.set('b', 'B');
+  store.set('c', 'C');
+  assert.equal(store.get('a'), null);
+  assert.equal(store.size, 2);
+  store.clear('b');
+  assert.equal(store.get('b'), null);
+});
+
+check('mergeModel：就地合并、保留对象与作者引用、不合并 depth', () => {
+  const target = { id: '1', depth: 0, counts: { likes: 1 }, author: { id: 'u', name: 'old' } };
+  const author = target.author;
+  const merged = mergeModel(target, { id: '1', depth: 2, counts: { likes: 5 }, author: { id: 'u', name: 'new' } });
+  assert.equal(merged, target);
+  assert.equal(target.author, author);
+  assert.equal(author.name, 'new');
+  assert.equal(target.counts.likes, 5);
+  assert.equal(target.depth, 0);
+});
+
+check('threadContinues：只有下一条是直接回复时才画竖线', () => {
+  assert.equal(threadContinues({ id: '1' }, { id: '2', inReplyToId: '1' }), true);
+  assert.equal(threadContinues({ id: '1' }, { id: '3', inReplyToId: '2' }), false);
+  assert.equal(threadContinues({ id: '1' }, null), false);
+});
+
+check('tweetFromCreateResponse：取出新发回复的真实推文', () => {
+  const json = { data: { create_tweet: { tweet_results: { result: tweet('555', { text: '我的回复', replyTo: '100', user: user('me', '我', 'me') }) } } } };
+  const model = tweetFromCreateResponse(json);
+  assert.equal(model.id, '555');
+  assert.equal(model.text, '我的回复');
+  assert.equal(model.inReplyToId, '100');
+  assert.equal(model.author.handle, 'me');
+  assert.equal(tweetFromCreateResponse({ data: {} }), null);
+  assert.equal(tweetFromCreateResponse(null), null);
 });
 
 console.log(`\n${passed} passed${process.exitCode ? ', some failed' : ''}`);

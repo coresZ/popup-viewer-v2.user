@@ -20,7 +20,7 @@ export class RulesManager {
         if (Array.isArray(list)) {
           this.rules[host] = list
             .filter((r) => r && typeof r.selector === 'string' && r.selector.trim())
-            .map((r) => ({ selector: r.selector.trim() }));
+            .map((r) => (r.disabled === true ? { selector: r.selector.trim(), disabled: true } : { selector: r.selector.trim() }));
         }
       }
     }
@@ -37,6 +37,40 @@ export class RulesManager {
       this._persist();
     }
     return rules;
+  }
+  /** 修改规则（selector / disabled）。新选择器为空或与其它规则重复时返回 false。 */
+  updateRule(hostname, index, patch) {
+    const rules = this.getRules(hostname);
+    const rule = rules[index];
+    if (!rule) return false;
+    if ('selector' in patch) {
+      const sel = String(patch.selector || '').trim();
+      if (!sel || rules.some((r, i) => i !== index && r.selector === sel)) return false;
+      rule.selector = sel;
+    }
+    if ('disabled' in patch) {
+      if (patch.disabled) rule.disabled = true;
+      else delete rule.disabled;
+    }
+    this.load()[hostname] = rules;
+    this._persist();
+    return true;
+  }
+  /** 把规则插回指定位置（撤销删除用）。 */
+  insertRule(hostname, index, rule) {
+    const rules = this.getRules(hostname);
+    if (!rule || rules.some((r) => r.selector === rule.selector)) return rules;
+    rules.splice(Math.max(0, Math.min(index, rules.length)), 0, { ...rule });
+    this.load()[hostname] = rules;
+    this._persist();
+    return rules;
+  }
+  /** 所有有规则的站点：[{ host, count, enabled }]，按条数降序。 */
+  listHosts() {
+    return Object.entries(this.load())
+      .filter(([, list]) => Array.isArray(list) && list.length)
+      .map(([host, list]) => ({ host, count: list.length, enabled: list.filter((r) => !r.disabled).length }))
+      .sort((a, b) => b.count - a.count || a.host.localeCompare(b.host));
   }
   removeRule(hostname, index) {
     const rules = this.getRules(hostname);
@@ -55,16 +89,25 @@ export class RulesManager {
   match(event, hostname) {
     const rules = this.getRules(hostname);
     if (!rules.length) return null;
+    const target = event.target;
+    let clickedLink = null;
+    try {
+      clickedLink = target && target.closest ? target.closest('a[href]') : null;
+    } catch {}
     for (const rule of rules) {
+      if (!rule || rule.disabled) continue; // R5：停用的规则不参与匹配
       let el = null;
       try {
-        el = event.target.closest ? event.target.closest(rule.selector) : null;
+        el = target && target.closest ? target.closest(rule.selector) : null;
       } catch {
         el = null;
       }
       if (!el) continue;
       const link = this._extractLink(el);
-      if (link) return link;
+      if (!link) continue;
+      // R1：规则命中的是容器，而点击落在容器里另一个链接上（如作者名）时不劫持
+      if (clickedLink && clickedLink !== el && link.element !== clickedLink && el.contains(clickedLink)) continue;
+      return link;
     }
     return null;
   }

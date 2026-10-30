@@ -5,7 +5,8 @@
 
 import { el, svgIcon } from '../utils/dom.js';
 import { xIcon } from './xIcons.js';
-import { sourceLanguageLabel } from './xModel.js';
+import { sourceLanguageLabel, threadContinues } from './xModel.js';
+import { formatCount, fullTime } from './xFormat.js';
 
 const SORTS = [
   { key: 'relevant', label: '相关' },
@@ -13,19 +14,7 @@ const SORTS = [
   { key: 'liked', label: '最多喜欢' }
 ];
 
-function formatDate(value) {
-  if (!value) return '';
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return '';
-  return date.toLocaleString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
-}
-
-function formatCount(value) {
-  const n = Number(value) || 0;
-  if (n < 1000) return String(n);
-  if (n < 10000) return `${(n / 1000).toFixed(1)}K`;
-  return `${(n / 10000).toFixed(1)}万`;
-}
+export { formatCount };
 
 /** 作者主页地址（资料卡与头像/昵称链接共用） */
 export function profileUrlOf(model) {
@@ -55,30 +44,41 @@ function avatarColumn(model, { link = true, bindProfile = null } = {}) {
   return column;
 }
 
-/**
- * 时间右侧的「查看评论」入口（只给评论列表里的评论）：图标沿用 X 自己的回复图标，后面跟数量。
- * **没有回复就不显示**（计数为 0 的评论不出图标，列表更干净）。
- * 点它弹出小巧评论卡 —— 看这条评论自己的回复。不做"点整行"，避免选中文字时误触。
- */
-function commentEntry(model, onOpenComments) {
+/** 时间右侧的「查看 N 条回复」入口：图标 + 计数（恢复旧版 X 卡片的紧凑样式） */
+function repliesEntry(model, onOpenComments) {
   if (!onOpenComments) return null;
-  const count = Number(model.counts && model.counts.replies) || 0;
-  if (!count) return null;
+  const count = countOf(model, 'replies');
   const button = el('button', {
     class: 'pv-x-comment-entry',
     type: 'button',
+    'aria-haspopup': 'dialog',
+    'aria-expanded': 'false',
+    'data-replies-for': model.id,
     title: count ? `查看这条的 ${count} 条评论` : '查看这条的评论',
     'aria-label': count ? `查看这条的 ${count} 条评论` : '查看这条的评论'
   });
   const icon = xIcon('reply');
   if (icon) button.appendChild(icon);
-  if (count) button.appendChild(el('span', { class: 'pv-x-comment-count', text: formatCount(count) }));
+  button.appendChild(el('span', { class: 'pv-x-comment-count', text: count ? formatCount(count) : '' }));
   button.addEventListener('click', (event) => {
     event.preventDefault();
     event.stopPropagation();
     onOpenComments(model, button);
   });
+  paintRepliesLink(button, model);
   return button;
+}
+
+/** 回复数变化（发回复、评论卡拿到新计数）后刷新入口；为 0 时隐藏 */
+export function paintRepliesLink(button, model) {
+  if (!button) return;
+  const count = countOf(model, 'replies');
+  button.hidden = !count;
+  const label = count ? `查看这条的 ${count} 条评论` : '查看这条的评论';
+  button.title = label;
+  button.setAttribute('aria-label', label);
+  const countNode = button.querySelector('.pv-x-comment-count');
+  if (countNode) countNode.textContent = count ? formatCount(count) : '';
 }
 
 function headNode(model, bindProfile = null, onOpenComments = null) {
@@ -103,9 +103,29 @@ function headNode(model, bindProfile = null, onOpenComments = null) {
   }
   if (model.createdAt) {
     head.appendChild(el('span', { class: 'pv-x-dot', text: '·' }));
-    head.appendChild(el('time', { class: 'pv-x-time', text: formatDate(model.createdAt) }));
+    const full = fullTime(model.createdAt);
+    const date = new Date(model.createdAt);
+    // 与旧版 X 阅读器一致：行内显示完整日期时间（完整中文时间仍放在 title 里）。
+    const label = Number.isNaN(date.getTime())
+      ? full
+      : date.toLocaleString('zh-CN', {
+          year: 'numeric',
+          month: '2-digit',
+          day: '2-digit',
+          hour: '2-digit',
+          minute: '2-digit',
+          hour12: false
+        });
+    head.appendChild(
+      el('time', {
+        class: 'pv-x-time',
+        text: label || full,
+        title: full || null,
+        datetime: Number.isNaN(date.getTime()) ? null : date.toISOString()
+      })
+    );
   }
-  const entry = commentEntry(model, onOpenComments);
+  const entry = repliesEntry(model, onOpenComments);
   if (entry) head.appendChild(entry);
   return head;
 }
@@ -134,11 +154,18 @@ function countOf(model, key) {
 export function paintAction(button, model, key) {
   if (!button) return;
   const flag = FLAG_BY_ACTION[key];
-  if (flag) button.dataset.active = model.flags && model.flags[flag] ? 'true' : 'false';
+  const active = Boolean(flag && model.flags && model.flags[flag]);
+  if (flag) {
+    button.dataset.active = active ? 'true' : 'false';
+    if (button.tagName === 'BUTTON') button.setAttribute('aria-pressed', active ? 'true' : 'false');
+  }
   const countNode = button.querySelector('.pv-x-count');
   const countKey = COUNT_BY_ACTION[key];
+  const spec = ACTIONS.find((item) => item.key === key);
+  const value = countKey ? countOf(model, countKey) : 0;
+  // 读屏标签带上数字：「喜欢 12」
+  if (spec) button.setAttribute('aria-label', value ? `${spec.label} ${formatCount(value)}` : spec.label);
   if (!countNode || !countKey) return;
-  const value = countOf(model, countKey);
   countNode.textContent = value ? formatCount(value) : '';
 }
 
@@ -457,7 +484,13 @@ function createMediaCarousel(photos, { openUrl, variant = 'inline', startIndex =
 
   // 固定窗体：宽高比取自第一张图（切换时不改变窗体大小）
   const framePhoto = photos[0];
-  const stage = el('div', { class: `pv-x-media-stage pv-x-media-stage-${variant}`, tabindex: '-1' });
+  // 栏内轮播可用 Tab 进入（Enter 放大、←/→ 切图）；浮层由脚本聚焦
+  const stage = el('div', {
+    class: `pv-x-media-stage pv-x-media-stage-${variant}`,
+    tabindex: variant === 'inline' ? '0' : '-1',
+    'aria-roledescription': variant === 'inline' ? '图片轮播' : null,
+    'aria-label': variant === 'inline' ? `${photos.length} 张图片，按 Enter 放大` : null
+  });
   if (framePhoto.width && framePhoto.height) stage.style.aspectRatio = `${framePhoto.width} / ${framePhoto.height}`;
 
   // 图片轨道：所有图并排，靠 translateX 滑动
@@ -638,6 +671,7 @@ function createMediaCarousel(photos, { openUrl, variant = 'inline', startIndex =
     (overshoot * dimension * constant) / (dimension + constant * Math.abs(overshoot));
 
   let drag = null; // { startX, base, samples: [[t, x]] }
+  let suppressClick = false;
   const onPointerDown = (event) => {
     if (photos.length < 2 || event.target.closest('button, a')) return;
     stopAnim(); // 抓住正在滑动的轨道：从当前屏幕值继续
@@ -675,6 +709,8 @@ function createMediaCarousel(photos, { openUrl, variant = 'inline', startIndex =
     const v0 = dt > 0 ? ((last[1] - first[1]) / dt) * 1000 : 0;
     const projected = x + project(v0);
     const targetIndex = Math.max(0, Math.min(Math.round(-projected / width()), photos.length - 1));
+    // 拖过一段距离就不算点击（否则松手时会误开大图）
+    suppressClick = Math.abs(x - drag.base) > 6;
     drag = null;
     settle(targetIndex, v0);
   };
@@ -706,6 +742,9 @@ function createMediaCarousel(photos, { openUrl, variant = 'inline', startIndex =
       event.stopPropagation();
       event.preventDefault();
       show(current - 1);
+    } else if ((event.key === 'Enter' || event.key === ' ') && variant === 'inline' && onZoom && event.target === stage) {
+      event.preventDefault();
+      onZoom(current, stage);
     }
   }
   closeButton.addEventListener('click', close);
@@ -717,8 +756,12 @@ function createMediaCarousel(photos, { openUrl, variant = 'inline', startIndex =
   // 栏内默认态：点图弹出覆盖式大图（不是替换图片）
   if (variant === 'inline' && onZoom) {
     stage.addEventListener('click', (event) => {
+      if (suppressClick) {
+        suppressClick = false;
+        return;
+      }
       if (event.target.closest('button, a')) return;
-      onZoom(current);
+      onZoom(current, stage);
     });
   }
 
@@ -742,7 +785,7 @@ function createMediaCarousel(photos, { openUrl, variant = 'inline', startIndex =
 }
 
 /** 覆盖式大图灯箱：点主贴/评论里的图片时弹出，内部复用同一个轮播 */
-function openMediaLightbox(anchor, photos, index, openUrl) {
+function openMediaLightbox(anchor, photos, index, openUrl, returnFocus = null) {
   const root = (anchor && anchor.closest && anchor.closest('.pv-x-reader')) || (anchor && anchor.parentElement);
   if (!root || !photos.length || root.querySelector('.pv-x-media-lightbox')) return;
   const layer = el('div', {
@@ -755,6 +798,14 @@ function openMediaLightbox(anchor, photos, index, openUrl) {
   const close = () => {
     carousel?.destroy();
     layer.remove();
+    // 焦点还给打开它的图片/轮播
+    if (returnFocus && returnFocus.isConnected) {
+      try {
+        returnFocus.focus({ preventScroll: true });
+      } catch (err) {
+        returnFocus.focus();
+      }
+    }
   };
   carousel = createMediaCarousel(photos, { openUrl, variant: 'overlay', startIndex: index, onClose: close });
   layer.appendChild(carousel.node);
@@ -782,7 +833,7 @@ function mediaGrid(model, { openUrl }) {
     const carousel = createMediaCarousel(photos, {
       openUrl,
       variant: 'inline',
-      onZoom: (index) => openMediaLightbox(grid, photos, index, openUrl)
+      onZoom: (index, stageNode) => openMediaLightbox(grid, photos, index, openUrl, stageNode)
     });
     grid.classList.add('pv-x-media-carousel');
     grid.appendChild(carousel.node);
@@ -804,7 +855,7 @@ function mediaGrid(model, { openUrl }) {
       button.addEventListener('click', (event) => {
         event.preventDefault();
         event.stopPropagation();
-        openMediaLightbox(grid, photos, photos.indexOf(item), openUrl);
+        openMediaLightbox(grid, photos, photos.indexOf(item), openUrl, button);
       });
       grid.appendChild(button);
       continue;
@@ -911,14 +962,18 @@ export function renderPost(
     translation = null,
     bindProfile = null,
     compact = false,
+    focal = false,
     onOpenComments = null
   } = {}
 ) {
   const article = el('article', { class: compact ? 'pv-x-post pv-x-post-compact' : 'pv-x-post' });
+  if (focal) article.classList.add('pv-x-post-focal');
   // 供「正在回复这条」的高亮与定位使用
   article.dataset.tweetId = model.id;
+  // 竖线始终放一个节点，是否显示由 data-thread-next 决定（下一条是它的直接回复时才画，见 syncThreadLines）
+  article.dataset.threadNext = threadLine ? 'true' : 'false';
   const column = avatarColumn(model, { bindProfile });
-  if (threadLine) column.appendChild(el('span', { class: 'pv-x-thread-line' }));
+  column.appendChild(el('span', { class: 'pv-x-thread-line', 'aria-hidden': 'true' }));
   article.appendChild(column);
   const isArticle = model.attachment && model.attachment.type === 'article';
   const main = el(
@@ -936,17 +991,35 @@ export function renderPost(
   return article;
 }
 
-export function renderReply(model, options = {}) {
-  const article = renderPost(model, { ...options, threadLine: true, compact: true });
+/**
+ * 评论行。depth 由调用方按视图传入（同一条评论在列表和评论卡里的层级不同，
+ * 而模型对象全阅读器共用一份，不能把层级写在模型上）。
+ */
+export function renderReply(model, { depth = model.depth, ...options } = {}) {
+  const article = renderPost(model, { threadLine: false, ...options, compact: true });
   article.classList.add('pv-x-reply');
-  article.style.setProperty('--pv-x-depth', String(Math.min(Number(model.depth) || 0, 3)));
+  article.style.setProperty('--pv-x-depth', String(Math.min(Number(depth) || 0, 3)));
   return article;
+}
+
+/**
+ * 按显示顺序刷新竖线：下一条是这一条的直接回复时才画（列表追加、排序、插入新回复后调用）。
+ * @param {HTMLElement[]} nodes 按显示顺序的评论节点
+ * @param {(id:string)=>Object} modelOf 由 id 取模型
+ */
+export function syncThreadLines(nodes, modelOf) {
+  for (let i = 0; i < nodes.length; i += 1) {
+    const current = modelOf(nodes[i].dataset.tweetId);
+    const next = i + 1 < nodes.length ? modelOf(nodes[i + 1].dataset.tweetId) : null;
+    nodes[i].dataset.threadNext = threadContinues(current, next) ? 'true' : 'false';
+  }
 }
 
 // ---------- 阅读器骨架 ----------
 
 function sortControl(current, onSort) {
-  const group = el('div', { class: 'pv-x-sort', role: 'group', 'aria-label': '评论排序' });
+  // 排序只作用于已加载的回复（X 的接口按相关度分页）
+  const group = el('div', { class: 'pv-x-sort', role: 'group', 'aria-label': '回复排序（仅已加载的回复）' });
   for (const sort of SORTS) {
     const button = el('button', {
       class: 'pv-x-sort-btn',
@@ -969,11 +1042,14 @@ export function paintSort(group, current) {
 }
 
 /** 纯文字回复框：输入框自适应高度，无内容时禁用提交；回复评论时显示目标 */
-function composer({ avatar, onSubmit, focalId }) {
+function composer({ avatar, onSubmit, focalId, draftText = '', onDraftChange = null }) {
   const section = el('section', { class: 'pv-x-composer' });
   const avatarHolder = el('span', { class: 'pv-x-avatar pv-x-avatar-sm' });
   if (avatar) avatarHolder.appendChild(el('img', { src: avatar, alt: '' }));
-  const input = el('textarea', { class: 'pv-x-composer-input', rows: '1', placeholder: '发布你的回复' });
+  const input = el('textarea', { class: 'pv-x-composer-input', rows: '1', placeholder: '发布你的回复', 'aria-label': '回复内容' });
+  if (draftText) input.value = draftText;
+  // 草稿：正文或回复目标一变就上报，由加载器按主帖 id 暂存
+  const reportDraft = () => onDraftChange?.(input.value, targetModel);
   const submit = el('button', { class: 'pv-x-composer-submit', type: 'button', text: '回复', disabled: '' });
   const hint = el('span', { class: 'pv-x-composer-hint' });
 
@@ -981,19 +1057,22 @@ function composer({ avatar, onSubmit, focalId }) {
   let targetModel = null;
   const targetRow = el('div', { class: 'pv-x-composer-target' });
   const targetLabel = el('span', { class: 'pv-x-composer-target-label' });
-  const clearTarget = el('button', { class: 'pv-x-composer-target-clear', type: 'button', 'aria-label': '取消回复该评论', text: '✕' });
+  const clearTarget = el('button', { class: 'pv-x-composer-target-clear', type: 'button', 'aria-label': '取消回复这条', text: '✕' });
   targetRow.append(targetLabel, clearTarget);
   targetRow.hidden = true;
   clearTarget.addEventListener('click', () => setTarget(null));
 
   function setTarget(model) {
     targetModel = model && String(model.id) !== String(focalId) ? model : null;
+    const who = targetModel && ((targetModel.author && (targetModel.author.handle || targetModel.author.name)) || 'X 用户');
     if (targetModel) {
-      targetLabel.textContent = `回复 @${(targetModel.author && (targetModel.author.handle || targetModel.author.name)) || 'X 用户'}`;
+      targetLabel.textContent = `回复 @${who}`;
       targetRow.hidden = false;
     } else {
       targetRow.hidden = true;
     }
+    input.setAttribute('aria-label', targetModel ? `回复 @${who} 的内容` : '回复内容');
+    reportDraft();
     return targetModel;
   }
 
@@ -1004,18 +1083,21 @@ function composer({ avatar, onSubmit, focalId }) {
   input.addEventListener('input', () => {
     autoGrow();
     submit.disabled = !input.value.trim();
+    reportDraft();
   });
+  if (draftText) submit.disabled = !draftText.trim();
   const send = async () => {
     const text = input.value.trim();
     if (!text || submit.disabled) return;
     submit.disabled = true;
-    hint.textContent = '正在发布...';
+    hint.textContent = '正在发布…';
     try {
       await onSubmit(text, targetModel);
       input.value = '';
       autoGrow();
       hint.textContent = '';
       setTarget(null);
+      reportDraft();
     } catch (err) {
       hint.textContent = `发布失败：${err && err.message ? err.message : err}`;
     } finally {
@@ -1034,16 +1116,38 @@ function composer({ avatar, onSubmit, focalId }) {
     avatarHolder,
     el('div', { class: 'pv-x-composer-body' }, targetRow, input, el('div', { class: 'pv-x-composer-foot' }, hint, submit))
   );
-  return { node: section, setTarget, focus: () => input.focus() };
+  return {
+    node: section,
+    setTarget,
+    focus: () => input.focus(),
+    // 挂到文档后再量高度（恢复草稿时 scrollHeight 在挂载前为 0）
+    syncHeight: autoGrow
+  };
 }
 
-/** 轻提示：互动失败等场景的反馈 */
+/**
+ * 两个常驻的提示区：状态（role=status，礼貌播报）与错误（role=alert，立即播报）。
+ * 读屏只播报「已在文档里的 live 区域」的内容变化，所以随阅读器一起建好，不在出提示时才建。
+ */
+function toastRegions() {
+  return [
+    el('div', { class: 'pv-x-toast', role: 'status', 'aria-live': 'polite', 'data-kind': 'status', 'data-visible': 'false' }),
+    el('div', { class: 'pv-x-toast', role: 'alert', 'aria-live': 'assertive', 'data-kind': 'alert', 'data-visible': 'false' })
+  ];
+}
+
+/** 轻提示：tone 为 ok / info / error；error 走 alert 区域并用危险色 */
 export function notify(reader, message, tone = 'error') {
   if (!reader) return;
-  let toast = reader.querySelector('.pv-x-toast');
+  const kind = tone === 'error' ? 'alert' : 'status';
+  let toast = reader.querySelector(`.pv-x-toast[data-kind="${kind}"]`);
   if (!toast) {
-    toast = el('div', { class: 'pv-x-toast' });
-    reader.appendChild(toast);
+    for (const region of toastRegions()) reader.appendChild(region);
+    toast = reader.querySelector(`.pv-x-toast[data-kind="${kind}"]`);
+  }
+  // 同一时刻只显示一条
+  for (const other of reader.querySelectorAll('.pv-x-toast')) {
+    if (other !== toast) other.dataset.visible = 'false';
   }
   toast.textContent = message;
   toast.dataset.tone = tone;
@@ -1051,7 +1155,7 @@ export function notify(reader, message, tone = 'error') {
   clearTimeout(toast.__pvTimer);
   toast.__pvTimer = setTimeout(() => {
     toast.dataset.visible = 'false';
-  }, 3200);
+  }, tone === 'error' ? 5000 : 3200);
 }
 
 /**
@@ -1068,12 +1172,17 @@ export function renderReader({
   onSubmitReply,
   translationFor,
   bindProfile,
-  composerAvatar
+  composerAvatar,
+  draftText = '',
+  onDraftChange = null
 }) {
+  // reader 本身不滚动（评论卡、资料卡、提示、灯箱都相对它定位）；
+  // columns 是两栏的网格，单栏时它就是唯一的滚动容器（帖子 → 工具行 → 回复框 → 回复）
   const reader = el('div', { class: 'pv-x-reader' });
-  const postPane = el('section', { class: 'pv-x-pane pv-x-pane-post' });
+  const columns = el('div', { class: 'pv-x-columns' });
+  const postPane = el('section', { class: 'pv-x-pane pv-x-pane-post', 'aria-label': '帖子' });
   // 回复上下文：只展示被点开那条之前的对话链
-  // （💬 入口只给评论列表里的评论，主贴与对话链不给 —— 主贴的评论就在右栏，没必要再来一个入口）
+  // （「查看 N 条回复」入口只给评论列表里的评论，主贴的回复就在右栏）
   for (const ancestor of ancestors) {
     postPane.appendChild(
       renderPost(ancestor, {
@@ -1085,11 +1194,11 @@ export function renderReader({
       })
     );
   }
-  postPane.appendChild(
-    renderPost(focal, { threadLine: true, onAction, bindProfile, translation: translationFor?.(focal) })
-  );
+  // 主贴下面没有同栏的下一条，不画竖线
+  const focalNode = renderPost(focal, { threadLine: false, focal: true, onAction, bindProfile, translation: translationFor?.(focal) });
+  postPane.appendChild(focalNode);
 
-  const countLabel = el('span', { class: 'pv-x-reply-count', text: `评论（${replyCount}）` });
+  const countLabel = el('span', { class: 'pv-x-reply-count', text: `回复 ${formatCount(replyCount)}` });
   const sort = onSort ? sortControl('relevant', onSort) : null;
   const tools = el(
     'div',
@@ -1097,11 +1206,14 @@ export function renderReader({
     el('div', { class: 'pv-x-tools-left' }, countLabel, sort),
     el('a', { class: 'pv-x-open', href: openUrl, target: '_blank', rel: 'noreferrer', text: '在 X 打开' })
   );
-  const replyPane = el('section', { class: 'pv-x-pane pv-x-pane-replies' }, tools);
-  const composerView = onSubmitReply ? composer({ avatar: composerAvatar, onSubmit: onSubmitReply, focalId: focal.id }) : null;
+  const replyPane = el('section', { class: 'pv-x-pane pv-x-pane-replies', 'aria-label': '回复' }, tools);
+  const composerView = onSubmitReply
+    ? composer({ avatar: composerAvatar, onSubmit: onSubmitReply, focalId: focal.id, draftText, onDraftChange })
+    : null;
   if (composerView) replyPane.appendChild(composerView.node);
   const list = el('div', { class: 'pv-x-reply-list' });
   replyPane.appendChild(list);
-  reader.append(postPane, replyPane);
-  return { reader, list, countLabel, composer: composerView, sort };
+  columns.append(postPane, replyPane);
+  reader.append(columns, ...toastRegions());
+  return { reader, columns, postPane, replyPane, tools, list, countLabel, composer: composerView, sort, focalNode };
 }

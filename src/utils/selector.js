@@ -69,6 +69,17 @@ export function buildSelectorCandidates(el) {
     push(tag, '标签');
   }
 
+  // 点在链接内部的子元素上：补充直接命中链接本身的候选（R1）
+  const outerLink = el.parentElement && el.parentElement.closest ? el.parentElement.closest('a[href]') : null;
+  if (outerLink && outerLink !== el) {
+    const lc = Array.prototype.slice.call(outerLink.classList || []).filter(isStableClassName).slice(0, 2);
+    if (outerLink.id && isStableId(outerLink.id)) push('#' + cssEscapeIdent(outerLink.id), '链接 id');
+    if (lc.length) push('a.' + lc.map(cssEscapeIdent).join('.'), '链接 class');
+    const lp = outerLink.parentElement;
+    const lpc = lp ? Array.prototype.slice.call(lp.classList || []).filter(isStableClassName).slice(0, 2) : [];
+    if (lpc.length) push(lp.tagName.toLowerCase() + '.' + lpc.map(cssEscapeIdent).join('.') + ' > a', '父级+链接');
+  }
+
   // 父级 + 自身（适合卡片内标题/链接）
   let p = el.parentElement;
   let depth = 0;
@@ -117,18 +128,80 @@ export function buildSelectorCandidates(el) {
     if (parts.length) push(parts.join(' > '), '路径');
   } catch {}
 
-  list.sort((a, b) => {
-    const score = (c) => {
-      if (c.count >= 2 && c.count <= 200) return 0;
-      if (c.count === 1) return 2;
-      if (c.count > 200 && c.count <= 800) return 1;
-      return 3;
-    };
-    const d = score(a) - score(b);
-    if (d) return d;
-    return a.sel.length - b.sel.length;
-  });
-  return list.slice(0, 8);
+  // R1：点到的是链接（或链接内部）时，标记哪些候选命中链接本身
+  const link = el.closest ? el.closest('a[href]') : null;
+  for (const c of list) {
+    let selfMatch = false;
+    try {
+      selfMatch = !!link && link.matches(c.sel);
+    } catch {}
+    c.kind = c.note === '父 class（整块）' ? 'block' : selfMatch ? 'link' : 'other';
+    if (c.kind === 'block') c.note = '整块（整行任意位置可点）';
+    c.desc = describeCandidate(c);
+  }
+  return rankCandidates(dedupeSameMatches(list), { hasLink: !!link });
+}
+
+/**
+ * 命中完全相同的一组元素的候选只留一个（选择器最短的）：
+ * 否则确认框里会出现几条描述、数量都一样的选项，用户无从选择。
+ */
+function dedupeSameMatches(list) {
+  const kept = [];
+  const sorted = list.slice().sort((a, b) => a.sel.length - b.sel.length);
+  for (const c of sorted) {
+    if (c.count > 800) {
+      kept.push(c);
+      continue;
+    }
+    let nodes;
+    try {
+      nodes = new Set(document.body.querySelectorAll(c.sel));
+    } catch {
+      continue;
+    }
+    const dup = kept.some((k) => {
+      if (k.count !== c.count || k.kind !== c.kind || !k._nodes) return false;
+      for (const n of nodes) if (!k._nodes.has(n)) return false;
+      return true;
+    });
+    if (dup) continue;
+    c._nodes = nodes;
+    kept.push(c);
+  }
+  for (const c of kept) delete c._nodes;
+  return kept;
+}
+
+/** 候选的通俗描述（R4）：给普通用户看，原始选择器放到「高级」里。 */
+export function describeCandidate(c) {
+  if (c.kind === 'block') return '整行任意位置（点这一块都会打开）';
+  if (c.count === 1) return '只拦截这一个链接';
+  if (c.kind === 'link') return '只拦截这类链接';
+  return '同一类元素';
+}
+
+/**
+ * 候选排序（纯函数，便于单测）：
+ * 1. 点到链接时，命中链接本身的候选在前；「整块」容器候选排最后但始终保留一项；
+ * 2. 同类里按匹配数区间（2~200 最佳）再按选择器长度。
+ */
+export function rankCandidates(list, { hasLink = false, limit = 8 } = {}) {
+  const countScore = (c) => {
+    if (c.count >= 2 && c.count <= 200) return 0;
+    if (c.count > 200 && c.count <= 800) return 1;
+    if (c.count === 1) return 2;
+    return 3;
+  };
+  const kindScore = (c) => {
+    if (c.kind === 'block') return 2;
+    if (hasLink) return c.kind === 'link' ? 0 : 1;
+    return 0;
+  };
+  const sorted = list.slice().sort((a, b) => kindScore(a) - kindScore(b) || countScore(a) - countScore(b) || a.sel.length - b.sel.length);
+  const block = sorted.filter((c) => c.kind === 'block').slice(0, 1);
+  const rest = sorted.filter((c) => c.kind !== 'block').slice(0, Math.max(0, limit - block.length));
+  return rest.concat(block);
 }
 
 /** 取最优候选（单值场景用） */

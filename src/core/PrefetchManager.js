@@ -42,8 +42,10 @@ export class PrefetchManager {
     logger.debug(`[Prefetch] ${url}`);
     const entry = this.loader.prefetch(url);
     this._current = { url, abort: entry.abort };
-    entry.promise.finally(() => {
+    // then(done, done)：预热失败是正常情况（真点开时会显示错误页），不能变成未处理拒绝
+    const done = () => {
       if (this._current?.url === url) this._current = null;
-    });
+    };
+    entry.promise.then(done, done);
   }
 }

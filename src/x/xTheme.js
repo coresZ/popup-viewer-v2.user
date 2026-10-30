@@ -8,9 +8,18 @@ const FALLBACK = {
   dark: { bg: '#000000', fg: '#e7e9ea', muted: '#71767b', border: '#2f3336', soft: '#16181c', hover: 'rgba(255, 255, 255, 0.03)' }
 };
 const ACCENT = '#1d9bf0';
+// 浅色正文链接：X 原生 #1d9bf0 对白底只有 3.0:1；正文/按钮统一换到可读的深一档，
+// 图标、焦点环等非文字装饰仍保留 --pv-x-accent（X 品牌蓝）。
+const ACCENT_TEXT = { light: '#0b6bcb', dim: '#1d9bf0', dark: '#1d9bf0' };
+const ACCENT_FILL = '#0f6fbf';
+const ON_ACCENT = '#ffffff';
+const SCROLLBAR = { light: '#a9b4c0', dim: '#4a5568', dark: '#4a5568' };
 // X 的互动激活色（三套主题一致）
 const LIKE = '#f91880';
 const REPOST = '#00ba7c';
+// 错误/危险色：X 的 #f4212e 在白底只有 4.1:1，按主题各取一档，三套背景上都 ≥ 4.5:1
+//   light #d0101c / #fff = 5.6:1；dim #ff6b75 / #15202b = 6.0:1；dark #ff5c66 / #000 = 7.0:1
+const DANGER = { light: '#d0101c', dim: '#ff6b75', dark: '#ff5c66' };
 
 const VAR_MAP = {
   bg: '--pv-x-bg',
@@ -20,8 +29,13 @@ const VAR_MAP = {
   soft: '--pv-x-soft',
   hover: '--pv-x-hover',
   accent: '--pv-x-accent',
+  accentText: '--pv-x-accent-text',
+  accentFill: '--pv-x-accent-fill',
+  onAccent: '--pv-x-on-accent',
+  scrollbar: '--pv-x-scrollbar',
   like: '--pv-x-like',
   repost: '--pv-x-repost',
+  danger: '--pv-x-danger',
   font: '--pv-x-font'
 };
 
@@ -80,16 +94,23 @@ export function readXTheme() {
   const base = FALLBACK[mode];
   return {
     mode,
-    // 采样只保留来源可靠的几项：body 背景、帖子正文色、话题链接色、body 字体
+    // 采样只保留来源可靠的几项：body 背景、帖子正文色、body 字体；
+    // 链接色不用采样值（X 浅色原生 #1d9bf0 对白底仅 3.0:1），走可读主题表。
     bg: bodyBg || base.bg,
     fg: firstComputed(['[data-testid="tweetText"]', 'article[data-testid="tweet"]'], 'color') || base.fg,
     muted: mutedFor(mode),
     border: borderFor(mode),
     soft: base.soft,
     hover: base.hover,
-    accent: firstComputed(['a[href^="/hashtag"]', 'a[href^="/i/hashtag"]'], 'color') || ACCENT,
+    // 文字链接用可读色；采样值在浅色下常是 #1d9bf0（3.0:1），所以直接用主题表
+    accent: ACCENT_TEXT[mode] || ACCENT,
+    accentText: ACCENT_TEXT[mode] || ACCENT,
+    accentFill: ACCENT_FILL,
+    onAccent: ON_ACCENT,
+    scrollbar: SCROLLBAR[mode] || SCROLLBAR.light,
     like: LIKE,
     repost: REPOST,
+    danger: DANGER[mode],
     font: computed(document.body, 'fontFamily')
   };
 }

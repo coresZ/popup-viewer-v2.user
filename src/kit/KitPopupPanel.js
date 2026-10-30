@@ -1,4 +1,4 @@
-import { el, svg, svgIcon } from '../utils/dom.js';
+import { el, svg, svgIcon, eventTarget, isEditableEvent } from '../utils/dom.js';
 import { clampToViewport, setupDrag, setupWheelScrollChain } from '../utils/panelBehavior.js';
 
 /**
@@ -58,6 +58,14 @@ export class KitPopupPanel {
     this.contentArea = el('div', { id: 'pvk-content' });
     this.panel = el('div', { id: 'pvk-panel' }, header, this.contentArea);
     document.body.appendChild(this.panel);
+    // 隐藏时 inert：不能 Tab 进去、读屏读不到（v2.3.0，与主脚本一致）
+    for (const node of [this.panel, this.overlay]) {
+      const sync = () => {
+        node.inert = !node.classList.contains('visible');
+      };
+      sync();
+      new MutationObserver(sync).observe(node, { attributes: true, attributeFilter: ['class'] });
+    }
     this._setupDrag(header);
     this._setupKeyboard();
     return this.panel;
@@ -218,13 +226,25 @@ export class KitPopupPanel {
   _setupKeyboard() {
     document.addEventListener('keydown', (e) => {
       if (!this.panel || !this.panel.classList.contains('visible')) return;
-      if (e.key === 'Escape') this.close();
-      else if (e.key === 'f' || e.key === 'F') this.toggleFullScreen();
-      else if (e.key === 'r' || e.key === 'R') {
-        if (this.currentUrl && !e.ctrlKey && !e.metaKey && !e.altKey) {
-          e.preventDefault();
-          this.refresh();
-        }
+      if (e.defaultPrevented || e.isComposing || e.keyCode === 229) return;
+      // 正在输入时不抢键：Esc 只让弹窗内的输入框失焦，宿主页面输入框完全不管（v2.3.0）
+      const target = eventTarget(e);
+      if (isEditableEvent(e)) {
+        if (e.key === 'Escape' && target && this.panel.contains(target) && typeof target.blur === 'function') target.blur();
+        return;
+      }
+      if (e.key === 'Escape') {
+        this.close();
+        return;
+      }
+      if (e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return;
+      const key = String(e.key || '').toLowerCase();
+      if (key === 'f') {
+        e.preventDefault();
+        this.toggleFullScreen();
+      } else if (key === 'r' && this.currentUrl) {
+        e.preventDefault();
+        this.refresh();
       }
     });
     window.addEventListener('resize', () => {

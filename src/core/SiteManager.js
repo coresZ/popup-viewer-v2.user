@@ -2,6 +2,7 @@ import { logger } from '../utils/logger.js';
 import { urlResolver } from '../security/UrlResolver.js';
 import { eventBus } from './EventBus.js';
 import { rulesManager } from './RulesManager.js';
+import { eventTarget, isOwnUiNode } from '../utils/dom.js';
 
 import { markMod } from '../utils/debugFlag.js';
 markMod('SiteManager');
@@ -23,7 +24,8 @@ export class SiteManager {
    * @returns {{url:string,title:string,element:Element}|null}
    */
   resolveCandidate(event) {
-    if (event.target.closest?.('#popup-content-panel')) return null;
+    // 脚本自己的界面（含 shadow root 内，事件在 document 上被重定向到宿主元素）不拦截
+    if (isOwnUiNode(eventTarget(event)) || isOwnUiNode(event.target)) return null;
     const hostname = window.location.hostname;
     const pathname = window.location.pathname;
     // 用户规则优先于内置 adapter

@@ -23,6 +23,7 @@ export class RequestLoader {
           renderIntoIframe({
             html: result.body,
             head: result.head,
+            title: result.title,
             url,
             container,
             sandboxAttrs: contentSandboxAttrs(keepScripts),
@@ -38,7 +39,7 @@ export class RequestLoader {
       },
       onerror: (error) => {
         logger.error('[RequestLoader] request error', error);
-        onError('网络请求失败');
+        onError(error && error.timeout ? '请求超时' : '网络请求失败');
       }
     });
     return () => {

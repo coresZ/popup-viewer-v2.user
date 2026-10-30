@@ -1,9 +1,21 @@
 import { config } from '../config.js';
 import { gm } from '../utils/gm.js';
-import { el, svgIcon, mountUi } from '../utils/dom.js';
+import {
+  el,
+  svgIcon,
+  mountUi,
+  eventTarget,
+  isEditableEvent,
+  isOwnUiNode,
+  closestInPath,
+  deepActiveElement,
+  uiRoot
+} from '../utils/dom.js';
+import { createUiHost } from '../utils/uiHost.js';
 import { clampToViewport, setupDrag, setupResize, setupWheelScrollChain } from '../utils/panelBehavior.js';
 import { debugMark } from '../utils/debugFlag.js';
 import { settingsManager } from '../core/SettingsManager.js';
+import { eventBus } from '../core/EventBus.js';
 
 // 本面板自己写入的「取整位移」形如 translate(calc(-50% ± Npx), ...)。
 // 用无状态的字符串判定，而不是布尔标记：标记一旦与实际情况不同步
@@ -18,7 +30,8 @@ import style from './style.css';
 
 export class PopupPanel {
   constructor() {
-    gm.addStyle(style);
+    // 样式在 ensure() 里装：优先装进 Shadow DOM，失败才全局注入（_installStyles）
+    this._stylesInstalled = false;
     this.panel = null;
     this.overlay = null;
     this.titleEl = null;
@@ -31,6 +44,7 @@ export class PopupPanel {
     this.forwardBtn = null;
     this.settingsPopover = null;
     this.settingsBtn = null;
+    this.rulesPanel = null;
     this._settingsAnchor = null;
     this.currentPanelSize = null;
     this.currentUrl = '';
@@ -41,8 +55,18 @@ export class PopupPanel {
     this._snapTimer = null;
     this._centerTimer = null;
   }
+  /** 外壳样式：Shadow DOM 可用时装进 shadow root（页面只留论坛装饰那一段），否则按旧方式全局注入。 */
+  _installStyles() {
+    if (this._stylesInstalled) return;
+    this._stylesInstalled = true;
+    const root = config.ui?.shadow === false ? null : createUiHost(style);
+    if (!root) gm.addStyle(style);
+  }
   ensure() {
     if (this.panel) return this.panel;
+    this._installStyles();
+    // 初始化时 applyTheme 可能早于宿主创建：把主题类补到宿主上
+    if (this._theme) this.applyTheme(this._theme);
     this.overlay = el('div', { id: 'popup-panel-overlay', onclick: () => this.close() });
     mountUi(this.overlay);
     const titleMark = el('span', { class: 'pv-title-mark' });
@@ -59,7 +83,7 @@ export class PopupPanel {
           this.hideSettings();
           return;
         }
-        this.showSettingsNear(this.settingsBtn.getBoundingClientRect());
+        this.showSettingsNear(this.settingsBtn.getBoundingClientRect(), this.settingsBtn);
       }
     });
     this.settingsBtn = this.toolbar.settings;
@@ -81,7 +105,11 @@ export class PopupPanel {
       onclick: () => this.handlers.onForward?.()
     });
     this.forwardBtn.appendChild(svgIcon('arrowRight', { size: 14 }));
-    const navGroup = el('div', { class: 'pv-footer-nav' }, this.backBtn, this.forwardBtn);
+    this.backBtn.setAttribute('aria-label', '后退');
+    this.forwardBtn.setAttribute('aria-label', '前进');
+    this.navGroup = el('div', { class: 'pv-footer-nav pv-no-history' }, this.backBtn, this.forwardBtn);
+    const navGroup = this.navGroup;
+    this.footerHostEl = el('span', { class: 'pv-footer-host' });
     this.footerLinkBtn = el('button', {
       id: 'popup-panel-footer-link',
       class: 'popup-panel-btn',
@@ -89,38 +117,36 @@ export class PopupPanel {
       onclick: () => this.handlers.onOpenExternal?.(this.currentUrl)
     });
     this.footerLinkBtn.appendChild(svgIcon('external', { size: 14 }));
-    this.footer = el('div', { id: 'popup-panel-footer' }, navGroup, this.footerLinkBtn);
-    this.panel = el('div', { id: 'popup-content-panel' }, header, this.contentArea, this.footer);
+    this.footerLinkBtn.setAttribute('aria-label', '在新标签页打开');
+    this.footer = el('div', { id: 'popup-panel-footer' }, navGroup, this.footerHostEl, this.footerLinkBtn);
+    this.titleTextEl.id = 'popup-panel-title-text';
+    this.panel = el(
+      'div',
+      { id: 'popup-content-panel', role: 'dialog', tabindex: '-1', 'aria-labelledby': 'popup-panel-title-text' },
+      header,
+      this.contentArea,
+      this.footer
+    );
     mountUi(this.panel);
     this.floatBtn = el('button', { id: 'pv-float-settings', title: '脚本设置' });
     this.floatBtn.appendChild(svgIcon('settings', { size: 16 }));
     this.floatBtn.addEventListener('click', () => {
-      if (this.settingsPopover.classList.contains('visible')) {
+      if (this.settingsPopover?.classList.contains('visible')) {
         this.hideSettings();
         return;
       }
-      this.showSettingsNear(this.floatBtn.getBoundingClientRect());
+      this.showSettingsNear(this.floatBtn.getBoundingClientRect(), this.floatBtn);
     });
     mountUi(this.floatBtn);
-    this.settingsPopover = createSettingsPanel({
-      onChange: (s) => this.applySettings(s),
-      onManageRules: () => this.showRulesPanel(),
-      onClose: () => this.hideSettings()
+    [this.panel, this.overlay].forEach((node) => this._syncInert(node));
+    // 点选链接期间把弹窗和遮罩让开，露出整个页面；结束后恢复
+    eventBus.on('picker-start', () => {
+      this.panel.classList.add('pv-picking');
+      this.overlay.classList.add('pv-picking');
     });
-    mountUi(this.settingsPopover);
-    this.rulesPanel = createRulesPanel();
-    mountUi(this.rulesPanel.backdrop);
-    mountUi(this.rulesPanel.root);
-    document.addEventListener('click', (e) => {
-      if (!this.settingsPopover?.classList.contains('visible')) return;
-      if (
-        e.target.closest('#popup-settings-popover') ||
-        e.target.closest('#popup-panel-settings') ||
-        e.target.closest('#pv-float-settings')
-      ) {
-        return;
-      }
-      this.hideSettings();
+    eventBus.on('picker-end', () => {
+      this.panel.classList.remove('pv-picking');
+      this.overlay.classList.remove('pv-picking');
     });
     // 双击标题全屏仅桌面（鼠标）启用；触屏双击易误触，全屏走工具栏按钮
     if (!window.matchMedia || !window.matchMedia('(pointer: coarse)').matches) {
@@ -130,8 +156,8 @@ export class PopupPanel {
       });
     }
     this.contentArea.addEventListener('click', (e) => {
-      if (settingsManager.get().linkIntercept !== false) return;
-      const link = e.target.closest?.('a[href]');
+      if (settingsManager.get().popupLinksNewTab !== false) return;
+      const link = closestInPath(e, 'a[href]');
       if (!link) return;
       const href = link.getAttribute('href');
       if (!href || /^(javascript:|#)/i.test(href.trim())) return;
@@ -145,9 +171,39 @@ export class PopupPanel {
     this._setupKeyboard();
     return this.panel;
   }
+  /** 设置面板按需创建：首次打开设置/规则前不构建它的上百个表单节点。 */
+  ensureSettingsPanel() {
+    if (this.settingsPopover) return this.settingsPopover;
+    this.settingsPopover = createSettingsPanel({
+      onChange: (s) => this.applySettings(s),
+      onManageRules: () => this.showRulesPanel(),
+      onClose: () => this.hideSettings()
+    });
+    mountUi(this.settingsPopover);
+    this._syncInert(this.settingsPopover);
+    document.addEventListener('click', (e) => {
+      if (!this.settingsPopover?.classList.contains('visible')) return;
+      if (closestInPath(e, '#popup-settings-popover, #popup-panel-settings, #pv-float-settings')) return;
+      this.hideSettings();
+    });
+    return this.settingsPopover;
+  }
+  /** 规则面板同样按需创建；油猴菜单直接点选时也会先调用这里。 */
+  ensureRulesPanel() {
+    if (this.rulesPanel) return this.rulesPanel;
+    this.rulesPanel = createRulesPanel();
+    mountUi(this.rulesPanel.backdrop);
+    mountUi(this.rulesPanel.root);
+    this._syncInert(this.rulesPanel.root);
+    this._syncInert(this.rulesPanel.backdrop);
+    return this.rulesPanel;
+  }
   show(title, url) {
     debugMark('panel.show');
     this.ensure();
+    // 关窗后 350ms 的清空还没执行就又打开：取消它，否则会把新内容清掉
+    clearTimeout(this._clearTimer);
+    this._clearTimer = null;
     this.floatBtn?.classList.add('hidden');
     this.currentUrl = url || '';
     this.titleTextEl.textContent = title || '查看内容';
@@ -179,11 +235,19 @@ export class PopupPanel {
       borderRadius: '',
       zIndex: ''
     });
+    this.panel.classList.remove('pv-fullscreen');
     this.isFullScreen = false;
     this.updateMaximizeIcon();
     this.applySettings(settingsManager.get());
+    if (!this._returnFocus) this._returnFocus = deepActiveElement();
     requestAnimationFrame(() => {
       this.panel.classList.add('visible');
+      // 焦点移到面板本身：快捷键归弹窗、读屏播报对话框；关闭时还给原来的元素
+      this.panel.inert = false;
+      this._interactedInside = true;
+      try {
+        this.panel.focus({ preventScroll: true });
+      } catch {}
       debugMark('panel.visible');
       if (settingsManager.get().windowMode !== 'float') this.overlay.classList.add('visible');
       this._fixCentering();
@@ -200,25 +264,48 @@ export class PopupPanel {
     clearTimeout(this._centerTimer);
     this.hideSettings();
     this.floatBtn?.classList.remove('hidden');
+    const focusInside = this.panel.contains(deepActiveElement()) || deepActiveElement() === document.body;
     this.panel.classList.remove('visible');
     this.overlay.classList.remove('visible');
+    const back = this._returnFocus;
+    this._returnFocus = null;
+    this._interactedInside = false;
+    if (focusInside && back && back.isConnected && back !== document.body && typeof back.focus === 'function') {
+      try {
+        back.focus({ preventScroll: true });
+      } catch {}
+    }
     this.handlers.onClose?.();
-    setTimeout(() => {
+    clearTimeout(this._clearTimer);
+    this._clearTimer = setTimeout(() => {
+      this._clearTimer = null;
       this.contentArea.innerHTML = '';
       this.currentUrl = '';
     }, 350);
   }
   setTitle(text) {
-    if (this.titleTextEl) this.titleTextEl.textContent = text || '查看内容';
+    if (!this.titleTextEl) return;
+    this.titleTextEl.textContent = text || '查看内容';
+    // 标题常被省略号截断：悬停显示全文
+    this.titleTextEl.title = text || '';
   }
   updateFooterUrl(url) {
     if (this.footerLinkBtn) this.footerLinkBtn.title = url ? '在新标签页打开：' + url : '在新标签页打开';
+    if (this.footerHostEl) {
+      let host = '';
+      try {
+        host = url ? new URL(url).hostname.replace(/^www\./, '') : '';
+      } catch {}
+      this.footerHostEl.textContent = host;
+      this.footerHostEl.title = url || '';
+    }
     this.footer?.classList.toggle('empty', !url);
   }
-  /** 更新前进/后退按钮可用状态。 */
+  /** 更新前进/后退按钮可用状态；两个都不可用时整组隐藏。 */
   setNavState(canBack, canForward) {
     if (this.backBtn) this.backBtn.disabled = !canBack;
     if (this.forwardBtn) this.forwardBtn.disabled = !canForward;
+    this.navGroup?.classList.toggle('pv-no-history', !canBack && !canForward);
   }
   /**
    * 应用设置到面板：滚动条显隐 + 窗体大小预设 + 手机模式位置记忆。
@@ -231,6 +318,9 @@ export class PopupPanel {
     this.applyTheme(s.theme);
     this._setHandedness(s.handedness);
     this.panel?.classList.toggle('pv-locked', s.locked === true);
+    this.floatBtn?.classList.toggle('pv-float-off', s.hideFloatButton === true);
+    // 按站点隐藏右下角齿轮（油猴菜单切换）；内联写，避免和 .hidden（弹窗打开时隐藏）互相覆盖
+    if (this.floatBtn) this.floatBtn.style.display = s.hideFloatButton === true ? 'none' : '';
     this.panel?.classList.toggle('pv-no-mobile-resize', s.mobileResize === false);
     this.contentArea?.classList.toggle('pv-hide-scrollbar', s.scrollbarVisible === false);
     let width;
@@ -274,9 +364,14 @@ export class PopupPanel {
   /** 应用外观主题：auto 跟随系统，light/dark 手动覆盖。 */
   applyTheme(theme) {
     const t = theme || 'auto';
-    const root = document.documentElement;
+    this._theme = t;
+    // Shadow 模式：主题类挂在宿主元素上（:host(.pv-theme-dark)），不再改宿主页面的 <html>；
+    // 回退模式仍挂在 <html> 上（:root.pv-theme-dark）
+    const host = uiRoot()?.host;
+    const root = host || document.documentElement;
     root.classList.toggle('pv-theme-dark', t === 'dark');
     root.classList.toggle('pv-theme-light', t === 'light');
+    if (host) document.documentElement.classList.remove('pv-theme-dark', 'pv-theme-light');
   }
   /** 惯用手：左手模式镜像工具栏（✕ 移到左上角）。 */
   _setHandedness(handedness) {
@@ -397,62 +492,104 @@ export class PopupPanel {
     if (this.panel?.classList.contains('visible')) this.overlay?.classList.add('visible');
   }
   /** 在指定锚点旁显示设置面板（锚点为元素 getBoundingClientRect）。 */
-  showSettingsNear(rect) {
+  showSettingsNear(rect, trigger = null) {
+    this.ensure();
+    this.ensureSettingsPanel();
     const margin = 8;
     const pop = this.settingsPopover;
     this._settingsAnchor = rect;
-    // 清掉上次的内联尺寸，测量自然高度（CSS 已限高 560px，测量值即稳定值）
+    // 清掉上次的内联尺寸与 sheet 状态，重新测量
     pop.style.maxHeight = '';
     pop.style.width = '';
-    const popW = pop.offsetWidth || 280;
-    const popH = pop.offsetHeight || 320;
+    pop.style.bottom = '';
+    pop.classList.remove('pv-settings-sheet');
     const vw = window.innerWidth;
     const vh = window.innerHeight;
+    const coarse = !!(window.matchMedia && window.matchMedia('(pointer: coarse)').matches);
+    // 手机/窄屏：全宽底部 sheet；不再依赖「上下都放不下」的 fallback（v2.3.1）
+    const isSheet = coarse && (vw <= 560 || vh <= 560);
+    if (isSheet) pop.classList.add('pv-settings-sheet');
+    const popW = pop.offsetWidth || 340;
+    const popH = pop.offsetHeight || 320;
     const spaceBelow = vh - rect.bottom - margin;
     const spaceAbove = rect.top - margin;
-    const isMobile =
-      vw <= 560 ||
-      vh <= 560 ||
-      (window.matchMedia && window.matchMedia('(pointer: coarse)').matches);
 
     let left;
-    let top;
-    if (popH <= spaceBelow) {
-      // 锚点下方放得下
+    let top = null;
+    if (isSheet) {
+      left = 0;
+    } else if (spaceBelow >= 240) {
+      // 优先在锚点下方展开；空间不足时压缩高度而不是顶到视口顶部盖住弹窗头
       top = rect.bottom + margin;
-    } else if (popH <= spaceAbove) {
-      // 锚点上方放得下
+      if (popH > spaceBelow) pop.style.maxHeight = `${Math.floor(spaceBelow)}px`;
+    } else if (spaceAbove >= 240) {
       top = rect.top - popH;
-    } else if (isMobile) {
-      // 移动端：全屏式面板
-      top = margin;
-      left = margin;
-      pop.style.width = `${vw - margin * 2}px`;
-      pop.style.maxHeight = `${vh - margin * 2}px`;
     } else {
-      // PC 空间不足：贴顶展示（CSS 限高 560px，内部滚动）
       top = margin;
     }
-    if (top < margin) top = margin;
+    if (top !== null && top < margin) top = margin;
 
-    if (left === undefined) {
+    if (!isSheet) {
       left = rect.right - popW;
       if (left < margin) left = margin;
       if (left + popW > vw - margin) left = vw - margin - popW;
       if (left < margin) left = margin;
     }
+
+    // 设置浮层属于弹窗的一部分：不超过弹窗底边，避免在 900/800px 视口「长出一条腿」
+    if (!isSheet && this.panel?.classList.contains('visible')) {
+      const panelRect = this.panel.getBoundingClientRect();
+      const maxBottom = Math.min(vh - margin, panelRect.bottom - margin);
+      const available = Math.floor(maxBottom - top);
+      if (available >= 240 && popH > available) {
+        pop.style.maxHeight = `${available}px`;
+      }
+    }
+
     pop.style.left = `${left}px`;
-    pop.style.top = `${top}px`;
+    if (top === null) {
+      // 底部 sheet：高度随 tab 内容变化时仍贴住底边
+      pop.style.top = 'auto';
+      pop.style.bottom = '0';
+    } else {
+      pop.style.top = `${top}px`;
+    }
+    const wasOpen = pop.classList.contains('visible');
     pop.classList.add('visible');
     this.settingsBtn?.classList.add('active');
+    if (!wasOpen) {
+      // 焦点移入弹层，关闭时还给打开它的按钮
+      this._settingsReturnFocus = trigger || deepActiveElement();
+      pop.inert = false;
+      const first = pop.querySelector('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])');
+      try {
+        first?.focus({ preventScroll: true });
+      } catch {}
+    }
   }
-  hideSettings() {
-    this.settingsPopover?.classList.remove('visible');
+  hideSettings({ restoreFocus = false } = {}) {
+    const pop = this.settingsPopover;
+    if (!pop) return;
+    const wasOpen = pop.classList.contains('visible');
+    const focusInside = wasOpen && pop.contains(deepActiveElement());
+    pop.classList.remove('visible');
     this.settingsBtn?.classList.remove('active');
+    const back = this._settingsReturnFocus;
+    this._settingsReturnFocus = null;
+    if (wasOpen && (restoreFocus || focusInside) && back && back.isConnected && typeof back.focus === 'function') {
+      try {
+        back.focus({ preventScroll: true });
+      } catch {}
+    }
   }
   showRulesPanel() {
+    this.ensure();
+    this.ensureRulesPanel();
+    // hideSettings 会清掉 _settingsReturnFocus，先把「打开设置的那个按钮」记下来；
+    // 从悬浮齿轮打开设置时，settingsBtn 在隐藏的弹窗里不可聚焦，不能拿它当归还目标。
+    const trigger = this._settingsReturnFocus || this.settingsBtn || deepActiveElement();
     this.hideSettings();
-    this.rulesPanel?.open();
+    this.rulesPanel?.open(trigger);
   }
   getContentArea() {
     this.ensure();
@@ -472,22 +609,14 @@ export class PopupPanel {
         maxHeight: this.panel.style.maxHeight
       };
       this.panel.style.transition = 'none';
-      Object.assign(this.panel.style, {
-        width: '100vw',
-        height: '100vh',
-        top: '0px',
-        left: '0px',
-        transform: 'none',
-        borderRadius: '0px',
-        maxWidth: 'none',
-        maxHeight: 'none',
-        zIndex: '10002'
-      });
+      // 全屏用 class（inset:0 + 安全区），不写 100vw/100vh：后者会被滚动条和手机地址栏遮住一截
+      this.panel.classList.add('pv-fullscreen');
       void this.panel.offsetWidth;
       this.panel.style.transition = '';
       this.isFullScreen = true;
     } else {
       this.panel.style.transition = 'none';
+      this.panel.classList.remove('pv-fullscreen');
       Object.assign(this.panel.style, {
         width: this.preFullScreen.width || '',
         height: this.preFullScreen.height || '',
@@ -497,7 +626,7 @@ export class PopupPanel {
         borderRadius: this.preFullScreen.borderRadius || '',
         maxWidth: this.preFullScreen.maxWidth || '',
         maxHeight: this.preFullScreen.maxHeight || '',
-        zIndex: '10000'
+        zIndex: ''
       });
       void this.panel.offsetWidth;
       this.panel.style.transition = '';
@@ -561,38 +690,121 @@ export class PopupPanel {
   _clampToViewport() {
     clampToViewport(this.panel, { isFullScreen: this.isFullScreen });
   }
+  /**
+   * 弹窗快捷键。规则（v2.3.0）：
+   * - 正在输入（输入框/文本域/可编辑区、输入法组字中）时不处理任何快捷键；
+   *   Esc 在脚本自己的输入框里只让它失焦，在宿主页面的输入框里完全不管。
+   * - 单字母 F / R 不能带修饰键，且只在「焦点或最近一次点击在弹窗内」或弹窗为模态（有遮罩）时生效，
+   *   避免浮动模式下抢宿主网站自己的快捷键。
+   * fromFrame：来自弹窗内同源 iframe 的按键（焦点在帖子里），视为弹窗内。
+   */
+  handleKeydown(e, { fromFrame = false } = {}) {
+    if (!this.panel || e.defaultPrevented || e.isComposing || e.keyCode === 229) return;
+    const settingsOpen = this.settingsPopover?.classList.contains('visible');
+    const panelOpen = this.panel.classList.contains('visible');
+    if (!settingsOpen && !panelOpen) return;
+    const target = eventTarget(e);
+    const editable = isEditableEvent(e);
+    const inside = fromFrame || isOwnUiNode(target);
+    if (e.key === 'Escape') {
+      if (editable) {
+        if (inside && target && typeof target.blur === 'function') {
+          target.blur();
+          e.preventDefault();
+          e.stopImmediatePropagation();
+        }
+        return;
+      }
+      if (settingsOpen) {
+        // 设置弹层打开时 Esc 只关设置（从悬浮齿轮打开、阅读弹窗未显示时同样有效）
+        this.hideSettings({ restoreFocus: true });
+        e.stopImmediatePropagation();
+        return;
+      }
+      this.close();
+      return;
+    }
+    if (!panelOpen || editable) return;
+    if (e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) {
+      e.preventDefault();
+      if (e.key === 'ArrowLeft') this.handlers.onBack?.();
+      else this.handlers.onForward?.();
+      return;
+    }
+    if (e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return;
+    const modal = this.overlay?.classList.contains('visible');
+    if (!inside && !modal && !this._interactedInside) return;
+    const key = String(e.key || '').toLowerCase();
+    if (key === 'f') {
+      e.preventDefault();
+      this.toggleFullScreen();
+    } else if (key === 'r' && this.currentUrl) {
+      e.preventDefault();
+      this.handlers.onRefresh?.(this.currentUrl);
+    }
+  }
   _setupKeyboard() {
     if (this._onKeydownBound) return;
-    this._onKeydownBound = (e) => {
-      if (!this.panel || !this.panel.classList.contains('visible')) return;
-      if (e.key === 'Escape') {
-        // 设置弹窗打开时 Esc 只关设置，不关阅读弹窗
-        if (this.settingsPopover?.classList.contains('visible')) {
-          this.hideSettings();
-          e.stopImmediatePropagation();
-          return;
-        }
-        this.close();
-      } else if (e.key === 'ArrowLeft' && e.altKey) {
-        e.preventDefault();
-        this.handlers.onBack?.();
-      } else if (e.key === 'ArrowRight' && e.altKey) {
-        e.preventDefault();
-        this.handlers.onForward?.();
-      } else if (e.key === 'f' || e.key === 'F') this.toggleFullScreen();
-      else if (e.key === 'r' || e.key === 'R') {
-        if (this.currentUrl && !e.ctrlKey && !e.metaKey && !e.altKey) {
-          e.preventDefault();
-          this.handlers.onRefresh?.(this.currentUrl);
-        }
-      }
-    };
+    this._onKeydownBound = (e) => this.handleKeydown(e);
     document.addEventListener('keydown', this._onKeydownBound);
+    // 记住最近一次点击是否在弹窗内：浮动模式下点过弹窗后，F/R 才归弹窗
+    document.addEventListener(
+      'pointerdown',
+      (e) => {
+        this._interactedInside = isOwnUiNode(eventTarget(e));
+      },
+      true
+    );
+    this._setupFrameKeys();
     // 滚动链兜底：弹窗内容滚到底时不滚动外部页面
     setupWheelScrollChain({
       panel: this.panel,
       contentArea: () => this.contentArea,
       isFullScreen: () => this.isFullScreen
     });
+  }
+  /**
+   * 焦点在帖子 iframe 里时，按键事件到不了宿主 document。
+   * 同源 iframe 每次（重新）加载后给它的 document 挂一个转发监听；跨域读不到就跳过。
+   */
+  _setupFrameKeys() {
+    const attach = (iframe) => {
+      const bind = () => {
+        try {
+          const doc = iframe.contentDocument;
+          if (!doc || doc.__pv2Keys) return;
+          doc.__pv2Keys = true;
+          doc.addEventListener('keydown', (e) => this.handleKeydown(e, { fromFrame: true }));
+          doc.addEventListener('pointerdown', () => {
+            this._interactedInside = true;
+          });
+        } catch {}
+      };
+      bind();
+      iframe.addEventListener('load', bind);
+    };
+    const scan = () => {
+      for (const iframe of this.contentArea.querySelectorAll('iframe')) {
+        if (iframe.__pv2KeysWatched) continue;
+        iframe.__pv2KeysWatched = true;
+        attach(iframe);
+      }
+    };
+    new MutationObserver(scan).observe(this.contentArea, { childList: true, subtree: true });
+  }
+  /**
+   * 隐藏中的面板/弹层设为 inert：不能 Tab 进去，读屏也读不到；视觉上的淡入淡出不受影响。
+   * 以 .visible 类为准自动同步，不必在每个显示/隐藏的地方手动维护。
+   */
+  _syncInert(node) {
+    if (!node) return;
+    const sync = () => {
+      const hidden = !node.classList.contains('visible');
+      node.inert = hidden;
+      if (hidden) node.setAttribute('aria-hidden', 'true');
+      else node.removeAttribute('aria-hidden');
+    };
+    sync();
+    new MutationObserver(sync).observe(node, { attributes: true, attributeFilter: ['class'] });
   }
 }

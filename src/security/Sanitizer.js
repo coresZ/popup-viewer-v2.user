@@ -56,7 +56,8 @@ export class Sanitizer {
     const head = this._collectHead(doc, baseUrl);
     this._purge(doc, options);
     this._resolveLazyImages(doc, baseUrl);
-    return { head, body: doc.body ? doc.body.innerHTML : '' };
+    const title = (doc.title || '').trim().slice(0, 200);
+    return { head, body: doc.body ? doc.body.innerHTML : '', title };
   }
   /**
    * 解析懒加载图片：真实地址常放在 data-original/data-src/data-srcset 等各类 data 属性里，

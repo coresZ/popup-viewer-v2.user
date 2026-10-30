@@ -18,6 +18,8 @@ export class PopupManager {
     this._pendingNativeNav = false;
     this._pendingNativeTimer = null;
     this._pendingRevertIndex = -1;
+    this._loadToken = 0;
+    this._pendingDispose = null;
     this.popup.handlers = {
       onRefresh: (url) => {
         // 刷新 = 重建 iframe，原生历史清零，当前条目不再可原生回退
@@ -38,8 +40,10 @@ export class PopupManager {
       onBack: () => this.back(),
       onForward: () => this.forward(),
       onClose: () => {
-        this._abort?.();
-        this._abort = null;
+        // 工具栏 ✕、遮罩、Esc 都走这里：清理加载器并清空弹窗内历史，
+        // 否则下次打开会接着旧历史，后退按钮一打开就可点
+        this._deferDispose();
+        this._resetHistory();
       }
     };
   }
@@ -165,6 +169,8 @@ export class PopupManager {
     this._pendingNativeNav = false;
     if (wasNative) clearTimeout(this._pendingNativeTimer);
     if (url === this._currentUrl) return;
+    // 占位标题（旧版模板写的 Content、空串）不覆盖已有标题
+    if (/^(content|about:blank)?$/i.test(String(title || '').trim())) title = '';
     if (wasNative) {
       // 原生 back/forward 触发的 URL 变化：原位更新当前条目（SPA 下 URL 可能与记录略有差异）
       const entry = this._navHistory[this._navIndex];
@@ -186,12 +192,16 @@ export class PopupManager {
    */
   load(url) {
     debugMark('popup.load: ' + url);
+    this._flushDispose();
     this._abort?.();
     this._abort = null;
+    // 每次加载一个令牌：旧请求的迟到回调（错误、完成、跳转）不能写进新内容
+    const token = ++this._loadToken;
+    const current = () => token === this._loadToken;
     const contentArea = this.popup.getContentArea();
     contentArea.classList.remove('iframe-direct-load');
     contentArea.innerHTML = '';
-    showLoading(contentArea);
+    showLoading(contentArea, { url });
     let hostname = 'unknown';
     try {
       hostname = new URL(url).hostname;
@@ -201,24 +211,47 @@ export class PopupManager {
       container: contentArea,
       hostname,
       onError: (message) => {
-        this._abort = null;
-        showError(contentArea, message, url);
+        if (!current()) return;
+        showError(contentArea, message, url, { onRetry: () => this.load(url) });
       },
-      onLoad: () => {
-        this._abort = null;
-      },
-      onNavigate: (navUrl, navTitle) => this._onInFrameNavigate(navUrl, navTitle)
+      // 加载成功后不再清掉 _abort：它同时是清理函数（X 加载器要断开观察器、清翻译队列），
+      // 关窗和下一次加载时都必须调用（v2.3.0 前成功后被置 null，清理从不执行）
+      onLoad: () => {},
+      onNavigate: (navUrl, navTitle) => {
+        if (current()) this._onInFrameNavigate(navUrl, navTitle);
+      }
     });
   }
-  close() {
-    this._abort?.();
+  /** 关窗时的清理延后到淡出结束，避免内容在动画中途消失；期间重新打开则立即执行。 */
+  _deferDispose() {
+    const dispose = this._abort;
     this._abort = null;
+    this._loadToken++;
+    if (!dispose) return;
+    this._flushDispose();
+    this._pendingDispose = { fn: dispose, timer: setTimeout(() => this._flushDispose(), 360) };
+  }
+  _flushDispose() {
+    const pending = this._pendingDispose;
+    if (!pending) return;
+    this._pendingDispose = null;
+    clearTimeout(pending.timer);
+    try {
+      pending.fn();
+    } catch (err) {
+      logger.warn('[PopupManager] dispose error', err);
+    }
+  }
+  _resetHistory() {
     this._navHistory = [];
     this._navIndex = -1;
     this._pendingNativeNav = false;
     clearTimeout(this._pendingNativeTimer);
     this._pendingNativeTimer = null;
     this._pendingRevertIndex = -1;
+  }
+  close() {
+    // 走 PopupPanel.close → handlers.onClose 统一清理
     this.popup.close();
   }
   hideOverlay() {

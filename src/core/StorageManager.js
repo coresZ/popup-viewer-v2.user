@@ -34,8 +34,20 @@ export class StorageManager {
     this._write(this.historyKey, next.slice(0, config.maxHistoryEntries));
     return next;
   }
-  clearHistory() {
-    this._write(this.historyKey, []);
+  clearHistory(host = '') {
+    const history = this.getHistory();
+    if (!host) {
+      this._write(this.historyKey, []);
+      return;
+    }
+    const next = history.filter((h) => {
+      try {
+        return new URL(h.url).hostname !== host;
+      } catch {
+        return true;
+      }
+    });
+    this._write(this.historyKey, next);
   }
   getFavorites() {
     return this._read(this.favoritesKey, []);

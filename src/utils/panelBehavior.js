@@ -2,7 +2,7 @@
  * 弹窗面板通用交互行为（主面板 PopupPanel 与 KitPopupPanel 共用）：
  * 拖拽 / 视口约束 / 滚动链兜底。抽离后避免两套面板逻辑漂移。
  */
-import { svgIcon } from './dom.js';
+import { svgIcon, eventTarget, closestInPath } from './dom.js';
 
 /**
  * 把弹窗约束回视口内（DevTools 占位 / 窗口缩放后调用）。
@@ -57,13 +57,44 @@ export function setupDrag({ header, panel, isFullScreen = () => false, locked = 
   let lastX = 0;
   let lastY = 0;
   let raf = null;
+  // 按下后移动超过阈值才算拖拽：单击标题栏不再把居中定位改成绝对坐标，标题文字也能选中（v2.3.0）
+  const THRESHOLD = 4;
+  let pending = false;
   const applyMove = () => {
     raf = null;
     if (!dragging || dragLocked) return; // 锁定：不跟手移动
-    panel.style.left = `${startLeft + (lastX - startX)}px`;
-    panel.style.top = `${startTop + (lastY - startY)}px`;
+    // 取整：非整数位移会让 Chrome 关闭次像素抗锯齿，文字变细
+    panel.style.left = `${Math.round(startLeft + (lastX - startX))}px`;
+    panel.style.top = `${Math.round(startTop + (lastY - startY))}px`;
+  };
+  const beginDrag = () => {
+    pending = false;
+    dragging = true;
+    if (dragLocked) return;
+    const rect = panel.getBoundingClientRect();
+    startLeft = Math.round(rect.left);
+    startTop = Math.round(rect.top);
+    panel.style.transition = 'none';
+    panel.style.left = `${startLeft}px`;
+    panel.style.top = `${startTop}px`;
+    panel.style.transform = 'none';
+    panel.classList.add('pv-dragging');
+    document.body.style.cursor = 'grabbing';
+    try {
+      window.getSelection()?.removeAllRanges();
+    } catch {}
   };
   const finish = (commit) => {
+    if (pending) {
+      pending = false;
+      if (POINTER_EVENTS && pointerId != null) {
+        try {
+          header.releasePointerCapture(pointerId);
+        } catch {}
+        pointerId = null;
+      }
+      return;
+    }
     if (!dragging) return;
     const info = { locked: dragLocked };
     dragging = false;
@@ -83,35 +114,30 @@ export function setupDrag({ header, panel, isFullScreen = () => false, locked = 
     if (commit) onDragEnd?.(info);
   };
   header.addEventListener(DOWN, (e) => {
-    if (e.target.closest('button')) return;
+    if (closestInPath(e, 'button, a, input')) return;
     if (isFullScreen()) return;
     if (e.button !== 0) return;
-    dragging = true;
+    pending = true;
+    dragging = false;
     dragLocked = locked();
-    const rect = panel.getBoundingClientRect();
     startX = e.clientX;
     startY = e.clientY;
-    startLeft = rect.left;
-    startTop = rect.top;
     lastX = e.clientX;
     lastY = e.clientY;
-    if (!dragLocked) {
-      panel.style.transition = 'none';
-      panel.style.left = `${rect.left}px`;
-      panel.style.top = `${rect.top}px`;
-      panel.style.transform = 'none';
-      panel.classList.add('pv-dragging');
-      document.body.style.cursor = 'grabbing';
-    }
     if (POINTER_EVENTS) {
       pointerId = e.pointerId;
       try {
         header.setPointerCapture(e.pointerId);
       } catch {}
     }
-    e.preventDefault();
+    // 触屏：阻止默认以免页面跟着滚动（header 已 touch-action:none）；鼠标不阻止，保留文字选择
+    if (e.pointerType && e.pointerType !== 'mouse') e.preventDefault();
   });
   const move = (e) => {
+    if (pending) {
+      if (Math.abs(e.clientX - startX) < THRESHOLD && Math.abs(e.clientY - startY) < THRESHOLD) return;
+      beginDrag();
+    }
     if (!dragging) return;
     lastX = e.clientX;
     lastY = e.clientY;
@@ -259,25 +285,33 @@ export function setupResize({ panel, isFullScreen = () => false, locked = () => 
  * （overscroll-behavior: contain 之外的保险）。
  */
 export function setupWheelScrollChain({ panel, contentArea, isFullScreen = () => false }) {
+  // 从真实目标（穿透 shadow root）往上找：只要弹窗里还有元素能朝这个方向滚，就放行；
+  // 都滚不动时才拦，防止滚到外部页面。此前只看内容区本身，X 阅读器两栏（内容区 overflow:hidden）
+  // 里的每一次滚轮都会被拦下。
+  const canScrollFrom = (node, stop, dy) => {
+    for (let el = node; el && el.nodeType === 1; el = el.parentElement || el.getRootNode?.().host) {
+      const style = getComputedStyle(el);
+      if (/(auto|scroll)/.test(style.overflowY) && el.scrollHeight > el.clientHeight + 1) {
+        if (dy < 0 ? el.scrollTop > 0 : el.scrollTop + el.clientHeight < el.scrollHeight - 1) return true;
+      }
+      if (el === stop) break;
+    }
+    return false;
+  };
   document.addEventListener(
     'wheel',
     (e) => {
       if (!panel || !panel.classList.contains('visible')) return;
-      if (isFullScreen()) {
-        e.preventDefault();
-        e.stopPropagation();
-      } else {
+      const target = eventTarget(e);
+      if (!target || !panel.contains(target)) return;
+      if (!e.deltaY) return;
+      if (canScrollFrom(target, panel, e.deltaY)) return;
+      if (!isFullScreen()) {
         const content = contentArea();
-        if (content && content.contains(e.target)) {
-          const { scrollTop, scrollHeight, clientHeight } = content;
-          const atBottom = scrollTop + clientHeight >= scrollHeight - 1;
-          const canScroll = scrollHeight > clientHeight;
-          if (!canScroll || atBottom) {
-            e.preventDefault();
-            e.stopPropagation();
-          }
-        }
+        if (!content || !content.contains(target)) return;
       }
+      e.preventDefault();
+      e.stopPropagation();
     },
     true
   );

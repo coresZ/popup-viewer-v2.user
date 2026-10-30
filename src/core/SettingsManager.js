@@ -8,7 +8,8 @@ const GLOBAL_KEYS = ['theme', 'allowInFrame', 'handedness', 'mobileResize'];
 // 说明：set() 按「GLOBAL_KEYS 命中→全局，其余→当前站点」分流，站点键无需单独维护列表
 
 function defaultGlobal() {
-  return { theme: 'auto', allowInFrame: false, handedness: 'right', mobileResize: true };
+  // 触屏四角缩放手柄默认关闭：手机弹窗近全屏时，四个把手会遮挡正文四角。
+  return { theme: 'auto', allowInFrame: false, handedness: 'right', mobileResize: false, uiRev: 1 };
 }
 function defaultSite() {
   return {
@@ -16,6 +17,8 @@ function defaultSite() {
     panelSize: config.popup.defaultSize,
     windowMode: 'coupled',
     linkIntercept: true,
+    // 窗体内容里的链接在新标签页打开（原先与 linkIntercept 绑在一起，现已拆开）
+    popupLinksNewTab: true,
     phoneModel: config.phone.defaultModel,
     phonePosition: null,
     customSize: null,
@@ -45,10 +48,18 @@ export class SettingsManager {
     this._loaded = true;
     this.siteKey = currentSiteKey();
     const g = gm.getValue(KEY, null);
-    if (g && typeof g === 'object') this.global = { ...defaultGlobal(), ...g };
+    if (g && typeof g === 'object') {
+      this.global = { ...defaultGlobal(), ...g };
+      // v2.3.1 迁移：旧版把 mobileResize 默认写成了 true；未显式升级过 schema 的存量用户
+      // 首次加载时按新默认关闭一次，用户仍可在「移动端」里重新打开。
+      if (g.uiRev !== 1) this.global.mobileResize = false;
+    }
     const all = gm.getValue(SITE_KEY, null);
     if (all && typeof all === 'object' && all[this.siteKey]) {
-      this.site = { ...defaultSite(), ...all[this.siteKey] };
+      const stored = all[this.siteKey];
+      this.site = { ...defaultSite(), ...stored };
+      // 迁移：旧版关闭拦截时窗体内链接也不新开标签页，未设置过新键时保持原行为
+      if (!('popupLinksNewTab' in stored) && stored.linkIntercept === false) this.site.popupLinksNewTab = false;
     }
     if (!config.popup.sizes[this.site.panelSize] && this.site.panelSize !== 'custom') {
       this.site.panelSize = defaultSite().panelSize;
@@ -58,6 +69,10 @@ export class SettingsManager {
     }
     this._applyInvariants();
     return this.get();
+  }
+  /** 该设置键是否按站点保存（不在 GLOBAL_KEYS 里即为站点键）。 */
+  isSiteKey(key) {
+    return !GLOBAL_KEYS.includes(key);
   }
   /** 当前生效设置 = 全局 + 当前站点设置。 */
   get() {

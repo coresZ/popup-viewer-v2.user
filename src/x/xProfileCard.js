@@ -6,17 +6,14 @@
 
 import { el } from '../utils/dom.js';
 import { xIcon } from './xIcons.js';
+import { formatCount } from './xFormat.js';
 
 // 悬停后停顿 1 秒再弹出（避免扫过时误触发）；移开后 650ms 收起
 const SHOW_DELAY = 1000;
 const HIDE_DELAY = 650;
-
-function formatCount(value) {
-  const n = Number(value) || 0;
-  if (n < 1000) return String(n);
-  if (n < 10000) return `${(n / 1000).toFixed(1)}K`;
-  return `${(n / 10000).toFixed(1)}万`;
-}
+// 取关二次确认的有效期
+const UNFOLLOW_CONFIRM_MS = 3000;
+const FOCUSABLE = 'a[href], button:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
 function profileHref(author) {
   return author.handle ? `https://x.com/${author.handle}` : `https://x.com/i/user/${author.id}`;
@@ -44,12 +41,24 @@ export function createProfileCard({ getRoot, onToggleFollow, onNotify }) {
     hideTimer = null;
   };
 
-  const remove = () => {
+  /** @param {boolean} [returnFocus] 焦点是否还给触发点（Esc 时为真；焦点在卡内时也会还回去） */
+  const remove = (returnFocus = false) => {
     clearTimers();
-    card?.remove();
+    const trigger = anchor;
+    const node = card;
+    const active = node && node.getRootNode ? node.getRootNode().activeElement : null;
+    const hadFocus = Boolean(node && active && node.contains(active));
+    node?.remove();
     card = null;
     cardKey = '';
     anchor = null;
+    if ((returnFocus === true || hadFocus) && trigger && trigger.isConnected) {
+      try {
+        trigger.focus({ preventScroll: true });
+      } catch (err) {
+        trigger.focus();
+      }
+    }
   };
 
   const scheduleHide = () => {
@@ -114,6 +123,20 @@ export function createProfileCard({ getRoot, onToggleFollow, onNotify }) {
         return;
       }
       const nextActive = !Boolean(author.viewerFollowing);
+      // 取关要点两次：第一次只把按钮变成「确认取消关注」，3 秒内再点才执行
+      if (!nextActive && button.dataset.confirm !== 'true') {
+        button.dataset.confirm = 'true';
+        button.querySelector('.pv-x-profile-follow-default').textContent = '确认取消关注';
+        button.setAttribute('aria-label', `确认取消关注 @${author.handle || author.name || 'X 用户'}`);
+        clearTimeout(button.__pvConfirmTimer);
+        button.__pvConfirmTimer = setTimeout(() => {
+          delete button.dataset.confirm;
+          refresh();
+        }, UNFOLLOW_CONFIRM_MS);
+        return;
+      }
+      clearTimeout(button.__pvConfirmTimer);
+      delete button.dataset.confirm;
       button.disabled = true;
       button.setAttribute('aria-busy', 'true');
       try {
@@ -197,8 +220,38 @@ export function createProfileCard({ getRoot, onToggleFollow, onNotify }) {
     node.addEventListener('pointerleave', scheduleHide);
     node.addEventListener('focusin', () => clearTimeout(hideTimer));
     node.addEventListener('focusout', scheduleHide);
+    node.addEventListener('keydown', onCardKeydown);
     return node;
   };
+
+  const focusables = (node) => [...node.querySelectorAll(FOCUSABLE)].filter((item) => !item.hidden);
+
+  /**
+   * 资料卡挂在阅读器末尾，不在触发点后面的 Tab 顺序里，所以手动接管：
+   *   Esc：只关资料卡（不冒泡到评论卡/弹窗），焦点回触发点
+   *   Shift+Tab 在第一个控件上：回触发点
+   *   Tab 在最后一个控件上：关卡并回触发点
+   */
+  function onCardKeydown(event) {
+    if (!card) return;
+    if (event.key === 'Escape') {
+      event.stopPropagation();
+      event.preventDefault();
+      remove(true);
+      return;
+    }
+    if (event.key !== 'Tab') return;
+    const items = focusables(card);
+    if (!items.length) return;
+    const active = card.getRootNode ? card.getRootNode().activeElement : null;
+    if (event.shiftKey && active === items[0]) {
+      event.preventDefault();
+      anchor?.focus();
+    } else if (!event.shiftKey && active === items[items.length - 1]) {
+      event.preventDefault();
+      remove(true);
+    }
+  }
 
   const show = (author, href, target) => {
     const root = getRoot();
@@ -232,14 +285,33 @@ export function createProfileCard({ getRoot, onToggleFollow, onNotify }) {
       showTimer = setTimeout(() => show(author, href, node), SHOW_DELAY);
     });
     node.addEventListener('pointerleave', scheduleHide);
-    node.addEventListener('focus', () => show(author, href, node));
+    node.addEventListener('focus', () => {
+      clearTimers();
+      show(author, href, node);
+    });
     node.addEventListener('blur', scheduleHide);
+    node.addEventListener('keydown', (event) => {
+      if (!card || anchor !== node) return;
+      // 触发点上按 Tab：进入资料卡
+      if (event.key === 'Tab' && !event.shiftKey) {
+        const first = focusables(card)[0];
+        if (!first) return;
+        event.preventDefault();
+        clearTimers();
+        first.focus();
+      } else if (event.key === 'Escape') {
+        event.stopPropagation();
+        event.preventDefault();
+        remove(false);
+      }
+    });
   };
 
   return {
     bind,
-    remove,
-    destroy: remove,
+    remove: () => remove(false),
+    destroy: () => remove(false),
+    isOpen: () => Boolean(card),
     // 弹窗尺寸变化后卡片位置会失效，重新贴回锚点
     reposition: () => {
       if (card && anchor) position(card, anchor);

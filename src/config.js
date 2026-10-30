@@ -75,5 +75,9 @@ export const config = {
     historyKey: 'pv2:history',
     favoritesKey: 'pv2:favorites'
   },
-  maxHistoryEntries: 100
+  maxHistoryEntries: 100,
+  ui: {
+    // 外壳挂进 Shadow DOM（隔离宿主网站 CSS）；false = 退回 v2.2 的页面内挂载
+    shadow: true
+  }
 };

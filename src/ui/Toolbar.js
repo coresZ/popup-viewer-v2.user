@@ -3,7 +3,14 @@ import { el, svgIcon } from '../utils/dom.js';
 export function createToolbar(handlers) {
   const actions = el('div', { id: 'popup-panel-actions' });
   const makeBtn = (id, icon, title, onClick) => {
-    const btn = el('button', { id, class: 'popup-panel-btn', title, onclick: onClick });
+    const btn = el('button', {
+      id,
+      type: 'button',
+      class: 'popup-panel-btn',
+      title,
+      'aria-label': title.replace(/\s*\(.*\)$/, ''),
+      onclick: onClick
+    });
     btn.appendChild(svgIcon(icon));
     actions.appendChild(btn);
     return btn;
