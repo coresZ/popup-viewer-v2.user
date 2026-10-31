@@ -38,6 +38,6 @@
     "test": "node tests/xModel.test.mjs && node tests/selector.test.mjs && node tests/xZoomMath.test.mjs"
   },
   "devDependencies": {
-    "esbuild": "^0.28.0"
+    "esbuild": "^0.28.2"
   }
 }
