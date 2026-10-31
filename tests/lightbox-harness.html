@@ -111,7 +111,8 @@
         createdAt: '2026-10-30T12:00:00.000Z',
         counts: {},
         flags: {},
-        media: [photo('a', 800, 600), photo('b', 600, 800)]
+        // 原图必须明显大于灯箱容器，否则 1:1 上限下没有可放大的余量（本页验证的正是这段逻辑）
+        media: [photo('a', 2000, 1500), photo('b', 1500, 2000)]
       };
       reader.appendChild(renderPost(model));
       await sleep(16);
@@ -209,6 +210,14 @@
       const zoomValue = layer && layer.querySelector('.pv-x-zoom-value');
       const zoomOutBtn = layer.querySelector('[aria-label="缩小"]');
       const fitBtn = layer.querySelector('.pv-x-zoom-fit');
+      const zoomPercent = () => Number(zoomValue.textContent.replace('%', ''));
+      // 新语义：百分比以「原图」为 100%，打开灯箱时显示的就是适配比例（展示尺寸 ÷ 原图尺寸）
+      const fitPct = zoomPercent();
+      check(
+        '打开时显示适配比例（相对原图）',
+        fitPct > 0 && fitPct < 100,
+        `fitPct=${fitPct}% natural=${probeImg.naturalWidth} base=${img.getBoundingClientRect().width}`
+      );
       const stageRect = stage.getBoundingClientRect();
       const centerX = stageRect.left + stageRect.width / 2;
       const centerY = stageRect.top + stageRect.height / 2;
@@ -218,11 +227,12 @@
       stage.dispatchEvent(wheel);
       await sleep(60);
       const zoomedScale = Number((img.style.transform.match(/scale\(([\d.]+)\)/) || [])[1] || 1);
-      check('滚轮已放大', zoomedScale > 1.1, `scale=${zoomedScale}`);
-      check('document 滚轮守卫未吞灯箱滚轮（P0）', zoomedScale > 1.1, `scale=${zoomedScale}`);
-      check('百分比文本已更新', Number(zoomValue.textContent.replace('%', '')) > 110, zoomValue.textContent);
+      const wheelPct = zoomPercent();
+      check('滚轮已放大（原图百分比上升）', wheelPct > fitPct, `${fitPct}% -> ${wheelPct}%`);
+      check('document 滚轮守卫未吞灯箱滚轮（P0）', wheelPct > fitPct, `${fitPct}% -> ${wheelPct}%`);
+      check('内部缩放值同步更新', zoomedScale > 1.1, `scale=${zoomedScale}`);
       check('缩放后「缩小」可用', !zoomOutBtn.disabled);
-      check('缩放上限按原图像素记录', Number(zoomRange.getAttribute('aria-valuemax')) >= 200, zoomRange.getAttribute('aria-valuemax'));
+      check('缩放上限 = 原图 100%', zoomRange.getAttribute('aria-valuemax') === '100', zoomRange.getAttribute('aria-valuemax'));
       check('窗体进入缩放态', stage.classList.contains('pv-x-media-zoomed'));
       check('滚轮不再滚动页面', wheel.defaultPrevented);
       check('rAF 在跑（环境信息）', true, `ticks=${rafTicks}`);
@@ -232,7 +242,7 @@
       stage.dispatchEvent(dxWheel);
       await sleep(40);
       const dxScale = Number((img.style.transform.match(/scale\(([\d.]+)\)/) || [])[1] || 1);
-      check('横向滚轮也能放大', dxScale > zoomedScale, `${zoomedScale} -> ${dxScale}`);
+      check('横向滚轮也能放大', dxScale > zoomedScale && zoomPercent() > wheelPct, `${wheelPct}% -> ${zoomPercent()}%`);
       check('横向滚轮被处理', dxWheel.defaultPrevented);
 
       // 放大后拖动 = 平移，且被钳制在图片内
@@ -251,7 +261,7 @@
       const tx = Number((img.style.transform.match(/translate3d\((-?[\d.]+)px/) || [])[1] || 0);
       check('平移不会被拖出边界', Math.abs(tx) < 600, `tx=${tx}`);
 
-      // 双击回到 100%
+      // 双击从放大态回到适配比例
       const dblEvent = new MouseEvent('dblclick', { bubbles: true, cancelable: true, clientX: centerX + 80, clientY: centerY });
       const transformBefore = img.style.transform;
       const ticksBeforeDbl = rafTicks;
@@ -269,7 +279,7 @@
         `${transformBefore} -> ${img.style.transform}`
       );
       check('补间有中间帧（非直接落位）', !rafShim || new Set(dblSamples).size > 2, `frames=${new Set(dblSamples).size}`);
-      check('双击回到 100%', !stage.classList.contains('pv-x-media-zoomed'), `${img.style.transform} dbg=${stage.dataset.zoomDebug} frames=${new Set(dblSamples).size} last=${dblSamples.slice(-3).join(' | ')}`);
+      check('双击回到适配比例', !stage.classList.contains('pv-x-media-zoomed') && Math.abs(zoomPercent() - fitPct) <= 1, `${img.style.transform} pct=${zoomPercent()}% fit=${fitPct}% dbg=${stage.dataset.zoomDebug} frames=${new Set(dblSamples).size} last=${dblSamples.slice(-3).join(' | ')}`);
 
       // 100% 时拖动 = 切图
       const counter = layer.querySelector('.pv-x-media-counter');
@@ -284,25 +294,28 @@
       );
       await sleep(700);
       check('100% 拖动切换图片', counter.textContent === '2 / 2', counter.textContent);
+      // 切到第二张后，「适配比例」按当前图重算（两图宽度不同，百分比不同）
+      const currentFitPct = zoomPercent();
+      check('切图后百分比按当前图重算', currentFitPct > 0 && currentFitPct !== fitPct, `img2 fit=${currentFitPct}% (img1=${fitPct}%)`);
 
-      // 滑杆：点到 50% 应约 250%
+      // 滑杆对「原图百分比」线性：中点 = (适配比例 + 100) / 2
       const rangeRect = zoomRange.getBoundingClientRect();
       const px = rangeRect.left + rangeRect.width * 0.5;
       zoomRange.dispatchEvent(
         new PointerEvent('pointerdown', { bubbles: true, pointerId: 3, pointerType: 'mouse', button: 0, buttons: 1, clientX: px, clientY: rangeRect.top + 10 })
       );
       await sleep(60);
-      const sliderPercent = Number(zoomValue.textContent.replace('%', ''));
+      const sliderPercent = zoomPercent();
       await sleep(60);
       const sliderCap = Number(zoomRange.getAttribute('aria-valuemax'));
-      check('滑杆中点映射到上限的一半', Math.abs(sliderPercent - (100 + sliderCap) / 2) <= 8, `${sliderPercent}% cap=${sliderCap}%`);
-      // 最右端必须正好等于上限（没有死区）
+      check('滑杆中点映射到原图百分比中点', Math.abs(sliderPercent - (fitPct + sliderCap) / 2) <= 8, `${sliderPercent}% fit=${fitPct}% cap=${sliderCap}%`);
+      // 最右端必须正好等于原图 100%（没有死区）
       zoomRange.dispatchEvent(
         new PointerEvent('pointerdown', { bubbles: true, pointerId: 4, pointerType: 'mouse', button: 0, buttons: 1, clientX: rangeRect.right - 1, clientY: rangeRect.top + 10 })
       );
       await sleep(40);
-      const sliderMaxPercent = Number(zoomValue.textContent.replace('%', ''));
-      check('滑杆最右等于像素上限', Math.abs(sliderMaxPercent - sliderCap) <= 3, `${sliderMaxPercent}% / cap=${sliderCap}%`);
+      const sliderMaxPercent = zoomPercent();
+      check('滑杆最右等于原图 100%', Math.abs(sliderMaxPercent - sliderCap) <= 3, `${sliderMaxPercent}% / cap=${sliderCap}%`);
       check(
         '滑杆最右的滑块贴边',
         Number(zoomRange.style.getPropertyValue('--pv-zoom-ratio')) > 0.99,
@@ -319,20 +332,20 @@
       check('按键 + 到达监听', debugLog.includes('key:+'), JSON.stringify(debugLog));
       check(
         '按键 + 继续放大',
-        Number(zoomValue.textContent.replace('%', '')) > sliderPercent || zoomValue.textContent === `${zoomRange.getAttribute('aria-valuemax')}%`,
+        zoomPercent() > sliderPercent || zoomPercent() === Number(zoomRange.getAttribute('aria-valuemax')),
         zoomValue.textContent
       );
       keyHost.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, cancelable: true, key: '0' }));
       await sleep(260);
-      check('按键 0 回到 100%', zoomValue.textContent === '100%', zoomValue.textContent);
+      check('按键 0 回到适应窗口', Math.abs(zoomPercent() - currentFitPct) <= 1, zoomValue.textContent);
       fitBtn.click();
       await sleep(260);
-      check('「适应」按钮回到 100%', zoomValue.textContent === '100%', `${zoomValue.textContent} / ${stage.dataset.zoomDebug || 'none'}`);
-      check('100% 时「适应」禁用', fitBtn.disabled);
+      check('「适应」按钮回到适配比例', Math.abs(zoomPercent() - currentFitPct) <= 1, `${zoomValue.textContent} / ${stage.dataset.zoomDebug || 'none'}`);
+      check('适配比例下「适应」禁用', fitBtn.disabled);
       const zoomInBtn = layer.querySelector('[aria-label="放大"]');
       zoomInBtn.click();
       await sleep(300);
-      check('缩放「+」按钮可用', Number(zoomValue.textContent.replace('%', '')) > 100, `${zoomValue.textContent} / raf ${rafTicks}`);
+      check('缩放「+」按钮可用', zoomPercent() > currentFitPct, `${zoomValue.textContent} / raf ${rafTicks}`);
 
       // 窄屏退化（无头环境 RO/rAF 不推进，手动触发一次重排）
       document.getElementById('popup-content-panel').style.width = '400px';

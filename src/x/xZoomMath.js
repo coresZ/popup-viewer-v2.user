@@ -1,11 +1,14 @@
 // 灯箱缩放/平移的纯数学：不碰 DOM，便于单测（node tests/xZoomMath.test.mjs）。
 // 坐标约定：平移量 (tx, ty) 相对「内容居中」位置；锚点 (dx, dy) 相对视口中心。
+// 百分比约定：缩放百分比以「原图」为 100%——适配显示只是原图的一个缩小比例，
+// 放大到 100% 即原图 1:1 像素，再往上只会插值变糊，因此上限就是原图本身。
 
 export const MIN_SCALE = 1;
+/** 尺寸未知时的兜底上限；正常情况上限 = 原图 1:1（见 maxScaleFor），不存在全局 4x。 */
 export const MAX_SCALE = 4;
 
-/** 缩放钳在 [1, 上限]；上限默认 4x，可传按原图像素算出的更小值。 */
-export function clampScale(scale, max = MAX_SCALE) {
+/** 缩放钳在 [1, 上限]；上限由调用方按原图像素算出（maxScaleFor），无默认 4x。 */
+export function clampScale(scale, max = Infinity) {
   return Math.min(max, Math.max(MIN_SCALE, Number.isFinite(scale) ? scale : MIN_SCALE));
 }
 
@@ -33,21 +36,40 @@ export function clampTranslate(tx, ty, { contentW, contentH, frameW, frameH, sca
   return { x: axis(tx, limitX), y: axis(ty, limitY) };
 }
 
-/** 放大上限：最多 4x，且不把图放大到原图像素的两倍以上（小图不至于糊成马赛克）。 */
+/**
+ * 缩放上限 = 原图 1:1 像素：baseW 是图片适配显示时的布局宽度，naturalW 是实际加载的像素宽。
+ * 适配只会缩小图片，所以该值 ≥ 1；再往上放大就是浏览器插值，必然变糊。
+ * 尺寸未知（图片还没解码）时退回 MAX_SCALE 兜底，onImgLoad 后会按真实像素收回。
+ */
 export function maxScaleFor(naturalW, baseW) {
   if (!(baseW > 0) || !(naturalW > 0)) return MAX_SCALE;
-  return Math.min(MAX_SCALE, Math.max(2, (naturalW / baseW) * 2));
+  return Math.max(MIN_SCALE, naturalW / baseW);
 }
 
-/** 滑杆 0–1 比例 ↔ 缩放值（上限会按每张图的像素上限动态收窄，滑杆轨道不设死区）。 */
-export function ratioToScale(ratio, cap = MAX_SCALE) {
-  const max = Math.max(MIN_SCALE, cap);
+/**
+ * 适配显示相对原图的百分比：显示宽 / 原图宽 × 100（≤100，因为图片只会被缩小适配）。
+ * 这是缩放条的起点：灯箱打开时显示的就是它，例如 3072px 原图适配到 700px 显示为 23%。
+ */
+export function fitPercent(naturalW, baseW) {
+  if (!(baseW > 0) || !(naturalW > 0)) return 100;
+  return Math.min(100, (baseW / naturalW) * 100);
+}
+
+/**
+ * 缩放条 0–1 比例 → 内部缩放值（1 = 适配显示）。
+ * 滑杆对「原图百分比」线性：0 = 适配（fitPct%），1 = 原图 100%，
+ * 中间任意刻度的显示百分比 = fitPct + ratio × (100 − fitPct)。
+ */
+export function sliderRatioToScale(ratio, fitPct) {
+  const start = Math.min(100, Math.max(1, Number.isFinite(fitPct) ? fitPct : 100));
   const r = Math.min(1, Math.max(0, Number.isFinite(ratio) ? ratio : 0));
-  return MIN_SCALE + r * (max - MIN_SCALE);
+  return (start + r * (100 - start)) / start;
 }
 
-export function scaleToRatio(scale, cap = MAX_SCALE) {
-  const max = Math.max(MIN_SCALE, cap);
-  if (max <= MIN_SCALE) return 0;
-  return (clampScale(scale, max) - MIN_SCALE) / (max - MIN_SCALE);
+/** 内部缩放值 → 缩放条 0–1 比例（sliderRatioToScale 的逆映射）。 */
+export function sliderScaleToRatio(scale, fitPct) {
+  const start = Math.min(100, Math.max(1, Number.isFinite(fitPct) ? fitPct : 100));
+  const s = Number.isFinite(scale) ? scale : MIN_SCALE;
+  if (start >= 100) return 0;
+  return Math.min(1, Math.max(0, ((s - 1) * start) / (100 - start)));
 }

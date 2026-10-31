@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/coresZ/popup-viewer-v2.user/actions/workflows/ci.yml/badge.svg)](https://github.com/coresZ/popup-viewer-v2.user/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-2.3.6-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-2.3.7-blue.svg)](CHANGELOG.md)
 [![Tampermonkey](https://img.shields.io/badge/Tampermonkey-Userscript-orange.svg)](https://www.tampermonkey.net/)
 
 > 点击论坛/帖子链接，不离开当前页面，在页内弹窗中阅读内容。

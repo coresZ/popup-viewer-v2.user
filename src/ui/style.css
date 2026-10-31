@@ -2694,9 +2694,9 @@ article.pv-x-post[data-reply-target='true'] {
 .pv-x-media-stage-overlay.pv-x-media-zoomed {
   cursor: grab;
 }
-.pv-x-media-stage-overlay.pv-x-media-zoomed .pv-x-media-big {
-  will-change: transform;
-}
+/* 注意：不要给缩放中的图片常驻 will-change: transform —— 它会把合成层的光栅
+   钉在适配显示时的分辨率上，放大到原图 1:1 时 GPU 只是在拉伸小纹理，必然发糊。
+   改为手势/补间进行中由 xRender 按需开启，结束即移除并强制按当前缩放重光栅化。 */
 .pv-x-media-stage.pv-x-media-dragging {
   cursor: grabbing;
 }

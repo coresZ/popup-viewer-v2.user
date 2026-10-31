@@ -22,7 +22,7 @@
 
 1. 先搜索[现有 Issues](https://github.com/coresZ/popup-viewer-v2.user/issues)，确认问题没有被报告过。
 2. 使用 [Bug 报告模板](https://github.com/coresZ/popup-viewer-v2.user/issues/new?template=bug_report.yml) 提交，并尽量填写完整：
-   - 脚本版本（Tampermonkey 管理面板或脚本头部 `@version`，当前版本为 2.3.6）
+   - 脚本版本（Tampermonkey 管理面板或脚本头部 `@version`，当前版本为 2.3.7）
    - 浏览器、操作系统、用户脚本管理器及版本
    - 出现问题的网站与页面 URL
    - 最小复现步骤、期望行为、实际行为

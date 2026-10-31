@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name          页内弹窗打开新帖
 // @namespace     http://tampermonkey.net/
-// @version       2.3.6
+// @version       2.3.7
 // @description   点击论坛帖子链接，在弹窗中加载内容 (插件化架构 V2)
 // @author        cores
 // @include       *://*/*
@@ -49,7 +49,7 @@
     if (!DEBUG) return;
     try {
       var d = document.createElement("div");
-      d.textContent = "[PV2] boot v" + (true ? "2.3.6" : "?");
+      d.textContent = "[PV2] boot v" + (true ? "2.3.7" : "?");
       d.style.cssText = "position:fixed;top:12px;left:12px;z-index:2147483647;background:#7c3aed;color:#fff;padding:6px 12px;font-size:12px;border-radius:6px;font-family:sans-serif";
       (document.body || document.documentElement).appendChild(d);
     } catch (e) {
@@ -6305,9 +6305,9 @@ article.pv-x-post[data-reply-target='true'] {\r
 .pv-x-media-stage-overlay.pv-x-media-zoomed {\r
   cursor: grab;\r
 }\r
-.pv-x-media-stage-overlay.pv-x-media-zoomed .pv-x-media-big {\r
-  will-change: transform;\r
-}\r
+/* 注意：不要给缩放中的图片常驻 will-change: transform —— 它会把合成层的光栅\r
+   钉在适配显示时的分辨率上，放大到原图 1:1 时 GPU 只是在拉伸小纹理，必然发糊。\r
+   改为手势/补间进行中由 xRender 按需开启，结束即移除并强制按当前缩放重光栅化。 */\r
 .pv-x-media-stage.pv-x-media-dragging {\r
   cursor: grabbing;\r
 }\r
@@ -9657,6 +9657,7 @@ article.pv-x-post[data-reply-target='true'] {\r
       const poster = String(raw.media_url_https || raw.media_url || "");
       const item = {
         type,
+        // 直连地址：网格与灯箱都用 media_url_https 原样加载，不改写任何参数
         url: poster,
         videoUrl: chosen ? String(chosen.url) : "",
         hlsUrl: hls ? String(hls.url) : "",
@@ -10605,7 +10606,7 @@ article.pv-x-post[data-reply-target='true'] {\r
   // src/x/xZoomMath.js
   var MIN_SCALE = 1;
   var MAX_SCALE = 4;
-  function clampScale(scale, max = MAX_SCALE) {
+  function clampScale(scale, max = Infinity) {
     return Math.min(max, Math.max(MIN_SCALE, Number.isFinite(scale) ? scale : MIN_SCALE));
   }
   function zoomTowards({ scale, tx, ty, nextScale, dx, dy }) {
@@ -10624,17 +10625,22 @@ article.pv-x-post[data-reply-target='true'] {\r
   }
   function maxScaleFor(naturalW, baseW) {
     if (!(baseW > 0) || !(naturalW > 0)) return MAX_SCALE;
-    return Math.min(MAX_SCALE, Math.max(2, naturalW / baseW * 2));
+    return Math.max(MIN_SCALE, naturalW / baseW);
   }
-  function ratioToScale(ratio, cap = MAX_SCALE) {
-    const max = Math.max(MIN_SCALE, cap);
+  function fitPercent(naturalW, baseW) {
+    if (!(baseW > 0) || !(naturalW > 0)) return 100;
+    return Math.min(100, baseW / naturalW * 100);
+  }
+  function sliderRatioToScale(ratio, fitPct) {
+    const start = Math.min(100, Math.max(1, Number.isFinite(fitPct) ? fitPct : 100));
     const r = Math.min(1, Math.max(0, Number.isFinite(ratio) ? ratio : 0));
-    return MIN_SCALE + r * (max - MIN_SCALE);
+    return (start + r * (100 - start)) / start;
   }
-  function scaleToRatio(scale, cap = MAX_SCALE) {
-    const max = Math.max(MIN_SCALE, cap);
-    if (max <= MIN_SCALE) return 0;
-    return (clampScale(scale, max) - MIN_SCALE) / (max - MIN_SCALE);
+  function sliderScaleToRatio(scale, fitPct) {
+    const start = Math.min(100, Math.max(1, Number.isFinite(fitPct) ? fitPct : 100));
+    const s = Number.isFinite(scale) ? scale : MIN_SCALE;
+    if (start >= 100) return 0;
+    return Math.min(1, Math.max(0, (s - 1) * start / (100 - start)));
   }
 
   // src/x/xRender.js
@@ -11022,7 +11028,13 @@ article.pv-x-post[data-reply-target='true'] {\r
     if (framePhoto.width && framePhoto.height) stage.style.aspectRatio = `${framePhoto.width} / ${framePhoto.height}`;
     const track = el("div", { class: "pv-x-media-track" });
     const imgs = photos.map(
-      (photo) => el("img", { class: "pv-x-media-big", src: photo.url, alt: photo.altText || "", loading: "lazy", draggable: "false" })
+      (photo) => el("img", {
+        class: "pv-x-media-big",
+        src: photo.url,
+        alt: photo.altText || "",
+        loading: "lazy",
+        draggable: "false"
+      })
     );
     const slides = imgs.map((img) => {
       const slide = el("div", { class: "pv-x-media-slide" }, img);
@@ -11060,10 +11072,10 @@ article.pv-x-post[data-reply-target='true'] {\r
       role: "slider",
       tabindex: "0",
       "aria-label": "缩放比例",
-      "aria-valuemin": String(MIN_SCALE * 100),
-      "aria-valuemax": String(MAX_SCALE * 100),
-      "aria-valuenow": "100",
-      "aria-valuetext": "100%",
+      "aria-valuemin": "0",
+      "aria-valuemax": "100",
+      "aria-valuenow": "0",
+      "aria-valuetext": "适应窗口",
       title: "拖动 / 滚轮缩放"
     }) : null;
     const zoomValue = overlay ? el("span", { class: "pv-x-zoom-value", text: "100%" }) : null;
@@ -11077,7 +11089,7 @@ article.pv-x-post[data-reply-target='true'] {\r
       { class: "pv-x-zoom-btn", type: "button", "aria-label": "放大", title: "放大（+）" },
       svgIcon("plus", { size: 16 })
     ) : null;
-    const zoomFitButton = overlay ? el("button", { class: "pv-x-zoom-fit", type: "button", "aria-label": "适应窗口，恢复 100%", text: "适应" }) : null;
+    const zoomFitButton = overlay ? el("button", { class: "pv-x-zoom-fit", type: "button", "aria-label": "适应窗口", title: "适应窗口", text: "适应" }) : null;
     if (overlay) zoomRange.append(el("div", { class: "pv-x-zoom-fill" }), el("div", { class: "pv-x-zoom-thumb" }));
     const zoomBar = overlay ? el("div", { class: "pv-x-media-zoom" }, zoomOutButton, zoomRange, zoomValue, zoomInButton, zoomFitButton) : null;
     const keyHost = shell || stage;
@@ -11128,6 +11140,23 @@ article.pv-x-post[data-reply-target='true'] {\r
       var _a;
       return maxScaleFor(((_a = activeImg()) == null ? void 0 : _a.naturalWidth) || 0, baseSize().w);
     };
+    const fitPct = () => {
+      var _a;
+      const img = activeImg();
+      const natural = img && img.naturalWidth || ((_a = photos[current]) == null ? void 0 : _a.width) || 0;
+      return fitPercent(natural, baseSize().w);
+    };
+    const setRasterHint = (on) => {
+      const img = activeImg();
+      if (!img) return;
+      img.style.willChange = on ? "transform" : "";
+      if (!on) {
+        const transform = img.style.transform;
+        img.style.transform = "none";
+        void img.offsetWidth;
+        img.style.transform = transform;
+      }
+    };
     const clampZoom = () => {
       const f = frameSize();
       const b = baseSize();
@@ -11138,12 +11167,13 @@ article.pv-x-post[data-reply-target='true'] {\r
     const paintZoom = () => {
       if (!overlay) return;
       const cap = Math.max(MIN_SCALE, zoomCap());
-      const percent = Math.round(scale * 100);
+      const percent = Math.round(scale * fitPct());
       stage.classList.toggle("pv-x-media-zoomed", isZoomed());
       zoomRange.setAttribute("aria-valuenow", String(percent));
-      zoomRange.setAttribute("aria-valuemax", String(Math.round(cap * 100)));
+      zoomRange.setAttribute("aria-valuemin", String(Math.round(fitPct())));
+      zoomRange.setAttribute("aria-valuemax", "100");
       zoomRange.setAttribute("aria-valuetext", `${percent}%`);
-      zoomRange.style.setProperty("--pv-zoom-ratio", String(scaleToRatio(scale, cap)));
+      zoomRange.style.setProperty("--pv-zoom-ratio", String(sliderScaleToRatio(scale, fitPct())));
       zoomValue.textContent = `${percent}%`;
       zoomOutButton.disabled = scale <= MIN_SCALE + 1e-3;
       zoomInButton.disabled = scale >= cap - 1e-3;
@@ -11170,6 +11200,7 @@ article.pv-x-post[data-reply-target='true'] {\r
       tx = 0;
       ty = 0;
       for (const img of imgs) img.style.transform = "";
+      setRasterHint(false);
       if (!overlay) return;
       stage.classList.remove("pv-x-media-zoomed");
       paintZoom();
@@ -11195,6 +11226,7 @@ article.pv-x-post[data-reply-target='true'] {\r
       }
       cancelZoomAnim();
       cancelWheelSnap();
+      setRasterHint(true);
       const center = contentCenter();
       const dx = anchorX - center.x;
       const dy = anchorY - center.y;
@@ -11205,6 +11237,7 @@ article.pv-x-post[data-reply-target='true'] {\r
         ty = z.ty;
         clampZoom();
         applyZoom();
+        setRasterHint(false);
         return;
       }
       const from = scale;
@@ -11219,7 +11252,12 @@ article.pv-x-post[data-reply-target='true'] {\r
         ty = dy - py * scale;
         clampZoom();
         applyZoom();
-        zoomRaf = k < 1 ? requestAnimationFrame(step) : null;
+        if (k < 1) {
+          zoomRaf = requestAnimationFrame(step);
+        } else {
+          zoomRaf = null;
+          setRasterHint(false);
+        }
       };
       zoomRaf = requestAnimationFrame(step);
     };
@@ -11227,6 +11265,7 @@ article.pv-x-post[data-reply-target='true'] {\r
       if (!overlay) return;
       cancelZoomAnim();
       cancelWheelSnap();
+      setRasterHint(true);
       const center = contentCenter();
       const next = clampScale(targetScale, zoomCap());
       const z = zoomTowards({ scale, tx, ty, nextScale: next, dx: anchorX - center.x, dy: anchorY - center.y });
@@ -11242,7 +11281,10 @@ article.pv-x-post[data-reply-target='true'] {\r
         wheelSnapTimer = null;
         if (gesture) return;
         const snapped = clampScale(Math.round(scale * 20) / 20, zoomCap());
-        if (Math.abs(snapped - scale) < 1e-3) return;
+        if (Math.abs(snapped - scale) < 1e-3) {
+          setRasterHint(false);
+          return;
+        }
         const center = contentCenter();
         animateZoom(snapped, center.x, center.y);
       }, 160);
@@ -11268,14 +11310,14 @@ article.pv-x-post[data-reply-target='true'] {\r
         if (!rect.width) return;
         const ratio = Math.min(1, Math.max(0, (event.clientX - rect.left) / rect.width));
         const center = contentCenter();
-        const cap = Math.max(MIN_SCALE, zoomCap());
-        setZoomAt(ratioToScale(ratio, cap), center.x, center.y);
+        setZoomAt(sliderRatioToScale(ratio, fitPct()), center.x, center.y);
       };
       const onSliderDown = (event) => {
         if (event.button !== 0) return;
         event.preventDefault();
         event.stopPropagation();
         sliding = true;
+        setRasterHint(true);
         zoomRange.focus({ preventScroll: true });
         try {
           zoomRange.setPointerCapture(event.pointerId);
@@ -11288,6 +11330,7 @@ article.pv-x-post[data-reply-target='true'] {\r
       };
       const onSliderEnd = () => {
         sliding = false;
+        setRasterHint(false);
       };
       const onSliderWheel = (event) => {
         const center = contentCenter();
@@ -11295,7 +11338,8 @@ article.pv-x-post[data-reply-target='true'] {\r
       };
       const onSliderKey = (event) => {
         const center = contentCenter();
-        const steps = { ArrowRight: 0.05, ArrowUp: 0.05, ArrowLeft: -0.05, ArrowDown: -0.05, PageUp: 0.25, PageDown: -0.25 };
+        const step = (points) => points / Math.max(fitPct(), 1);
+        const steps = { ArrowRight: step(5), ArrowUp: step(5), ArrowLeft: step(-5), ArrowDown: step(-5), PageUp: step(25), PageDown: step(-25) };
         if (event.key in steps) {
           event.preventDefault();
           event.stopPropagation();
@@ -11307,16 +11351,16 @@ article.pv-x-post[data-reply-target='true'] {\r
         } else if (event.key === "End") {
           event.preventDefault();
           event.stopPropagation();
-          animateZoom(MAX_SCALE, center.x, center.y);
+          animateZoom(zoomCap(), center.x, center.y);
         }
       };
       const onZoomOut = () => {
         const center = contentCenter();
-        animateZoom(scale - 0.25, center.x, center.y);
+        animateZoom(scale - 25 / Math.max(fitPct(), 1), center.x, center.y);
       };
       const onZoomIn = () => {
         const center = contentCenter();
-        animateZoom(scale + 0.25, center.x, center.y);
+        animateZoom(scale + 25 / Math.max(fitPct(), 1), center.x, center.y);
       };
       const onZoomFit = () => {
         const center = contentCenter();
@@ -11331,6 +11375,7 @@ article.pv-x-post[data-reply-target='true'] {\r
       listen(zoomOutButton, "click", onZoomOut);
       listen(zoomInButton, "click", onZoomIn);
       listen(zoomFitButton, "click", onZoomFit);
+      paintZoom();
     }
     const onImgLoad = (event) => {
       if (event.currentTarget !== activeImg()) return;
@@ -11456,6 +11501,7 @@ article.pv-x-post[data-reply-target='true'] {\r
     const beginPinch = () => {
       cancelZoomAnim();
       cancelWheelSnap();
+      setRasterHint(true);
       const [a, b] = [...pointers.values()];
       const midX = (a.x + b.x) / 2;
       const midY = (a.y + b.y) / 2;
@@ -11544,6 +11590,8 @@ article.pv-x-post[data-reply-target='true'] {\r
         } else if (pointers.size === 1) {
           const rest = [...pointers.values()][0];
           beginPan({ clientX: rest.x, clientY: rest.y });
+        } else {
+          setRasterHint(false);
         }
         return;
       }
@@ -11555,6 +11603,7 @@ article.pv-x-post[data-reply-target='true'] {\r
         const moved = Math.abs(tx - pan.baseTx) > 6 || Math.abs(ty - pan.baseTy) > 6;
         if (moved) suppressClick = true;
         if (scale < 1.02) animateZoom(MIN_SCALE, contentCenter().x, contentCenter().y);
+        else setRasterHint(false);
         return;
       }
       const samples = gesture.samples;
@@ -11575,7 +11624,7 @@ article.pv-x-post[data-reply-target='true'] {\r
       event.preventDefault();
       const center = contentCenter();
       if (isZoomed()) animateZoom(MIN_SCALE, center.x, center.y);
-      else animateZoom(2, event.clientX, event.clientY);
+      else animateZoom(zoomCap(), event.clientX, event.clientY);
     };
     const destroy = () => {
       stopAnim();
@@ -11609,10 +11658,10 @@ article.pv-x-post[data-reply-target='true'] {\r
         show(current - 1);
       } else if (overlay && (event.key === "+" || event.key === "=")) {
         event.preventDefault();
-        animateZoom(scale + 0.25, contentCenter().x, contentCenter().y);
+        animateZoom(scale + 25 / Math.max(fitPct(), 1), contentCenter().x, contentCenter().y);
       } else if (overlay && (event.key === "-" || event.key === "_")) {
         event.preventDefault();
-        animateZoom(scale - 0.25, contentCenter().x, contentCenter().y);
+        animateZoom(scale - 25 / Math.max(fitPct(), 1), contentCenter().x, contentCenter().y);
       } else if (overlay && event.key === "0") {
         event.preventDefault();
         animateZoom(MIN_SCALE, contentCenter().x, contentCenter().y);

@@ -1,6 +1,6 @@
 # Popup Viewer V2 项目开发手册
 
-> 面向新贡献者与维护者。适用版本：**v2.3.6**；默认分支：`main`；仓库：<https://github.com/coresZ/popup-viewer-v2.user>。
+> 面向新贡献者与维护者。适用版本：**v2.3.7**；默认分支：`main`；仓库：<https://github.com/coresZ/popup-viewer-v2.user>。
 >
 > 本手册以源码为唯一事实来源。若文档与实现不一致，请以 `src/`、`build.mjs`、`package.json` 为准，并顺手修正文档。
 
@@ -985,9 +985,9 @@ node tests/xModel.test.mjs && node tests/selector.test.mjs && node tests/xZoomMa
 |---|---|---|
 | `tests/xModel.test.mjs` | X 数据层：帖子 ID 解析、`parseThreadSummary`、游标、引用帖、长文、媒体变体、实体区间、翻译判定、草稿、`mergeModel`、格式化 | 52 个 `check()` 用例，使用 `node:assert/strict` |
 | `tests/selector.test.mjs` | 点选候选排序 `rankCandidates`、`describeCandidate`、`isStableClassName` | 纯逻辑断言 |
-| `tests/xZoomMath.test.mjs` | 灯箱缩放/平移数学：`clampScale`、`zoomTowards`、`clampTranslate`、`maxScaleFor`、`ratioToScale`、`scaleToRatio` | 纯逻辑断言 |
+| `tests/xZoomMath.test.mjs` | 灯箱缩放/平移数学：`clampScale`、`zoomTowards`、`clampTranslate`、`maxScaleFor`、`fitPercent`、`sliderRatioToScale` / `sliderScaleToRatio` | 纯逻辑断言 |
 
-当前基线的 `npm test` 输出：`52 passed`（xModel）+ selector tests passed + xZoomMath all assertions passed。
+当前基线的 `npm test` 输出：`54 passed`（xModel）+ selector tests passed + xZoomMath all assertions passed。
 
 **新增测试：**
 
@@ -1023,7 +1023,7 @@ node tests/xModel.test.mjs && node tests/selector.test.mjs && node tests/xZoomMa
 
 | 标记 | 颜色 | 含义 |
 |---|---|---|
-| `[PV2] boot v2.3.6` | 紫色（左上） | 构建版本；来自 `__PV2_VER__` |
+| `[PV2] boot v2.3.7` | 紫色（左上） | 构建版本；来自 `__PV2_VER__` |
 | `1. EventBus`、`2. SiteManager` … | 深灰（右侧） | 模块加载序号；最后一个序号是崩溃点定位线索 |
 | `[PV2] init ok`、`click: HANDLED` 等 | 橙色 | `debugMark()` 状态 |
 | `[PV2] xxx ERR: ...` | 红色 | `showErr()` 错误与栈前几帧 |
@@ -1146,25 +1146,25 @@ docs: 补充链接规则的常见问题
 
 ### 13.1 版本策略
 
-- 版本号遵循 `MAJOR.MINOR.PATCH`，当前为 **2.3.6**。
+- 版本号遵循 `MAJOR.MINOR.PATCH`，当前为 **2.3.7**。
 - 代码类改动（`src/**`、`build.mjs`、样式、构建配置）必须递增版本号；纯文档/配置改动（README、CHANGELOG、`.gitignore` 等）不需要。
 - 版本号至少同步 `package.json` 与 `banner.txt`；发布记录同步 `CHANGELOG.md`。
 
 ### 13.2 发布步骤
 
-以发布 `2.3.6` 为例（维护者在用户明确要求提交/推送时执行）：
+以发布 `2.3.7` 为例（维护者在用户明确要求提交/推送时执行）：
 
 1. **确认改动范围**：`git status` / `npm run g -- status`，确认只包含预期文件；`dist/` 的改动来自构建，不应手工编辑。
 2. **递增版本号**：修改 `package.json` 的 `version` 与 `banner.txt` 的 `@version`，两处必须一致。
-3. **更新 CHANGELOG**：在 `CHANGELOG.md` 顶部新增 `## [2.3.6] - YYYY-MM-DD`，按 `Added` / `Changed` / `Fixed` 分类记录。
+3. **更新 CHANGELOG**：在 `CHANGELOG.md` 顶部新增 `## [2.3.7] - YYYY-MM-DD`，按 `Added` / `Changed` / `Fixed` 分类记录。
 4. **运行测试**：`npm test`。
 5. **构建产物**：`npm run build`；确认 `dist/popup-viewer-v2.user.js` 头部 `@version` 已是新版本，且 `dist/popup-viewer-kit.js` 同步更新。
 6. **可选压缩发布**：如果发布渠道需要压缩版，`npm run build:min`；注意仓库 CI 的 `npm run build` 校验，见 [4.5](#45-dist-同步规则)。
 7. **手工冒烟**：在 Tampermonkey 中重新导入 `dist/popup-viewer-v2.user.js`，验证至少一个支持站点能正常弹窗。
-8. **提交**：`npm run g -- commit "v2.3.6 ..."`（默认会先构建），或先 `git add` 后手动提交。
-9. **推送**：`npm run g -- push`；或一步完成 `npm run g -- publish "v2.3.6 ..."`。
+8. **提交**：`npm run g -- commit "v2.3.7 ..."`（默认会先构建），或先 `git add` 后手动提交。
+9. **推送**：`npm run g -- push`；或一步完成 `npm run g -- publish "v2.3.7 ..."`。
 10. **验证 CI**：GitHub Actions 在 push/PR 到 `main` 时执行 Node 20/22 测试、构建与 `dist` 同步校验；全部通过后发布完成。
-11. **可选 GitHub Release**：当前仓库未使用 tag 流程；如需发布 Release，可在 GitHub 上手动创建 tag（如 `v2.3.6`）并附 `dist` 产物。启用前请先与维护者约定，避免与 CI/版本流程冲突。
+11. **可选 GitHub Release**：当前仓库未使用 tag 流程；如需发布 Release，可在 GitHub 上手动创建 tag（如 `v2.3.7`）并附 `dist` 产物。启用前请先与维护者约定，避免与 CI/版本流程冲突。
 
 ### 13.3 git-tools.mjs 用法
 
@@ -1193,7 +1193,7 @@ npm run g -- setup git@github.com:coresZ/popup-viewer-v2.user.git
 npm run g -- commit "docs: 补充开发手册" --no-build
 
 # 一步构建 + 提交 + 推送（需用户明确要求）
-npm run g -- publish "v2.3.6 灯箱缩放"
+npm run g -- publish "v2.3.7 灯箱缩放"
 ```
 
 ### 13.4 发布后检查
@@ -1288,7 +1288,7 @@ jobs:
 ### 14.6 发布与标签
 
 - 日常发版走「版本号 + CHANGELOG + CI」流程即可。
-- 如需 GitHub Release，建议使用与 `package.json` 一致的 tag（`v2.3.6`），在 Release notes 中链接 `CHANGELOG.md` 对应条目，并附上 `dist/popup-viewer-v2.user.js`。
+- 如需 GitHub Release，建议使用与 `package.json` 一致的 tag（`v2.3.7`），在 Release notes 中链接 `CHANGELOG.md` 对应条目，并附上 `dist/popup-viewer-v2.user.js`。
 - 当前仓库没有 tag 历史；首次启用 tag 前先与维护者约定发布节奏，避免 tag 与 `main` 提交不一致。
 
 ---
@@ -1386,4 +1386,4 @@ A：仓库当前的 CI 校验以 `npm run build`（非压缩）为准；提交 `
 
 ---
 
-*本手册随 v2.3.6 编写。若你发现命令、路径或行为与当前源码不一致，请以源码为准并更新本文档；文档贡献同样遵循 [CONTRIBUTING.md](../CONTRIBUTING.md) 与 [AGENTS.md](../AGENTS.md)。*
+*本手册随 v2.3.7 编写。若你发现命令、路径或行为与当前源码不一致，请以源码为准并更新本文档；文档贡献同样遵循 [CONTRIBUTING.md](../CONTRIBUTING.md) 与 [AGENTS.md](../AGENTS.md)。*

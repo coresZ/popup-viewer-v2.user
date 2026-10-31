@@ -175,6 +175,7 @@ function mediaItems(tweet, legacy) {
     const poster = String(raw.media_url_https || raw.media_url || '');
     const item = {
       type,
+      // 直连地址：网格与灯箱都用 media_url_https 原样加载，不改写任何参数
       url: poster,
       videoUrl: chosen ? String(chosen.url) : '',
       hlsUrl: hls ? String(hls.url) : '',

@@ -6,12 +6,12 @@
 import { el, svgIcon } from '../utils/dom.js';
 import {
   MIN_SCALE,
-  MAX_SCALE,
   clampScale,
   clampTranslate,
+  fitPercent,
   maxScaleFor,
-  ratioToScale,
-  scaleToRatio,
+  sliderRatioToScale,
+  sliderScaleToRatio,
   zoomTowards
 } from './xZoomMath.js';
 import { xIcon } from './xIcons.js';
@@ -511,8 +511,15 @@ function createMediaCarousel(photos, { openUrl, variant = 'inline', startIndex =
 
   // 图片轨道：所有图并排，靠 translateX 滑动；imgs 留引用给缩放态改 transform
   const track = el('div', { class: 'pv-x-media-track' });
+  // 网格与灯箱统一用 media_url_https 直连地址，不改写参数；缩放百分比以该图 1:1 为 100%
   const imgs = photos.map((photo) =>
-    el('img', { class: 'pv-x-media-big', src: photo.url, alt: photo.altText || '', loading: 'lazy', draggable: 'false' })
+    el('img', {
+      class: 'pv-x-media-big',
+      src: photo.url,
+      alt: photo.altText || '',
+      loading: 'lazy',
+      draggable: 'false'
+    })
   );
   const slides = imgs.map((img) => {
     const slide = el('div', { class: 'pv-x-media-slide' }, img);
@@ -567,10 +574,10 @@ function createMediaCarousel(photos, { openUrl, variant = 'inline', startIndex =
         role: 'slider',
         tabindex: '0',
         'aria-label': '缩放比例',
-        'aria-valuemin': String(MIN_SCALE * 100),
-        'aria-valuemax': String(MAX_SCALE * 100),
-        'aria-valuenow': '100',
-        'aria-valuetext': '100%',
+        'aria-valuemin': '0',
+        'aria-valuemax': '100',
+        'aria-valuenow': '0',
+        'aria-valuetext': '适应窗口',
         title: '拖动 / 滚轮缩放'
       })
     : null;
@@ -590,7 +597,7 @@ function createMediaCarousel(photos, { openUrl, variant = 'inline', startIndex =
       )
     : null;
   const zoomFitButton = overlay
-    ? el('button', { class: 'pv-x-zoom-fit', type: 'button', 'aria-label': '适应窗口，恢复 100%', text: '适应' })
+    ? el('button', { class: 'pv-x-zoom-fit', type: 'button', 'aria-label': '适应窗口', title: '适应窗口', text: '适应' })
     : null;
   if (overlay) zoomRange.append(el('div', { class: 'pv-x-zoom-fill' }), el('div', { class: 'pv-x-zoom-thumb' }));
   const zoomBar = overlay
@@ -649,14 +656,37 @@ function createMediaCarousel(photos, { openUrl, variant = 'inline', startIndex =
     return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
   };
   // 100% 时图片的布局尺寸：offsetWidth/Height 不吃 transform，动画中途读也是对的。
-  // 还没解码完（complete=false）就先用视口兜底，免得 cap 退回 4x 把图放大到远超原图。
+  // 还没解码完（complete=false）就先用视口兜底，免得上限按错误基准计算。
   const baseSize = () => {
     const img = activeImg();
     if (!img || !img.complete || !img.naturalWidth) return frameSize();
     return { w: img.offsetWidth, h: img.offsetHeight };
   };
-  // 放大上限：小图按原图像素的两倍封顶，别放大成一团马赛克
+  // 放大上限：最多到原图的 1:1 像素，再放大只会插值变糊
   const zoomCap = () => maxScaleFor(activeImg()?.naturalWidth || 0, baseSize().w);
+  // 用户方案：缩放百分比以「原图」为 100%。先算展示尺寸 ÷ 原图尺寸的适配比例，
+  // 打开灯箱时显示的就是它（如 23%）；放大到 100% 即原图 1:1，全程没有插值。
+  // 图片未解码时用媒体元数据的原始宽度兜底，load 后按真实像素重算。
+  const fitPct = () => {
+    const img = activeImg();
+    const natural = (img && img.naturalWidth) || photos[current]?.width || 0;
+    return fitPercent(natural, baseSize().w);
+  };
+  // 光栅提示：手势/补间进行中提示 Chrome 保留合成层（动起来流畅）；结束后必须移除并
+  // 强制重绘 —— 否则图层被钉在「适配尺寸」的纹理上，放大到原图 1:1 时 GPU 只是把
+  // 小纹理拉伸，源图再大也是糊的（用户实测：适配 46% 清晰、100% 反而模糊）。
+  const setRasterHint = (on) => {
+    const img = activeImg();
+    if (!img) return;
+    img.style.willChange = on ? 'transform' : '';
+    if (!on) {
+      // 摘掉再挂回 transform：同一帧内完成、不闪，但会按当前缩放重新光栅化
+      const transform = img.style.transform;
+      img.style.transform = 'none';
+      void img.offsetWidth;
+      img.style.transform = transform;
+    }
+  };
 
   const clampZoom = () => {
     const f = frameSize();
@@ -668,12 +698,14 @@ function createMediaCarousel(photos, { openUrl, variant = 'inline', startIndex =
   const paintZoom = () => {
     if (!overlay) return;
     const cap = Math.max(MIN_SCALE, zoomCap());
-    const percent = Math.round(scale * 100);
+    // 百分比 = 当前缩放 × 适配比例，即「相对原图」的百分比；100% = 原图 1:1
+    const percent = Math.round(scale * fitPct());
     stage.classList.toggle('pv-x-media-zoomed', isZoomed());
     zoomRange.setAttribute('aria-valuenow', String(percent));
-    zoomRange.setAttribute('aria-valuemax', String(Math.round(cap * 100)));
+    zoomRange.setAttribute('aria-valuemin', String(Math.round(fitPct())));
+    zoomRange.setAttribute('aria-valuemax', '100');
     zoomRange.setAttribute('aria-valuetext', `${percent}%`);
-    zoomRange.style.setProperty('--pv-zoom-ratio', String(scaleToRatio(scale, cap)));
+    zoomRange.style.setProperty('--pv-zoom-ratio', String(sliderScaleToRatio(scale, fitPct())));
     zoomValue.textContent = `${percent}%`;
     zoomOutButton.disabled = scale <= MIN_SCALE + 0.001;
     zoomInButton.disabled = scale >= cap - 0.001;
@@ -701,6 +733,7 @@ function createMediaCarousel(photos, { openUrl, variant = 'inline', startIndex =
     tx = 0;
     ty = 0;
     for (const img of imgs) img.style.transform = '';
+    setRasterHint(false);
     if (!overlay) return;
     stage.classList.remove('pv-x-media-zoomed');
     paintZoom();
@@ -725,6 +758,7 @@ function createMediaCarousel(photos, { openUrl, variant = 'inline', startIndex =
     }
     cancelZoomAnim();
     cancelWheelSnap();
+    setRasterHint(true);
     const center = contentCenter();
     const dx = anchorX - center.x;
     const dy = anchorY - center.y;
@@ -735,6 +769,7 @@ function createMediaCarousel(photos, { openUrl, variant = 'inline', startIndex =
       ty = z.ty;
       clampZoom();
       applyZoom();
+      setRasterHint(false);
       return;
     }
     const from = scale;
@@ -749,7 +784,12 @@ function createMediaCarousel(photos, { openUrl, variant = 'inline', startIndex =
       ty = dy - py * scale;
       clampZoom();
       applyZoom();
-      zoomRaf = k < 1 ? requestAnimationFrame(step) : null;
+      if (k < 1) {
+        zoomRaf = requestAnimationFrame(step);
+      } else {
+        zoomRaf = null;
+        setRasterHint(false);
+      }
     };
     zoomRaf = requestAnimationFrame(step);
   };
@@ -758,6 +798,7 @@ function createMediaCarousel(photos, { openUrl, variant = 'inline', startIndex =
     if (!overlay) return;
     cancelZoomAnim();
     cancelWheelSnap();
+    setRasterHint(true);
     const center = contentCenter();
     const next = clampScale(targetScale, zoomCap());
     const z = zoomTowards({ scale, tx, ty, nextScale: next, dx: anchorX - center.x, dy: anchorY - center.y });
@@ -774,7 +815,11 @@ function createMediaCarousel(photos, { openUrl, variant = 'inline', startIndex =
       wheelSnapTimer = null;
       if (gesture) return; // 手势进行中让手势自己维护 scale
       const snapped = clampScale(Math.round(scale * 20) / 20, zoomCap());
-      if (Math.abs(snapped - scale) < 0.001) return;
+      if (Math.abs(snapped - scale) < 0.001) {
+        // 没有需要吸附的位移也要收掉光栅提示：停手后按当前缩放重新光栅化
+        setRasterHint(false);
+        return;
+      }
       const center = contentCenter();
       animateZoom(snapped, center.x, center.y);
     }, 160);
@@ -803,15 +848,15 @@ function createMediaCarousel(photos, { openUrl, variant = 'inline', startIndex =
       if (!rect.width) return;
       const ratio = Math.min(1, Math.max(0, (event.clientX - rect.left) / rect.width));
       const center = contentCenter();
-      // 轨道按本张图的像素上限映射：最右端正好等于上限，不出现死区
-      const cap = Math.max(MIN_SCALE, zoomCap());
-      setZoomAt(ratioToScale(ratio, cap), center.x, center.y);
+      // 滑杆对「原图百分比」线性：左端 = 适配比例，右端 = 100%（原图 1:1），无死区
+      setZoomAt(sliderRatioToScale(ratio, fitPct()), center.x, center.y);
     };
     const onSliderDown = (event) => {
       if (event.button !== 0) return;
       event.preventDefault();
       event.stopPropagation();
       sliding = true;
+      setRasterHint(true);
       zoomRange.focus({ preventScroll: true });
       try {
         zoomRange.setPointerCapture(event.pointerId);
@@ -825,6 +870,7 @@ function createMediaCarousel(photos, { openUrl, variant = 'inline', startIndex =
     };
     const onSliderEnd = () => {
       sliding = false;
+      setRasterHint(false);
     };
     const onSliderWheel = (event) => {
       const center = contentCenter();
@@ -832,7 +878,9 @@ function createMediaCarousel(photos, { openUrl, variant = 'inline', startIndex =
     };
     const onSliderKey = (event) => {
       const center = contentCenter();
-      const steps = { ArrowRight: 0.05, ArrowUp: 0.05, ArrowLeft: -0.05, ArrowDown: -0.05, PageUp: 0.25, PageDown: -0.25 };
+      // 步进以「原图百分比」计：±5 / ±25 个百分点，换算成适配基准的内部缩放值
+      const step = (points) => points / Math.max(fitPct(), 1);
+      const steps = { ArrowRight: step(5), ArrowUp: step(5), ArrowLeft: step(-5), ArrowDown: step(-5), PageUp: step(25), PageDown: step(-25) };
       if (event.key in steps) {
         event.preventDefault();
         event.stopPropagation();
@@ -844,16 +892,16 @@ function createMediaCarousel(photos, { openUrl, variant = 'inline', startIndex =
       } else if (event.key === 'End') {
         event.preventDefault();
         event.stopPropagation();
-        animateZoom(MAX_SCALE, center.x, center.y);
+        animateZoom(zoomCap(), center.x, center.y);
       }
     };
     const onZoomOut = () => {
       const center = contentCenter();
-      animateZoom(scale - 0.25, center.x, center.y);
+      animateZoom(scale - 25 / Math.max(fitPct(), 1), center.x, center.y);
     };
     const onZoomIn = () => {
       const center = contentCenter();
-      animateZoom(scale + 0.25, center.x, center.y);
+      animateZoom(scale + 25 / Math.max(fitPct(), 1), center.x, center.y);
     };
     const onZoomFit = () => {
       const center = contentCenter();
@@ -868,6 +916,8 @@ function createMediaCarousel(photos, { openUrl, variant = 'inline', startIndex =
     listen(zoomOutButton, 'click', onZoomOut);
     listen(zoomInButton, 'click', onZoomIn);
     listen(zoomFitButton, 'click', onZoomFit);
+    // 打开灯箱就把百分比刷成「相对原图」的适配比例（图片未解码时用元数据宽度估算）
+    paintZoom();
   }
 
   // 图片解码完成后按真实像素重算上限：加载前被放大过的值要收回来
@@ -1029,6 +1079,7 @@ function createMediaCarousel(photos, { openUrl, variant = 'inline', startIndex =
   const beginPinch = () => {
     cancelZoomAnim();
     cancelWheelSnap();
+    setRasterHint(true);
     const [a, b] = [...pointers.values()];
     const midX = (a.x + b.x) / 2;
     const midY = (a.y + b.y) / 2;
@@ -1125,6 +1176,9 @@ function createMediaCarousel(photos, { openUrl, variant = 'inline', startIndex =
         // 还留着一根指头：直接接成平移，不用重新按下
         const rest = [...pointers.values()][0];
         beginPan({ clientX: rest.x, clientY: rest.y });
+      } else {
+        // 静止在放大态：收掉光栅提示，按当前缩放重新光栅化
+        setRasterHint(false);
       }
       return;
     }
@@ -1136,6 +1190,7 @@ function createMediaCarousel(photos, { openUrl, variant = 'inline', startIndex =
       const moved = Math.abs(tx - pan.baseTx) > 6 || Math.abs(ty - pan.baseTy) > 6;
       if (moved) suppressClick = true;
       if (scale < 1.02) animateZoom(MIN_SCALE, contentCenter().x, contentCenter().y);
+      else setRasterHint(false);
       return;
     }
     const samples = gesture.samples;
@@ -1157,9 +1212,9 @@ function createMediaCarousel(photos, { openUrl, variant = 'inline', startIndex =
     if (event.target.closest('button, a')) return;
     event.preventDefault();
     const center = contentCenter();
-    // 双击在 100% 与 200% 之间切换，以点击点为中心
+    // 双击在「适应窗口」与「原图 100%」之间切换：从点击点展开到原图像素
     if (isZoomed()) animateZoom(MIN_SCALE, center.x, center.y);
-    else animateZoom(2, event.clientX, event.clientY);
+    else animateZoom(zoomCap(), event.clientX, event.clientY);
   };
   const destroy = () => {
     stopAnim();
@@ -1195,10 +1250,10 @@ function createMediaCarousel(photos, { openUrl, variant = 'inline', startIndex =
       show(current - 1);
     } else if (overlay && (event.key === '+' || event.key === '=')) {
       event.preventDefault();
-      animateZoom(scale + 0.25, contentCenter().x, contentCenter().y);
+      animateZoom(scale + 25 / Math.max(fitPct(), 1), contentCenter().x, contentCenter().y);
     } else if (overlay && (event.key === '-' || event.key === '_')) {
       event.preventDefault();
-      animateZoom(scale - 0.25, contentCenter().x, contentCenter().y);
+      animateZoom(scale - 25 / Math.max(fitPct(), 1), contentCenter().x, contentCenter().y);
     } else if (overlay && event.key === '0') {
       event.preventDefault();
       animateZoom(MIN_SCALE, contentCenter().x, contentCenter().y);
