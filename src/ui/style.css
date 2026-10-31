@@ -526,6 +526,8 @@ html.pv-forum th.common a.xst:hover {
   max-height: min(560px, calc(100dvh - 32px));
   overflow-y: auto;
   overflow-x: clip;
+  /* 预留滚动条槽：切换 tab 时内容长短变化不再让面板左右抖一下 */
+  scrollbar-gutter: stable;
   background-color: var(--popup-surface);
   color: var(--popup-text);
   font-family: var(--pv-font);
@@ -2681,9 +2683,19 @@ article.pv-x-post[data-reply-target='true'] {
 .pv-x-media-stage-inline {
   cursor: zoom-in;
 }
-/* 覆盖式浮层：宽高同样由 JS 按浮层可用区域与首图比例算出 */
+/* 覆盖式浮层：宽高由 JS 按视口可用区域与首图比例算出；纵向也交给手势（灯箱内不需要页面滚动） */
 .pv-x-media-stage-overlay {
-  cursor: default;
+  cursor: zoom-in;
+  touch-action: none;
+  /* 视口是 flex 容器：不压掉 min-width:auto，缩窄面板时会被图片的 min-content 顶住缩不回去 */
+  min-width: 0;
+}
+/* 放大后可拖拽平移：光标换成抓取 */
+.pv-x-media-stage-overlay.pv-x-media-zoomed {
+  cursor: grab;
+}
+.pv-x-media-stage-overlay.pv-x-media-zoomed .pv-x-media-big {
+  will-change: transform;
 }
 .pv-x-media-stage.pv-x-media-dragging {
   cursor: grabbing;
@@ -2701,6 +2713,7 @@ article.pv-x-post[data-reply-target='true'] {
   background-color: rgba(128, 128, 128, 0.28);
   -webkit-backdrop-filter: blur(14px) saturate(140%);
   backdrop-filter: blur(14px) saturate(140%);
+  overscroll-behavior: contain;
 }
 /* 轨道：所有图并排，靠 translateX 滑动；窗体与两侧箭头固定不动 */
 .pv-x-media-track {
@@ -2814,6 +2827,199 @@ article.pv-x-post[data-reply-target='true'] {
 }
 .pv-x-media-next {
   right: 10px;
+}
+
+/* ===== 浮层灯箱：三栏骨架 + 底部缩放条（箭头在图片外，图片永远不压按钮） ===== */
+.pv-x-media-shell {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+}
+.pv-x-media-main {
+  display: flex;
+  flex: 1;
+  align-items: stretch;
+  gap: 12px;
+  min-height: 0;
+  position: relative;
+}
+.pv-x-media-viewport {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+/* 视口里的窗体尺寸由 JS 给死，不参与 flex 收缩 */
+.pv-x-media-viewport > .pv-x-media-stage {
+  flex: 0 0 auto;
+}
+/* 浮层里的箭头是 flex 项：不绝对定位、不压图，纵向居中 */
+.pv-x-media-shell .pv-x-media-nav {
+  position: static;
+  transform: none;
+  flex: 0 0 auto;
+  align-self: center;
+}
+/* 浮层顶部条挂在壳上、绝对定位并对齐到图片顶边（--pv-bar-top 由 syncFrame 按居中偏移给），
+   两侧给箭头让位（Tab 顺序也因此排在箭头之后） */
+.pv-x-media-shell > .pv-x-media-bar {
+  top: var(--pv-bar-top, 0px);
+  left: 64px;
+  right: 64px;
+  z-index: 1;
+}
+/* 页码 /「在 X 打开」/ ✕ 收在右上角同一组里：间隔 8px，不再被 space-between 拉开两头 */
+.pv-x-media-bar-grouped {
+  justify-content: flex-end;
+}
+.pv-x-media-bar-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.pv-x-media-bar-group > * {
+  flex: 0 0 auto;
+}
+/* 窄屏退化：两侧留白放不下时，箭头贴边叠在视口内（32px、半透明） */
+.pv-x-media-shell.is-narrow .pv-x-media-main {
+  gap: 0;
+}
+.pv-x-media-shell.is-narrow > .pv-x-media-bar {
+  left: 44px;
+  right: 44px;
+}
+.pv-x-media-shell.is-narrow .pv-x-media-nav {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 1;
+  width: 32px;
+  height: 32px;
+  background-color: rgba(0, 0, 0, 0.45);
+}
+.pv-x-media-shell.is-narrow .pv-x-media-prev {
+  left: 4px;
+}
+.pv-x-media-shell.is-narrow .pv-x-media-next {
+  right: 4px;
+}
+/* 底部缩放条：默认 100% 时滑块在最左，滚轮/拖动/点击轨道都可缩放 */
+.pv-x-media-zoom {
+  display: flex;
+  flex: 0 0 auto;
+  align-self: center;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 10px;
+  border-radius: 999px;
+  background-color: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
+}
+.pv-x-zoom-btn {
+  appearance: none;
+  -webkit-appearance: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background-color: rgba(255, 255, 255, 0.16);
+  color: #fff;
+  cursor: pointer;
+}
+.pv-x-zoom-btn:hover:not(:disabled) {
+  background-color: rgba(255, 255, 255, 0.3);
+}
+.pv-x-zoom-btn:disabled,
+.pv-x-zoom-fit:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.pv-x-zoom-fit {
+  appearance: none;
+  -webkit-appearance: none;
+  padding: 2px 4px;
+  border: 0;
+  background: none;
+  color: #fff;
+  font: inherit;
+  font-size: 12px;
+  opacity: 0.92;
+  cursor: pointer;
+}
+.pv-x-zoom-value {
+  min-width: 40px;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+.pv-x-zoom-range {
+  position: relative;
+  width: 132px;
+  height: 24px;
+  cursor: pointer;
+  outline: none;
+  touch-action: none;
+}
+.pv-x-zoom-range::before {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 0;
+  right: 0;
+  height: 4px;
+  margin-top: -2px;
+  border-radius: 2px;
+  background-color: rgba(255, 255, 255, 0.3);
+}
+.pv-x-zoom-fill {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  width: calc(var(--pv-zoom-ratio, 0) * 100%);
+  height: 4px;
+  margin-top: -2px;
+  border-radius: 2px;
+  background-color: #fff;
+}
+.pv-x-zoom-thumb {
+  position: absolute;
+  top: 50%;
+  left: calc(var(--pv-zoom-ratio, 0) * 100%);
+  width: 14px;
+  height: 14px;
+  margin: -7px 0 0 -7px;
+  border-radius: 50%;
+  background-color: #fff;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.45);
+}
+.pv-x-zoom-range:focus-visible {
+  outline: 2px solid rgba(255, 255, 255, 0.85);
+  outline-offset: 4px;
+  border-radius: 4px;
+}
+@media (pointer: coarse) {
+  .pv-x-zoom-range {
+    height: 36px;
+  }
+  .pv-x-zoom-thumb {
+    width: 18px;
+    height: 18px;
+    margin: -9px 0 0 -9px;
+  }
 }
 /* 降低动效偏好：滑动改为直接落位（不做位移动画） */
 @media (prefers-reduced-motion: reduce) {
@@ -3616,6 +3822,8 @@ article.pv-x-post[data-reply-target='true'] {
   .pv-x-composer-target-clear,
   .pv-x-media-collapse,
   .pv-x-media-open,
+  .pv-x-zoom-btn,
+  .pv-x-zoom-fit,
   .pv-x-open,
   .pv-x-translation-link {
     position: relative;
@@ -3629,6 +3837,8 @@ article.pv-x-post[data-reply-target='true'] {
   .pv-x-composer-target-clear::before,
   .pv-x-media-collapse::before,
   .pv-x-media-open::before,
+  .pv-x-zoom-btn::before,
+  .pv-x-zoom-fit::before,
   .pv-x-open::before,
   .pv-x-translation-link::before {
     content: '';

@@ -60,7 +60,7 @@ export const config = {
   // 站点加载策略:
   //   iframe: true  → 使用 iframe 直接加载（页面自带脚本与登录态）
   //   scripts: true → 请求模式下保留目标页 <script> 以正常渲染（仅限信任站点）
-  //   xThread: true → 走 X 专用 GraphQL 原生渲染（见 docs/plan-x-graphql.md）
+  //   xThread: true → 走 X 专用 GraphQL 原生渲染（仅 X 页面注册加载器）
   sitePolicy: {
     'linux.do': { iframe: true, scripts: true },
     // X：内容由客户端 React 渲染，抓取净化拿不到帖子（评论为空）；iframe 又被 X 的框架策略

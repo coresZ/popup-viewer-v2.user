@@ -1,0 +1,388 @@
+<!doctype html>
+<!--
+  灯箱外置箭头 + 缩放/平移 的真实 DOM 验证页（无外网依赖，图片是内联 SVG）。
+  两条命令：
+  1) 默认（reduced-motion，直接落位路径）：
+  "C:\Program Files\Google\Chrome\Application\chrome.exe" --headless=new --disable-gpu --no-sandbox ^
+    --allow-file-access-from-files --force-prefers-reduced-motion --window-size=1000,900 ^
+    --virtual-time-budget=30000 --dump-dom ^
+    "file:///D:/source/favjs/popup-viewer-v2/tests/lightbox-harness.html"
+  2) 补间路径（不带 --force-prefers-reduced-motion，URL 加 ?raf=1）：
+  "C:\Program Files\Google\Chrome\Application\chrome.exe" --headless=new --disable-gpu --no-sandbox ^
+    --allow-file-access-from-files --window-size=1000,900 --virtual-time-budget=30000 --dump-dom ^
+    "file:///D:/source/favjs/popup-viewer-v2/tests/lightbox-harness.html?raf=1&pv2_debug"
+  结果在页面最后的 <pre id="out"> 里（JSON 断言列表）。
+-->
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <title>lightbox harness</title>
+    <link rel="stylesheet" href="../src/ui/style.css" />
+    <style>
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        background: #f5f5f5;
+        font: 14px/1.4 system-ui, sans-serif;
+      }
+      #host {
+        position: relative;
+        width: 900px;
+        height: 720px;
+        overflow: hidden;
+        border: 1px solid #ccc;
+      }
+      #reader {
+        position: relative;
+        height: 100%;
+        --pv-x-bg: #fff;
+        --pv-x-border: #eff3f4;
+        --pv-x-muted: #536471;
+        --pv-x-accent: #1d9bf0;
+      }
+      #out {
+        margin: 8px;
+        white-space: pre-wrap;
+      }
+      /* 面板开合有 transform 过渡，无头环境帧不推进时会把量出来的尺寸带偏 */
+      #popup-content-panel {
+        transition: none !important;
+      }
+    </style>
+  </head>
+  <body>
+     <div id="popup-content-panel" class="visible" style="width: 900px; height: 720px; --popup-width: 900px; --popup-height: 720px"><div id="popup-content-area" class="pv-x-reader-mode"><div id="host" style="width: 100%; height: 100%"><div class="pv-x-reader" id="reader"></div></div></div></div>
+    <pre id="out">RUNNING</pre>
+    <script type="module">
+      import { renderPost } from '../src/x/xRender.js';
+      import { setupWheelScrollChain } from '../src/utils/panelBehavior.js';
+
+      // 还原生产环境的「面板 → 内容区（都是 overflow:hidden）」祖先链，
+      // 让 document 捕获阶段的滚轮兜底也参与，才能回归 P0（灯箱滚轮被吞）。
+      setupWheelScrollChain({
+        panel: document.getElementById('popup-content-panel'),
+        contentArea: () => document.getElementById('popup-content-area')
+      });
+
+      // 无头环境里 rAF 会被合成器冻住：?raf=1 时用 setTimeout 兜一个跑补间路径；
+      // 同时把 reduced-motion 报成 false，否则即使走 rAF 也还是直接落位分支。
+      const rafShim = new URLSearchParams(location.search).has('raf');
+      if (rafShim) {
+        window.requestAnimationFrame = (cb) => setTimeout(() => cb(performance.now()), 16);
+        window.cancelAnimationFrame = (id) => clearTimeout(id);
+        const realMatchMedia = window.matchMedia.bind(window);
+        window.matchMedia = (query) =>
+          /prefers-reduced-motion/.test(query)
+            ? { matches: false, media: query, addEventListener() {}, removeEventListener() {}, addListener() {}, removeListener() {} }
+            : realMatchMedia(query);
+      }
+
+      const results = [];
+      const check = (name, ok, extra = '') => results.push({ name, ok: Boolean(ok), extra });
+      const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+      window.addEventListener('error', (event) => check('window.onerror', false, String(event.message)));
+      window.addEventListener('unhandledrejection', (event) => check('unhandledrejection', false, String(event.reason)));
+
+      const photo = (id, w, h) => ({
+        type: 'photo',
+        url: `data:image/svg+xml,${encodeURIComponent(
+          `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}"><rect width="100%" height="100%" fill="#cbd5e1"/><circle cx="${w / 2}" cy="${h / 2}" r="${
+            Math.min(w, h) / 4
+          }" fill="#334155"/></svg>`
+        )}`,
+        width: w,
+        height: h,
+        altText: '测试图'
+      });
+
+      const reader = document.getElementById('reader');
+      let rafTicks = 0;
+      const rafTick = () => {
+        rafTicks += 1;
+        requestAnimationFrame(rafTick);
+      };
+      requestAnimationFrame(rafTick);
+      const model = {
+        id: '1001',
+        author: { name: '测试作者', handle: 'tester', avatar: null },
+        text: '两张测试图',
+        createdAt: '2026-10-30T12:00:00.000Z',
+        counts: {},
+        flags: {},
+        media: [photo('a', 800, 600), photo('b', 600, 800)]
+      };
+      reader.appendChild(renderPost(model));
+      await sleep(16);
+
+      const inlineStage = reader.querySelector('.pv-x-media-stage-inline');
+      check('inline 轮播已渲染', Boolean(inlineStage));
+      check('inline 箭头在窗体内', Boolean(inlineStage && inlineStage.querySelector('.pv-x-media-nav')));
+      check('inline 没有缩放条', !reader.querySelector('.pv-x-zoom-range'));
+
+      // 点图打开覆盖式灯箱
+      inlineStage.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+      await sleep(120);
+
+      const layer = reader.querySelector('.pv-x-media-lightbox');
+      check('灯箱已打开', Boolean(layer));
+      const shell = layer && layer.querySelector('.pv-x-media-shell');
+      const stage = layer && layer.querySelector('.pv-x-media-stage-overlay');
+      const viewport = layer && layer.querySelector('.pv-x-media-viewport');
+      const prev = layer && layer.querySelector('.pv-x-media-prev');
+      const next = layer && layer.querySelector('.pv-x-media-next');
+      const main = layer && layer.querySelector('.pv-x-media-main');
+      const bar = layer && layer.querySelector('.pv-x-media-bar');
+      const zoomBar = layer && layer.querySelector('.pv-x-media-zoom');
+      check('三栏骨架存在', Boolean(shell && viewport && prev && next));
+      check('左箭头在图片外', Boolean(prev && stage && !stage.contains(prev)));
+      check('右箭头在图片外', Boolean(next && stage && !stage.contains(next)));
+      check('箭头是视口的兄弟节点', Boolean(prev && viewport && prev.nextElementSibling === viewport));
+      check('顶部条在图片外（视觉仍压图）', Boolean(bar && stage && !stage.contains(bar)));
+      check('Tab 顺序：右箭头之后才是顶部条', Boolean(main && bar && main.nextElementSibling === bar));
+      check('Tab 顺序：顶部条之后才是缩放条', Boolean(bar && zoomBar && bar.nextElementSibling === zoomBar));
+      check('窗体可 Tab 进入', Boolean(stage && stage.getAttribute('tabindex') === '0'));
+      check('单图缩放条已渲染', Boolean(layer && layer.querySelector('.pv-x-zoom-range')));
+      // 打开瞬间（<300ms）点背景不应把灯箱关掉（双击图片的第二下会落在这里）
+      viewport.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await sleep(20);
+      check('打开瞬间点背景不关灯箱', Boolean(reader.querySelector('.pv-x-media-lightbox')));
+      check('打开后图片已聚焦', document.activeElement === stage);
+      const stageBox = stage.getBoundingClientRect();
+      const prevBox = prev.getBoundingClientRect();
+      const nextBox = next.getBoundingClientRect();
+      check('箭头与图片不重叠', prevBox.right <= stageBox.left + 1 && nextBox.left >= stageBox.right - 1, `${prevBox.right}/${stageBox.left} ${nextBox.left}/${stageBox.right}`);
+      const barBox = bar.getBoundingClientRect();
+      const barGroup = bar.querySelector('.pv-x-media-bar-group');
+      const closeBtnEl = bar.querySelector('.pv-x-media-collapse');
+      check('页码/打开/关闭收在右上角同一组', Boolean(barGroup && bar.classList.contains('pv-x-media-bar-grouped')));
+      check(
+        '组内顺序为 页码 → 在 X 打开 → ✕',
+        Boolean(
+          barGroup &&
+            barGroup.children[0].classList.contains('pv-x-media-counter') &&
+            barGroup.children[1].classList.contains('pv-x-media-open') &&
+            barGroup.children[2].classList.contains('pv-x-media-collapse')
+        ),
+        barGroup ? [...barGroup.children].map((n) => n.className).join(' | ') : 'no group'
+      );
+      check('组内间距合理（8px）', Boolean(barGroup && getComputedStyle(barGroup).columnGap === '8px'), barGroup ? getComputedStyle(barGroup).columnGap : '');
+      check('整组靠右对齐', Boolean(bar && getComputedStyle(bar).justifyContent === 'flex-end'), bar ? getComputedStyle(bar).justifyContent : '');
+      check('✕ 在最右', Boolean(barGroup && barGroup.lastElementChild === closeBtnEl), barGroup && barGroup.lastElementChild ? barGroup.lastElementChild.className : '');
+      check(
+        '顶部条右端贴着图片右侧',
+        barBox.right <= stageBox.right + 1 && barBox.right >= stageBox.right - 70,
+        `${barBox.right} / ${stageBox.right}`
+      );
+      check(
+        '顶部条压在图片顶部（有重叠）',
+        barBox.top <= stageBox.top + 4 && barBox.bottom > stageBox.top + 8,
+        `bar ${barBox.top}-${barBox.bottom} / stage top ${stageBox.top}`
+      );
+      check(
+        '布局盒信息',
+        true,
+        JSON.stringify({
+          narrow: shell.classList.contains('is-narrow'),
+          lightboxW: layer.getBoundingClientRect().width,
+          main: main.getBoundingClientRect().width,
+          viewport: viewport.getBoundingClientRect().width,
+          stage: stageBox.width,
+          prev: prevBox.left + '-' + prevBox.right
+        })
+      );
+      check(
+        '顶部条横向压在图片上、给箭头让位',
+        barBox.top <= stageBox.top + 2 && barBox.left >= prevBox.right - 1 && barBox.right <= nextBox.left + 1,
+        `${barBox.left}/${barBox.right} vs ${stageBox.left}/${stageBox.right}`
+      );
+      check('窄屏退化前视口足够宽', viewport.getBoundingClientRect().width > 500, `viewport=${viewport.getBoundingClientRect().width}`);
+      const debugLog = [];
+      layer.addEventListener('dblclick', () => debugLog.push('dblclick'), true);
+      layer.addEventListener('keydown', (event) => debugLog.push(`key:${event.key}`), true);
+      const probeImg = stage.querySelector('.pv-x-media-big');
+      check('图片原始宽度已知', probeImg.naturalWidth > 0, `natural=${probeImg.naturalWidth} base=${probeImg.getBoundingClientRect().width}`);
+
+      const img = stage && stage.querySelector('.pv-x-media-big');
+      const zoomRange = layer && layer.querySelector('.pv-x-zoom-range');
+      const zoomValue = layer && layer.querySelector('.pv-x-zoom-value');
+      const zoomOutBtn = layer.querySelector('[aria-label="缩小"]');
+      const fitBtn = layer.querySelector('.pv-x-zoom-fit');
+      const stageRect = stage.getBoundingClientRect();
+      const centerX = stageRect.left + stageRect.width / 2;
+      const centerY = stageRect.top + stageRect.height / 2;
+
+      // 滚轮放大：以光标为中心
+      const wheel = new WheelEvent('wheel', { bubbles: true, cancelable: true, deltaY: -240, clientX: centerX + 80, clientY: centerY });
+      stage.dispatchEvent(wheel);
+      await sleep(60);
+      const zoomedScale = Number((img.style.transform.match(/scale\(([\d.]+)\)/) || [])[1] || 1);
+      check('滚轮已放大', zoomedScale > 1.1, `scale=${zoomedScale}`);
+      check('document 滚轮守卫未吞灯箱滚轮（P0）', zoomedScale > 1.1, `scale=${zoomedScale}`);
+      check('百分比文本已更新', Number(zoomValue.textContent.replace('%', '')) > 110, zoomValue.textContent);
+      check('缩放后「缩小」可用', !zoomOutBtn.disabled);
+      check('缩放上限按原图像素记录', Number(zoomRange.getAttribute('aria-valuemax')) >= 200, zoomRange.getAttribute('aria-valuemax'));
+      check('窗体进入缩放态', stage.classList.contains('pv-x-media-zoomed'));
+      check('滚轮不再滚动页面', wheel.defaultPrevented);
+      check('rAF 在跑（环境信息）', true, `ticks=${rafTicks}`);
+
+      // 横向滚轮 / Shift+wheel（deltaY=0）也要能缩放（触控板横扫）
+      const dxWheel = new WheelEvent('wheel', { bubbles: true, cancelable: true, deltaX: -240, deltaY: 0, clientX: centerX, clientY: centerY });
+      stage.dispatchEvent(dxWheel);
+      await sleep(40);
+      const dxScale = Number((img.style.transform.match(/scale\(([\d.]+)\)/) || [])[1] || 1);
+      check('横向滚轮也能放大', dxScale > zoomedScale, `${zoomedScale} -> ${dxScale}`);
+      check('横向滚轮被处理', dxWheel.defaultPrevented);
+
+      // 放大后拖动 = 平移，且被钳制在图片内
+      const beforeTx = img.style.transform;
+      stage.dispatchEvent(
+        new PointerEvent('pointerdown', { bubbles: true, pointerId: 1, pointerType: 'mouse', button: 0, buttons: 1, clientX: centerX, clientY: centerY })
+      );
+      stage.dispatchEvent(
+        new PointerEvent('pointermove', { bubbles: true, pointerId: 1, pointerType: 'mouse', buttons: 1, clientX: centerX + 120, clientY: centerY + 40 })
+      );
+      stage.dispatchEvent(
+        new PointerEvent('pointerup', { bubbles: true, pointerId: 1, pointerType: 'mouse', button: 0, buttons: 0, clientX: centerX + 120, clientY: centerY + 40 })
+      );
+      await sleep(40);
+      check('放大后拖动会平移', img.style.transform !== beforeTx, `${beforeTx} -> ${img.style.transform}`);
+      const tx = Number((img.style.transform.match(/translate3d\((-?[\d.]+)px/) || [])[1] || 0);
+      check('平移不会被拖出边界', Math.abs(tx) < 600, `tx=${tx}`);
+
+      // 双击回到 100%
+      const dblEvent = new MouseEvent('dblclick', { bubbles: true, cancelable: true, clientX: centerX + 80, clientY: centerY });
+      const transformBefore = img.style.transform;
+      const ticksBeforeDbl = rafTicks;
+      const dblSamples = [];
+      const dblSampler = setInterval(() => dblSamples.push(img.style.transform), 20);
+      img.dispatchEvent(dblEvent);
+      await sleep(900);
+      clearInterval(dblSampler);
+      check('dblclick 期间 rAF 在跑', true, `${ticksBeforeDbl} -> ${rafTicks}`);
+      check('dblclick 到达监听', debugLog.includes('dblclick'), JSON.stringify(debugLog));
+      check('dblclick 被处理', dblEvent.defaultPrevented);
+      check(
+        'dblclick 后 transform 有变化',
+        img.style.transform !== transformBefore,
+        `${transformBefore} -> ${img.style.transform}`
+      );
+      check('补间有中间帧（非直接落位）', !rafShim || new Set(dblSamples).size > 2, `frames=${new Set(dblSamples).size}`);
+      check('双击回到 100%', !stage.classList.contains('pv-x-media-zoomed'), `${img.style.transform} dbg=${stage.dataset.zoomDebug} frames=${new Set(dblSamples).size} last=${dblSamples.slice(-3).join(' | ')}`);
+
+      // 100% 时拖动 = 切图
+      const counter = layer.querySelector('.pv-x-media-counter');
+      stage.dispatchEvent(
+        new PointerEvent('pointerdown', { bubbles: true, pointerId: 2, pointerType: 'mouse', button: 0, buttons: 1, clientX: centerX, clientY: centerY })
+      );
+      stage.dispatchEvent(
+        new PointerEvent('pointermove', { bubbles: true, pointerId: 2, pointerType: 'mouse', buttons: 1, clientX: centerX - 450, clientY: centerY })
+      );
+      stage.dispatchEvent(
+        new PointerEvent('pointerup', { bubbles: true, pointerId: 2, pointerType: 'mouse', button: 0, buttons: 0, clientX: centerX - 450, clientY: centerY })
+      );
+      await sleep(700);
+      check('100% 拖动切换图片', counter.textContent === '2 / 2', counter.textContent);
+
+      // 滑杆：点到 50% 应约 250%
+      const rangeRect = zoomRange.getBoundingClientRect();
+      const px = rangeRect.left + rangeRect.width * 0.5;
+      zoomRange.dispatchEvent(
+        new PointerEvent('pointerdown', { bubbles: true, pointerId: 3, pointerType: 'mouse', button: 0, buttons: 1, clientX: px, clientY: rangeRect.top + 10 })
+      );
+      await sleep(60);
+      const sliderPercent = Number(zoomValue.textContent.replace('%', ''));
+      await sleep(60);
+      const sliderCap = Number(zoomRange.getAttribute('aria-valuemax'));
+      check('滑杆中点映射到上限的一半', Math.abs(sliderPercent - (100 + sliderCap) / 2) <= 8, `${sliderPercent}% cap=${sliderCap}%`);
+      // 最右端必须正好等于上限（没有死区）
+      zoomRange.dispatchEvent(
+        new PointerEvent('pointerdown', { bubbles: true, pointerId: 4, pointerType: 'mouse', button: 0, buttons: 1, clientX: rangeRect.right - 1, clientY: rangeRect.top + 10 })
+      );
+      await sleep(40);
+      const sliderMaxPercent = Number(zoomValue.textContent.replace('%', ''));
+      check('滑杆最右等于像素上限', Math.abs(sliderMaxPercent - sliderCap) <= 3, `${sliderMaxPercent}% / cap=${sliderCap}%`);
+      check(
+        '滑杆最右的滑块贴边',
+        Number(zoomRange.style.getPropertyValue('--pv-zoom-ratio')) > 0.99,
+        zoomRange.style.getPropertyValue('--pv-zoom-ratio')
+      );
+      zoomRange.dispatchEvent(
+        new PointerEvent('pointerup', { bubbles: true, pointerId: 3, pointerType: 'mouse', button: 0, buttons: 0, clientX: px, clientY: rangeRect.top + 10 })
+      );
+
+      // 键盘 + / 0（事件从当前焦点冒泡到浮层壳）
+      const keyHost = document.activeElement || stage;
+      keyHost.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, cancelable: true, key: '+' }));
+      await sleep(200);
+      check('按键 + 到达监听', debugLog.includes('key:+'), JSON.stringify(debugLog));
+      check(
+        '按键 + 继续放大',
+        Number(zoomValue.textContent.replace('%', '')) > sliderPercent || zoomValue.textContent === `${zoomRange.getAttribute('aria-valuemax')}%`,
+        zoomValue.textContent
+      );
+      keyHost.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, cancelable: true, key: '0' }));
+      await sleep(260);
+      check('按键 0 回到 100%', zoomValue.textContent === '100%', zoomValue.textContent);
+      fitBtn.click();
+      await sleep(260);
+      check('「适应」按钮回到 100%', zoomValue.textContent === '100%', `${zoomValue.textContent} / ${stage.dataset.zoomDebug || 'none'}`);
+      check('100% 时「适应」禁用', fitBtn.disabled);
+      const zoomInBtn = layer.querySelector('[aria-label="放大"]');
+      zoomInBtn.click();
+      await sleep(300);
+      check('缩放「+」按钮可用', Number(zoomValue.textContent.replace('%', '')) > 100, `${zoomValue.textContent} / raf ${rafTicks}`);
+
+      // 窄屏退化（无头环境 RO/rAF 不推进，手动触发一次重排）
+      document.getElementById('popup-content-panel').style.width = '400px';
+      await sleep(80);
+      // 无头环境 RO/rAF 不推进：手动重排两次（窄屏 class 会让视口变宽，需要再量一次）
+      shell.__syncFrame();
+      await sleep(80);
+      shell.__syncFrame();
+      await sleep(80);
+      check(
+        '窄屏布局信息',
+        true,
+        JSON.stringify({
+          hostStyle: document.getElementById('host').style.width,
+          host: document.getElementById('host').getBoundingClientRect().width,
+          panel: document.getElementById('popup-content-panel').getBoundingClientRect().width,
+          innerWidth: window.innerWidth,
+          layer: layer.getBoundingClientRect().width,
+          viewport: viewport.getBoundingClientRect().width,
+          hasSync: typeof shell.__syncFrame,
+          narrow: shell.classList.contains('is-narrow')
+        })
+      );
+      check('窄屏切到叠放退化', shell.classList.contains('is-narrow'));
+      // 无头环境在该状态下 rect 会读到旧布局，这里核对 syncFrame 写入的像素宽（= 视口宽 − 24）
+      const expectedNarrowWidth = Math.max(0, viewport.clientWidth - 24);
+      check(
+        '窄屏图片按视口收边',
+        Math.abs(parseFloat(stage.style.width) - expectedNarrowWidth) <= 1,
+        `style=${stage.style.width} expect=${expectedNarrowWidth} vp=${viewport.clientWidth}`
+      );
+
+      // 点背景关闭（打开 300ms 之后）
+      await sleep(340);
+      viewport.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await sleep(60);
+      check('点背景关闭灯箱', !reader.querySelector('.pv-x-media-lightbox'));
+
+      // Esc 关闭（重新打开一次）
+      reader.querySelector('.pv-x-media-stage-inline').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await sleep(80);
+      check('灯箱可再次打开', Boolean(reader.querySelector('.pv-x-media-lightbox')));
+      const reopenedStage = reader.querySelector('.pv-x-media-stage-overlay');
+      reopenedStage.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, cancelable: true, key: 'Escape' }));
+      await sleep(80);
+      check('Esc 关闭灯箱', !reader.querySelector('.pv-x-media-lightbox'));
+
+      check('无未捕获错误', !results.some((item) => !item.ok && /onerror|unhandled/.test(item.name)));
+      document.getElementById('out').textContent = JSON.stringify(results, null, 2);
+      document.title = 'DONE';
+    </script>
+  </body>
+</html>

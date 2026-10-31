@@ -498,7 +498,7 @@ export function createSettingsPanel({ onChange, onManageRules, onClose }) {
   // sticky 顶部：标题 + 关闭 + tab 一起固定，滚动时不会只剩 tab 或漏出下方内容
   const topArea = el('div', { class: 'pv-settings-top' }, head, tabs);
 
-  return el(
+  const root = el(
     'div',
     { id: 'popup-settings-popover', role: 'dialog', 'aria-label': '设置' },
     topArea,
@@ -507,6 +507,11 @@ export function createSettingsPanel({ onChange, onManageRules, onClose }) {
     recentPane,
     footer
   );
+  // 每次打开设置都重读一次历史：面板实例是复用的，停在「最近」时直接复用旧列表会显示上一次的数据
+  root.refresh = () => {
+    if (recentPane.classList.contains('active')) renderRecent();
+  };
+  return root;
 }
 
 /** 相对时间：刚刚 / N 分钟前 / N 小时前 / N 天前 / 日期 */

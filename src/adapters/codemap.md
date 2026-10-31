@@ -4,7 +4,7 @@
 Provides site-specific adapters for parsing click events and enhancing DOM elements to enable popup preview functionality across different websites.
 
 ## Design
-Implements the Adapter pattern with a abstract base class (`BaseAdapter`) defining the interface for matching hostnames, parsing click events, and enhancing DOM. Concrete adapters (`CiliAdapter`, `DiscuzAdapter`, `LinuxAdapter`, `TgbAdapter`) implement site-specific logic. Each adapter encapsulates:
+Implements the Adapter pattern with an abstract base class (`BaseAdapter`) defining the interface for matching hostnames, parsing click events, and enhancing DOM. Concrete adapters (`CiliAdapter`, `DiscuzAdapter`, `LinuxAdapter`, `TgbAdapter`, `XAdapter`) implement site-specific logic. `XAdapter` additionally normalizes X status URLs and distinguishes timeline clicks from detail-page/quoted-post interactions. Each adapter encapsulates:
 - **Hostname matching**: Determines if the current site is supported.
 - **Click parsing**: Extracts URL and title from click events based on site-specific DOM structure.
 - **DOM enhancement**: Adds CSS classes (e.g., `popup-trigger`) to elements to enable popup behavior.

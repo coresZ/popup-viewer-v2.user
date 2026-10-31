@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name          页内弹窗打开新帖
 // @namespace     http://tampermonkey.net/
-// @version       2.3.5
+// @version       2.3.6
 // @description   点击论坛帖子链接，在弹窗中加载内容 (插件化架构 V2)
 // @author        cores
 // @include       *://*/*
@@ -49,7 +49,7 @@
     if (!DEBUG) return;
     try {
       var d = document.createElement("div");
-      d.textContent = "[PV2] boot v" + (true ? "2.3.5" : "?");
+      d.textContent = "[PV2] boot v" + (true ? "2.3.6" : "?");
       d.style.cssText = "position:fixed;top:12px;left:12px;z-index:2147483647;background:#7c3aed;color:#fff;padding:6px 12px;font-size:12px;border-radius:6px;font-family:sans-serif";
       (document.body || document.documentElement).appendChild(d);
     } catch (e) {
@@ -153,7 +153,7 @@
     // 站点加载策略:
     //   iframe: true  → 使用 iframe 直接加载（页面自带脚本与登录态）
     //   scripts: true → 请求模式下保留目标页 <script> 以正常渲染（仅限信任站点）
-    //   xThread: true → 走 X 专用 GraphQL 原生渲染（见 docs/plan-x-graphql.md）
+    //   xThread: true → 走 X 专用 GraphQL 原生渲染（仅 X 页面注册加载器）
     sitePolicy: {
       "linux.do": { iframe: true, scripts: true },
       // X：内容由客户端 React 渲染，抓取净化拿不到帖子（评论为空）；iframe 又被 X 的框架策略
@@ -663,6 +663,7 @@
     },
     close: { path: '<line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line>' },
     plus: { path: '<line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line>' },
+    minus: { path: '<line x1="5" y1="12" x2="19" y2="12"></line>' },
     info: {
       path: '<circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="12"></line><line x1="12" y1="8" x2="12.01" y2="8"></line>'
     },
@@ -2241,6 +2242,7 @@
         if (!panel || !panel.classList.contains("visible")) return;
         const target = eventTarget(e);
         if (!target || !panel.contains(target)) return;
+        if (target.closest && target.closest(".pv-x-media-lightbox")) return;
         if (!e.deltaY) return;
         if (canScrollFrom(target, panel, e.deltaY)) return;
         if (!isFullScreen()) {
@@ -2809,7 +2811,7 @@
       colBlock("惯用手", "左手：工具栏镜像，关闭按钮移到左上角（移动端单手使用）", handednessSeg.group)
     );
     const topArea = el("div", { class: "pv-settings-top" }, head, tabs);
-    return el(
+    const root = el(
       "div",
       { id: "popup-settings-popover", role: "dialog", "aria-label": "设置" },
       topArea,
@@ -2818,6 +2820,10 @@
       recentPane,
       footer
     );
+    root.refresh = () => {
+      if (recentPane.classList.contains("active")) renderRecent();
+    };
+    return root;
   }
   function relativeTime(t) {
     const diff = Date.now() - Number(t || 0);
@@ -4131,6 +4137,8 @@ html.pv-forum th.common a.xst:hover {\r
   max-height: min(560px, calc(100dvh - 32px));\r
   overflow-y: auto;\r
   overflow-x: clip;\r
+  /* 预留滚动条槽：切换 tab 时内容长短变化不再让面板左右抖一下 */\r
+  scrollbar-gutter: stable;\r
   background-color: var(--popup-surface);\r
   color: var(--popup-text);\r
   font-family: var(--pv-font);\r
@@ -6286,9 +6294,19 @@ article.pv-x-post[data-reply-target='true'] {\r
 .pv-x-media-stage-inline {\r
   cursor: zoom-in;\r
 }\r
-/* 覆盖式浮层：宽高同样由 JS 按浮层可用区域与首图比例算出 */\r
+/* 覆盖式浮层：宽高由 JS 按视口可用区域与首图比例算出；纵向也交给手势（灯箱内不需要页面滚动） */\r
 .pv-x-media-stage-overlay {\r
-  cursor: default;\r
+  cursor: zoom-in;\r
+  touch-action: none;\r
+  /* 视口是 flex 容器：不压掉 min-width:auto，缩窄面板时会被图片的 min-content 顶住缩不回去 */\r
+  min-width: 0;\r
+}\r
+/* 放大后可拖拽平移：光标换成抓取 */\r
+.pv-x-media-stage-overlay.pv-x-media-zoomed {\r
+  cursor: grab;\r
+}\r
+.pv-x-media-stage-overlay.pv-x-media-zoomed .pv-x-media-big {\r
+  will-change: transform;\r
 }\r
 .pv-x-media-stage.pv-x-media-dragging {\r
   cursor: grabbing;\r
@@ -6306,6 +6324,7 @@ article.pv-x-post[data-reply-target='true'] {\r
   background-color: rgba(128, 128, 128, 0.28);\r
   -webkit-backdrop-filter: blur(14px) saturate(140%);\r
   backdrop-filter: blur(14px) saturate(140%);\r
+  overscroll-behavior: contain;\r
 }\r
 /* 轨道：所有图并排，靠 translateX 滑动；窗体与两侧箭头固定不动 */\r
 .pv-x-media-track {\r
@@ -6419,6 +6438,199 @@ article.pv-x-post[data-reply-target='true'] {\r
 }\r
 .pv-x-media-next {\r
   right: 10px;\r
+}\r
+\r
+/* ===== 浮层灯箱：三栏骨架 + 底部缩放条（箭头在图片外，图片永远不压按钮） ===== */\r
+.pv-x-media-shell {\r
+  position: relative;\r
+  display: flex;\r
+  flex-direction: column;\r
+  gap: 10px;\r
+  width: 100%;\r
+  height: 100%;\r
+  min-height: 0;\r
+}\r
+.pv-x-media-main {\r
+  display: flex;\r
+  flex: 1;\r
+  align-items: stretch;\r
+  gap: 12px;\r
+  min-height: 0;\r
+  position: relative;\r
+}\r
+.pv-x-media-viewport {\r
+  display: flex;\r
+  flex: 1;\r
+  align-items: center;\r
+  justify-content: center;\r
+  min-width: 0;\r
+  min-height: 0;\r
+  overflow: hidden;\r
+}\r
+/* 视口里的窗体尺寸由 JS 给死，不参与 flex 收缩 */\r
+.pv-x-media-viewport > .pv-x-media-stage {\r
+  flex: 0 0 auto;\r
+}\r
+/* 浮层里的箭头是 flex 项：不绝对定位、不压图，纵向居中 */\r
+.pv-x-media-shell .pv-x-media-nav {\r
+  position: static;\r
+  transform: none;\r
+  flex: 0 0 auto;\r
+  align-self: center;\r
+}\r
+/* 浮层顶部条挂在壳上、绝对定位并对齐到图片顶边（--pv-bar-top 由 syncFrame 按居中偏移给），\r
+   两侧给箭头让位（Tab 顺序也因此排在箭头之后） */\r
+.pv-x-media-shell > .pv-x-media-bar {\r
+  top: var(--pv-bar-top, 0px);\r
+  left: 64px;\r
+  right: 64px;\r
+  z-index: 1;\r
+}\r
+/* 页码 /「在 X 打开」/ ✕ 收在右上角同一组里：间隔 8px，不再被 space-between 拉开两头 */\r
+.pv-x-media-bar-grouped {\r
+  justify-content: flex-end;\r
+}\r
+.pv-x-media-bar-group {\r
+  display: flex;\r
+  align-items: center;\r
+  gap: 8px;\r
+  min-width: 0;\r
+}\r
+.pv-x-media-bar-group > * {\r
+  flex: 0 0 auto;\r
+}\r
+/* 窄屏退化：两侧留白放不下时，箭头贴边叠在视口内（32px、半透明） */\r
+.pv-x-media-shell.is-narrow .pv-x-media-main {\r
+  gap: 0;\r
+}\r
+.pv-x-media-shell.is-narrow > .pv-x-media-bar {\r
+  left: 44px;\r
+  right: 44px;\r
+}\r
+.pv-x-media-shell.is-narrow .pv-x-media-nav {\r
+  position: absolute;\r
+  top: 50%;\r
+  transform: translateY(-50%);\r
+  z-index: 1;\r
+  width: 32px;\r
+  height: 32px;\r
+  background-color: rgba(0, 0, 0, 0.45);\r
+}\r
+.pv-x-media-shell.is-narrow .pv-x-media-prev {\r
+  left: 4px;\r
+}\r
+.pv-x-media-shell.is-narrow .pv-x-media-next {\r
+  right: 4px;\r
+}\r
+/* 底部缩放条：默认 100% 时滑块在最左，滚轮/拖动/点击轨道都可缩放 */\r
+.pv-x-media-zoom {\r
+  display: flex;\r
+  flex: 0 0 auto;\r
+  align-self: center;\r
+  align-items: center;\r
+  gap: 8px;\r
+  padding: 5px 10px;\r
+  border-radius: 999px;\r
+  background-color: rgba(0, 0, 0, 0.55);\r
+  color: #fff;\r
+  -webkit-backdrop-filter: blur(8px);\r
+  backdrop-filter: blur(8px);\r
+}\r
+.pv-x-zoom-btn {\r
+  appearance: none;\r
+  -webkit-appearance: none;\r
+  display: flex;\r
+  align-items: center;\r
+  justify-content: center;\r
+  width: 26px;\r
+  height: 26px;\r
+  padding: 0;\r
+  border: 0;\r
+  border-radius: 50%;\r
+  background-color: rgba(255, 255, 255, 0.16);\r
+  color: #fff;\r
+  cursor: pointer;\r
+}\r
+.pv-x-zoom-btn:hover:not(:disabled) {\r
+  background-color: rgba(255, 255, 255, 0.3);\r
+}\r
+.pv-x-zoom-btn:disabled,\r
+.pv-x-zoom-fit:disabled {\r
+  opacity: 0.4;\r
+  cursor: default;\r
+}\r
+.pv-x-zoom-fit {\r
+  appearance: none;\r
+  -webkit-appearance: none;\r
+  padding: 2px 4px;\r
+  border: 0;\r
+  background: none;\r
+  color: #fff;\r
+  font: inherit;\r
+  font-size: 12px;\r
+  opacity: 0.92;\r
+  cursor: pointer;\r
+}\r
+.pv-x-zoom-value {\r
+  min-width: 40px;\r
+  font-size: 12px;\r
+  font-variant-numeric: tabular-nums;\r
+  text-align: center;\r
+}\r
+.pv-x-zoom-range {\r
+  position: relative;\r
+  width: 132px;\r
+  height: 24px;\r
+  cursor: pointer;\r
+  outline: none;\r
+  touch-action: none;\r
+}\r
+.pv-x-zoom-range::before {\r
+  content: '';\r
+  position: absolute;\r
+  top: 50%;\r
+  left: 0;\r
+  right: 0;\r
+  height: 4px;\r
+  margin-top: -2px;\r
+  border-radius: 2px;\r
+  background-color: rgba(255, 255, 255, 0.3);\r
+}\r
+.pv-x-zoom-fill {\r
+  position: absolute;\r
+  top: 50%;\r
+  left: 0;\r
+  width: calc(var(--pv-zoom-ratio, 0) * 100%);\r
+  height: 4px;\r
+  margin-top: -2px;\r
+  border-radius: 2px;\r
+  background-color: #fff;\r
+}\r
+.pv-x-zoom-thumb {\r
+  position: absolute;\r
+  top: 50%;\r
+  left: calc(var(--pv-zoom-ratio, 0) * 100%);\r
+  width: 14px;\r
+  height: 14px;\r
+  margin: -7px 0 0 -7px;\r
+  border-radius: 50%;\r
+  background-color: #fff;\r
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.45);\r
+}\r
+.pv-x-zoom-range:focus-visible {\r
+  outline: 2px solid rgba(255, 255, 255, 0.85);\r
+  outline-offset: 4px;\r
+  border-radius: 4px;\r
+}\r
+@media (pointer: coarse) {\r
+  .pv-x-zoom-range {\r
+    height: 36px;\r
+  }\r
+  .pv-x-zoom-thumb {\r
+    width: 18px;\r
+    height: 18px;\r
+    margin: -9px 0 0 -9px;\r
+  }\r
 }\r
 /* 降低动效偏好：滑动改为直接落位（不做位移动画） */\r
 @media (prefers-reduced-motion: reduce) {\r
@@ -7221,6 +7433,8 @@ article.pv-x-post[data-reply-target='true'] {\r
   .pv-x-composer-target-clear,\r
   .pv-x-media-collapse,\r
   .pv-x-media-open,\r
+  .pv-x-zoom-btn,\r
+  .pv-x-zoom-fit,\r
   .pv-x-open,\r
   .pv-x-translation-link {\r
     position: relative;\r
@@ -7234,6 +7448,8 @@ article.pv-x-post[data-reply-target='true'] {\r
   .pv-x-composer-target-clear::before,\r
   .pv-x-media-collapse::before,\r
   .pv-x-media-open::before,\r
+  .pv-x-zoom-btn::before,\r
+  .pv-x-zoom-fit::before,\r
   .pv-x-open::before,\r
   .pv-x-translation-link::before {\r
     content: '';\r
@@ -7712,11 +7928,12 @@ article.pv-x-post[data-reply-target='true'] {\r
     }
     /** 在指定锚点旁显示设置面板（锚点为元素 getBoundingClientRect）。 */
     showSettingsNear(rect, trigger = null) {
-      var _a, _b;
+      var _a, _b, _c;
       this.ensure();
       this.ensureSettingsPanel();
       const margin = 8;
       const pop = this.settingsPopover;
+      (_a = pop.refresh) == null ? void 0 : _a.call(pop);
       this._settingsAnchor = rect;
       pop.style.maxHeight = "";
       pop.style.width = "";
@@ -7750,7 +7967,7 @@ article.pv-x-post[data-reply-target='true'] {\r
         if (left + popW > vw - margin) left = vw - margin - popW;
         if (left < margin) left = margin;
       }
-      if (!isSheet && ((_a = this.panel) == null ? void 0 : _a.classList.contains("visible"))) {
+      if (!isSheet && ((_b = this.panel) == null ? void 0 : _b.classList.contains("visible"))) {
         const panelRect = this.panel.getBoundingClientRect();
         const maxBottom = Math.min(vh - margin, panelRect.bottom - margin);
         const available = Math.floor(maxBottom - top);
@@ -7767,7 +7984,7 @@ article.pv-x-post[data-reply-target='true'] {\r
       }
       const wasOpen = pop.classList.contains("visible");
       pop.classList.add("visible");
-      (_b = this.settingsBtn) == null ? void 0 : _b.classList.add("active");
+      (_c = this.settingsBtn) == null ? void 0 : _c.classList.add("active");
       if (!wasOpen) {
         this._settingsReturnFocus = trigger || deepActiveElement();
         pop.inert = false;
@@ -10385,6 +10602,41 @@ article.pv-x-post[data-reply-target='true'] {\r
     };
   }
 
+  // src/x/xZoomMath.js
+  var MIN_SCALE = 1;
+  var MAX_SCALE = 4;
+  function clampScale(scale, max = MAX_SCALE) {
+    return Math.min(max, Math.max(MIN_SCALE, Number.isFinite(scale) ? scale : MIN_SCALE));
+  }
+  function zoomTowards({ scale, tx, ty, nextScale, dx, dy }) {
+    const from = scale > 0 ? scale : MIN_SCALE;
+    const to = clampScale(nextScale);
+    const k = to / from;
+    return { scale: to, tx: dx - (dx - tx) * k, ty: dy - (dy - ty) * k };
+  }
+  function clampTranslate(tx, ty, { contentW, contentH, frameW, frameH, scale }) {
+    const scaledW = Math.max(0, contentW) * scale;
+    const scaledH = Math.max(0, contentH) * scale;
+    const limitX = Math.max(0, (scaledW - Math.max(0, frameW)) / 2);
+    const limitY = Math.max(0, (scaledH - Math.max(0, frameH)) / 2);
+    const axis = (value, limit) => Math.min(limit, Math.max(-limit, Number.isFinite(value) ? value : 0)) + 0;
+    return { x: axis(tx, limitX), y: axis(ty, limitY) };
+  }
+  function maxScaleFor(naturalW, baseW) {
+    if (!(baseW > 0) || !(naturalW > 0)) return MAX_SCALE;
+    return Math.min(MAX_SCALE, Math.max(2, naturalW / baseW * 2));
+  }
+  function ratioToScale(ratio, cap = MAX_SCALE) {
+    const max = Math.max(MIN_SCALE, cap);
+    const r = Math.min(1, Math.max(0, Number.isFinite(ratio) ? ratio : 0));
+    return MIN_SCALE + r * (max - MIN_SCALE);
+  }
+  function scaleToRatio(scale, cap = MAX_SCALE) {
+    const max = Math.max(MIN_SCALE, cap);
+    if (max <= MIN_SCALE) return 0;
+    return (clampScale(scale, max) - MIN_SCALE) / (max - MIN_SCALE);
+  }
+
   // src/x/xRender.js
   var SORTS = [
     { key: "relevant", label: "相关" },
@@ -10760,20 +11012,20 @@ article.pv-x-post[data-reply-target='true'] {\r
     if (!photos.length) return null;
     let current = Math.max(0, Math.min(startIndex, photos.length - 1));
     const framePhoto = photos[0];
+    const overlay = variant === "overlay";
     const stage = el("div", {
       class: `pv-x-media-stage pv-x-media-stage-${variant}`,
-      tabindex: variant === "inline" ? "0" : "-1",
-      "aria-roledescription": variant === "inline" ? "图片轮播" : null,
-      "aria-label": variant === "inline" ? `${photos.length} 张图片，按 Enter 放大` : null
+      tabindex: "0",
+      "aria-roledescription": variant === "inline" ? "图片轮播" : "图片查看",
+      "aria-label": variant === "inline" ? `${photos.length} 张图片，按 Enter 放大` : `${photos.length} 张图片，可缩放、可拖动；方向键切图，+/- 缩放，0 适应`
     });
     if (framePhoto.width && framePhoto.height) stage.style.aspectRatio = `${framePhoto.width} / ${framePhoto.height}`;
     const track = el("div", { class: "pv-x-media-track" });
-    const slides = photos.map((photo) => {
-      const slide = el(
-        "div",
-        { class: "pv-x-media-slide" },
-        el("img", { class: "pv-x-media-big", src: photo.url, alt: photo.altText || "", loading: "lazy", draggable: "false" })
-      );
+    const imgs = photos.map(
+      (photo) => el("img", { class: "pv-x-media-big", src: photo.url, alt: photo.altText || "", loading: "lazy", draggable: "false" })
+    );
+    const slides = imgs.map((img) => {
+      const slide = el("div", { class: "pv-x-media-slide" }, img);
       track.appendChild(slide);
       return slide;
     });
@@ -10784,12 +11036,12 @@ article.pv-x-post[data-reply-target='true'] {\r
       "aria-label": variant === "overlay" ? "关闭大图" : "收起图片",
       text: "✕"
     });
-    const barChildren = [
-      counter,
-      el("a", { class: "pv-x-media-open", href: openUrl, target: "_blank", rel: "noreferrer", text: "在 X 打开" })
-    ];
-    if (variant === "overlay") barChildren.push(closeButton);
-    const bar = el("div", { class: "pv-x-media-bar" }, ...barChildren);
+    const openLink = el("a", { class: "pv-x-media-open", href: openUrl, target: "_blank", rel: "noreferrer", text: "在 X 打开" });
+    const bar = overlay ? el(
+      "div",
+      { class: "pv-x-media-bar pv-x-media-bar-grouped" },
+      el("div", { class: "pv-x-media-bar-group" }, counter, openLink, closeButton)
+    ) : el("div", { class: "pv-x-media-bar" }, counter, openLink);
     const prevButton = photos.length > 1 ? el(
       "button",
       { class: "pv-x-media-nav pv-x-media-prev", type: "button", "aria-label": "上一张" },
@@ -10800,6 +11052,35 @@ article.pv-x-post[data-reply-target='true'] {\r
       { class: "pv-x-media-nav pv-x-media-next", type: "button", "aria-label": "下一张" },
       svgIcon("chevronRight", { size: 24 })
     ) : null;
+    const viewport = overlay ? el("div", { class: "pv-x-media-viewport" }) : null;
+    const main = overlay ? el("div", { class: "pv-x-media-main" }) : null;
+    const shell = overlay ? el("div", { class: "pv-x-media-shell" }) : null;
+    const zoomRange = overlay ? el("div", {
+      class: "pv-x-zoom-range",
+      role: "slider",
+      tabindex: "0",
+      "aria-label": "缩放比例",
+      "aria-valuemin": String(MIN_SCALE * 100),
+      "aria-valuemax": String(MAX_SCALE * 100),
+      "aria-valuenow": "100",
+      "aria-valuetext": "100%",
+      title: "拖动 / 滚轮缩放"
+    }) : null;
+    const zoomValue = overlay ? el("span", { class: "pv-x-zoom-value", text: "100%" }) : null;
+    const zoomOutButton = overlay ? el(
+      "button",
+      { class: "pv-x-zoom-btn", type: "button", "aria-label": "缩小", title: "缩小（-）" },
+      svgIcon("minus", { size: 16 })
+    ) : null;
+    const zoomInButton = overlay ? el(
+      "button",
+      { class: "pv-x-zoom-btn", type: "button", "aria-label": "放大", title: "放大（+）" },
+      svgIcon("plus", { size: 16 })
+    ) : null;
+    const zoomFitButton = overlay ? el("button", { class: "pv-x-zoom-fit", type: "button", "aria-label": "适应窗口，恢复 100%", text: "适应" }) : null;
+    if (overlay) zoomRange.append(el("div", { class: "pv-x-zoom-fill" }), el("div", { class: "pv-x-zoom-thumb" }));
+    const zoomBar = overlay ? el("div", { class: "pv-x-media-zoom" }, zoomOutButton, zoomRange, zoomValue, zoomInButton, zoomFitButton) : null;
+    const keyHost = shell || stage;
     const reduceMotion = () => {
       try {
         return window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -10821,6 +11102,242 @@ article.pv-x-post[data-reply-target='true'] {\r
       frame = null;
       lastFrameAt = 0;
     };
+    let scale = 1;
+    let tx = 0;
+    let ty = 0;
+    let zoomRaf = null;
+    let wheelSnapTimer = null;
+    const activeImg = () => imgs[current] || null;
+    const isZoomed = () => scale > 1.005;
+    const boundListeners = [];
+    const listen = (target, type, handler, options) => {
+      target.addEventListener(type, handler, options);
+      boundListeners.push([target, type, handler, options]);
+    };
+    const frameSize = () => ({ w: stage.clientWidth, h: stage.clientHeight });
+    const contentCenter = () => {
+      const rect = stage.getBoundingClientRect();
+      return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+    };
+    const baseSize = () => {
+      const img = activeImg();
+      if (!img || !img.complete || !img.naturalWidth) return frameSize();
+      return { w: img.offsetWidth, h: img.offsetHeight };
+    };
+    const zoomCap = () => {
+      var _a;
+      return maxScaleFor(((_a = activeImg()) == null ? void 0 : _a.naturalWidth) || 0, baseSize().w);
+    };
+    const clampZoom = () => {
+      const f = frameSize();
+      const b = baseSize();
+      const next = clampTranslate(tx, ty, { contentW: b.w, contentH: b.h, frameW: f.w, frameH: f.h, scale });
+      tx = next.x;
+      ty = next.y;
+    };
+    const paintZoom = () => {
+      if (!overlay) return;
+      const cap = Math.max(MIN_SCALE, zoomCap());
+      const percent = Math.round(scale * 100);
+      stage.classList.toggle("pv-x-media-zoomed", isZoomed());
+      zoomRange.setAttribute("aria-valuenow", String(percent));
+      zoomRange.setAttribute("aria-valuemax", String(Math.round(cap * 100)));
+      zoomRange.setAttribute("aria-valuetext", `${percent}%`);
+      zoomRange.style.setProperty("--pv-zoom-ratio", String(scaleToRatio(scale, cap)));
+      zoomValue.textContent = `${percent}%`;
+      zoomOutButton.disabled = scale <= MIN_SCALE + 1e-3;
+      zoomInButton.disabled = scale >= cap - 1e-3;
+      zoomFitButton.disabled = scale <= MIN_SCALE + 1e-3;
+    };
+    const applyZoom = () => {
+      const img = activeImg();
+      if (!img) return;
+      img.style.transform = `translate3d(${tx}px, ${ty}px, 0) scale(${scale})`;
+      paintZoom();
+    };
+    const cancelZoomAnim = () => {
+      if (zoomRaf !== null) cancelAnimationFrame(zoomRaf);
+      zoomRaf = null;
+    };
+    const cancelWheelSnap = () => {
+      if (wheelSnapTimer !== null) clearTimeout(wheelSnapTimer);
+      wheelSnapTimer = null;
+    };
+    const resetZoom = () => {
+      cancelZoomAnim();
+      cancelWheelSnap();
+      scale = 1;
+      tx = 0;
+      ty = 0;
+      for (const img of imgs) img.style.transform = "";
+      if (!overlay) return;
+      stage.classList.remove("pv-x-media-zoomed");
+      paintZoom();
+    };
+    const animateZoom = (targetScale, anchorX, anchorY) => {
+      var _a;
+      if (!overlay) return;
+      const next = clampScale(targetScale, zoomCap());
+      if (debugEnabled()) {
+        const b = baseSize();
+        const f = frameSize();
+        stage.dataset.zoomDebug = JSON.stringify({
+          targetScale,
+          next,
+          scale,
+          tx,
+          ty,
+          cap: zoomCap(),
+          baseW: b.w,
+          frameW: f.w,
+          natural: ((_a = activeImg()) == null ? void 0 : _a.naturalWidth) || 0
+        });
+      }
+      cancelZoomAnim();
+      cancelWheelSnap();
+      const center = contentCenter();
+      const dx = anchorX - center.x;
+      const dy = anchorY - center.y;
+      if (reduceMotion() || Math.abs(next - scale) < 1e-3) {
+        const z = zoomTowards({ scale, tx, ty, nextScale: next, dx, dy });
+        scale = z.scale;
+        tx = z.tx;
+        ty = z.ty;
+        clampZoom();
+        applyZoom();
+        return;
+      }
+      const from = scale;
+      const px = (dx - tx) / scale;
+      const py = (dy - ty) / scale;
+      const started = performance.now();
+      const duration = 90;
+      const step = (now) => {
+        const k = Math.min(1, (now - started) / duration);
+        scale = from + (next - from) * k;
+        tx = dx - px * scale;
+        ty = dy - py * scale;
+        clampZoom();
+        applyZoom();
+        zoomRaf = k < 1 ? requestAnimationFrame(step) : null;
+      };
+      zoomRaf = requestAnimationFrame(step);
+    };
+    const setZoomAt = (targetScale, anchorX, anchorY) => {
+      if (!overlay) return;
+      cancelZoomAnim();
+      cancelWheelSnap();
+      const center = contentCenter();
+      const next = clampScale(targetScale, zoomCap());
+      const z = zoomTowards({ scale, tx, ty, nextScale: next, dx: anchorX - center.x, dy: anchorY - center.y });
+      scale = z.scale;
+      tx = z.tx;
+      ty = z.ty;
+      clampZoom();
+      applyZoom();
+    };
+    const scheduleWheelSnap = () => {
+      if (wheelSnapTimer !== null) clearTimeout(wheelSnapTimer);
+      wheelSnapTimer = setTimeout(() => {
+        wheelSnapTimer = null;
+        if (gesture) return;
+        const snapped = clampScale(Math.round(scale * 20) / 20, zoomCap());
+        if (Math.abs(snapped - scale) < 1e-3) return;
+        const center = contentCenter();
+        animateZoom(snapped, center.x, center.y);
+      }, 160);
+    };
+    const wheelZoom = (event, anchorX, anchorY) => {
+      if (!overlay) return;
+      event.preventDefault();
+      if (gesture && gesture.mode === "pan") return;
+      cancelZoomAnim();
+      const unit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? stage.clientHeight || 1 : 1;
+      const raw = event.deltaY !== 0 ? event.deltaY : event.deltaX;
+      if (!raw) return;
+      const notches = -raw * unit / 100;
+      const factor = Math.pow(event.shiftKey ? 1.2 : 1.08, notches);
+      setZoomAt(clampScale(scale * factor, zoomCap()), anchorX, anchorY);
+      scheduleWheelSnap();
+    };
+    const onStageWheel = (event) => wheelZoom(event, event.clientX, event.clientY);
+    if (overlay) {
+      let sliding = false;
+      const scaleFromSlider = (event) => {
+        const rect = zoomRange.getBoundingClientRect();
+        if (!rect.width) return;
+        const ratio = Math.min(1, Math.max(0, (event.clientX - rect.left) / rect.width));
+        const center = contentCenter();
+        const cap = Math.max(MIN_SCALE, zoomCap());
+        setZoomAt(ratioToScale(ratio, cap), center.x, center.y);
+      };
+      const onSliderDown = (event) => {
+        if (event.button !== 0) return;
+        event.preventDefault();
+        event.stopPropagation();
+        sliding = true;
+        zoomRange.focus({ preventScroll: true });
+        try {
+          zoomRange.setPointerCapture(event.pointerId);
+        } catch (err) {
+        }
+        scaleFromSlider(event);
+      };
+      const onSliderMove = (event) => {
+        if (sliding) scaleFromSlider(event);
+      };
+      const onSliderEnd = () => {
+        sliding = false;
+      };
+      const onSliderWheel = (event) => {
+        const center = contentCenter();
+        wheelZoom(event, center.x, center.y);
+      };
+      const onSliderKey = (event) => {
+        const center = contentCenter();
+        const steps = { ArrowRight: 0.05, ArrowUp: 0.05, ArrowLeft: -0.05, ArrowDown: -0.05, PageUp: 0.25, PageDown: -0.25 };
+        if (event.key in steps) {
+          event.preventDefault();
+          event.stopPropagation();
+          animateZoom(scale + steps[event.key], center.x, center.y);
+        } else if (event.key === "Home") {
+          event.preventDefault();
+          event.stopPropagation();
+          animateZoom(MIN_SCALE, center.x, center.y);
+        } else if (event.key === "End") {
+          event.preventDefault();
+          event.stopPropagation();
+          animateZoom(MAX_SCALE, center.x, center.y);
+        }
+      };
+      const onZoomOut = () => {
+        const center = contentCenter();
+        animateZoom(scale - 0.25, center.x, center.y);
+      };
+      const onZoomIn = () => {
+        const center = contentCenter();
+        animateZoom(scale + 0.25, center.x, center.y);
+      };
+      const onZoomFit = () => {
+        const center = contentCenter();
+        animateZoom(MIN_SCALE, center.x, center.y);
+      };
+      listen(zoomRange, "pointerdown", onSliderDown);
+      listen(zoomRange, "pointermove", onSliderMove);
+      listen(zoomRange, "pointerup", onSliderEnd);
+      listen(zoomRange, "pointercancel", onSliderEnd);
+      listen(zoomRange, "wheel", onSliderWheel, { passive: false });
+      listen(zoomRange, "keydown", onSliderKey);
+      listen(zoomOutButton, "click", onZoomOut);
+      listen(zoomInButton, "click", onZoomIn);
+      listen(zoomFitButton, "click", onZoomFit);
+    }
+    const onImgLoad = (event) => {
+      if (event.currentTarget !== activeImg()) return;
+      scale = clampScale(scale, zoomCap());
+      clampZoom();
+      applyZoom();
+    };
     const paintButtons = () => {
       if (prevButton) prevButton.disabled = current <= 0;
       if (nextButton) nextButton.disabled = current >= photos.length - 1;
@@ -10828,8 +11345,11 @@ article.pv-x-post[data-reply-target='true'] {\r
       slides.forEach((slide, i) => slide.setAttribute("aria-hidden", String(i !== current)));
     };
     const settle = (targetIndex, v0 = 0) => {
-      current = Math.max(0, Math.min(targetIndex, photos.length - 1));
+      const next = Math.max(0, Math.min(targetIndex, photos.length - 1));
+      if (next !== current) resetZoom();
+      current = next;
       paintButtons();
+      if (overlay) paintZoom();
       const to = targetOf(current);
       if (reduceMotion() || photos.length < 2) {
         stopAnim();
@@ -10863,23 +11383,26 @@ article.pv-x-post[data-reply-target='true'] {\r
       frame = requestAnimationFrame(step);
     };
     const show = (next) => settle(next);
-    if (prevButton) prevButton.addEventListener("click", () => show(current - 1));
-    if (nextButton) nextButton.addEventListener("click", () => show(current + 1));
+    if (prevButton) listen(prevButton, "click", () => show(current - 1));
+    if (nextButton) listen(nextButton, "click", () => show(current + 1));
     const frameRatio = framePhoto.width && framePhoto.height ? framePhoto.height / framePhoto.width : 0;
     const wrapper = () => stage.parentElement;
     let resizeObserver = null;
     let observedBox = null;
     const syncFrame = () => {
-      if (variant !== "overlay") return;
+      if (!overlay) return;
       const box = wrapper();
-      if (!box) return;
+      if (!box || !box.clientWidth || !box.clientHeight) return;
       if (resizeObserver && observedBox !== box) {
         if (observedBox) resizeObserver.unobserve(observedBox);
         resizeObserver.observe(box);
         observedBox = box;
       }
-      const availableWidth = box.clientWidth - 24;
-      const availableHeight = box.clientHeight - 24;
+      const lightbox = shell == null ? void 0 : shell.parentElement;
+      const narrow = ((lightbox == null ? void 0 : lightbox.clientWidth) || box.clientWidth) < 520 || box.clientWidth < 360;
+      shell.classList.toggle("is-narrow", narrow);
+      const availableWidth = box.clientWidth - (narrow ? 24 : 0);
+      const availableHeight = box.clientHeight;
       if (availableWidth <= 0 || availableHeight <= 0) return;
       let width2 = availableWidth;
       let height = frameRatio ? width2 * frameRatio : availableHeight;
@@ -10889,75 +11412,190 @@ article.pv-x-post[data-reply-target='true'] {\r
       }
       stage.style.width = `${Math.round(width2)}px`;
       stage.style.height = `${Math.round(height)}px`;
+      shell.style.setProperty("--pv-bar-top", `${Math.max(0, Math.round((availableHeight - height) / 2))}px`);
+      if (isZoomed()) {
+        clampZoom();
+        applyZoom();
+      }
     };
-    if (typeof ResizeObserver === "function") {
-      resizeObserver = new ResizeObserver(() => {
-        if (drag) return;
+    let resizeFrame = null;
+    const onResize = () => {
+      if (resizeFrame !== null) cancelAnimationFrame(resizeFrame);
+      resizeFrame = requestAnimationFrame(() => {
+        resizeFrame = null;
+        if (gesture) return;
         syncFrame();
         x = targetOf(current);
         render();
       });
-      resizeObserver.observe(stage);
+    };
+    if (typeof ResizeObserver === "function") {
+      resizeObserver = new ResizeObserver(onResize);
+      if (wrapper()) {
+        resizeObserver.observe(wrapper());
+        observedBox = wrapper();
+      }
     }
     syncFrame();
     const project = (v, deceleration = 0.998) => v / 1e3 * deceleration / (1 - deceleration);
     const rubberband = (overshoot, dimension, constant = 0.55) => overshoot * dimension * constant / (dimension + constant * Math.abs(overshoot));
-    let drag = null;
+    let gesture = null;
     let suppressClick = false;
-    const onPointerDown = (event) => {
-      if (photos.length < 2 || event.target.closest("button, a")) return;
+    const pointers = /* @__PURE__ */ new Map();
+    const beginSwipe = (event) => {
       stopAnim();
       const now = performance.now();
-      drag = { startX: event.clientX, base: x, samples: [[now, x]] };
+      gesture = { mode: "swipe", startX: event.clientX, base: x, samples: [[now, x]] };
       stage.classList.add("pv-x-media-dragging");
+    };
+    const beginPan = (event) => {
+      cancelZoomAnim();
+      gesture = { mode: "pan", startX: event.clientX, startY: event.clientY, baseTx: tx, baseTy: ty };
+      stage.classList.add("pv-x-media-dragging");
+    };
+    const beginPinch = () => {
+      cancelZoomAnim();
+      cancelWheelSnap();
+      const [a, b] = [...pointers.values()];
+      const midX = (a.x + b.x) / 2;
+      const midY = (a.y + b.y) / 2;
+      const center = contentCenter();
+      gesture = {
+        mode: "pinch",
+        dist0: Math.hypot(a.x - b.x, a.y - b.y) || 1,
+        baseScale: scale,
+        px: (midX - center.x - tx) / scale,
+        py: (midY - center.y - ty) / scale
+      };
+      stage.classList.add("pv-x-media-dragging");
+    };
+    const onPointerDown = (event) => {
+      if (event.target.closest("button, a")) return;
+      if (event.pointerType === "mouse" && event.button !== 0) return;
+      pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
       try {
         stage.setPointerCapture(event.pointerId);
       } catch (err) {
       }
+      if (overlay) {
+        if (pointers.size >= 2) {
+          beginPinch();
+          return;
+        }
+      } else if (pointers.size > 1) {
+        return;
+      }
+      if (!overlay && photos.length < 2) return;
+      if (isZoomed()) beginPan(event);
+      else if (photos.length > 1) beginSwipe(event);
     };
     const onPointerMove = (event) => {
-      if (!drag) return;
+      if (!pointers.has(event.pointerId)) return;
+      pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+      if (!gesture) return;
+      if (gesture.mode === "pinch") {
+        if (pointers.size < 2) return;
+        const [a, b] = [...pointers.values()];
+        const midX = (a.x + b.x) / 2;
+        const midY = (a.y + b.y) / 2;
+        const dist = Math.hypot(a.x - b.x, a.y - b.y) || 1;
+        const target = clampScale(gesture.baseScale * (dist / gesture.dist0), zoomCap());
+        const center = contentCenter();
+        scale = target;
+        tx = midX - center.x - gesture.px * target;
+        ty = midY - center.y - gesture.py * target;
+        clampZoom();
+        applyZoom();
+        return;
+      }
+      if (gesture.mode === "pan") {
+        tx = gesture.baseTx + (event.clientX - gesture.startX);
+        ty = gesture.baseTy + (event.clientY - gesture.startY);
+        clampZoom();
+        applyZoom();
+        return;
+      }
       const min = targetOf(photos.length - 1);
       const max = 0;
-      let next = drag.base + (event.clientX - drag.startX);
+      let next = gesture.base + (event.clientX - gesture.startX);
       if (next > max) next = max + rubberband(next - max, width());
       else if (next < min) next = min - rubberband(min - next, width());
       x = next;
       render();
       const now = performance.now();
-      drag.samples.push([now, x]);
-      while (drag.samples.length > 2 && now - drag.samples[0][0] > 90) drag.samples.shift();
+      gesture.samples.push([now, x]);
+      while (gesture.samples.length > 2 && now - gesture.samples[0][0] > 90) gesture.samples.shift();
     };
-    const onPointerUp = () => {
-      if (!drag) return;
-      stage.classList.remove("pv-x-media-dragging");
-      const samples = drag.samples;
+    const onPointerUp = (event) => {
+      pointers.delete(event.pointerId);
+      if (!overlay && pointers.size > 0) return;
+      if (!gesture) return;
+      if (gesture.mode === "pinch") {
+        if (pointers.size >= 2) {
+          beginPinch();
+          return;
+        }
+        gesture = null;
+        stage.classList.remove("pv-x-media-dragging");
+        syncFrame();
+        if (Math.abs(x - targetOf(current)) > 1) settle(current);
+        if (!isZoomed()) {
+          animateZoom(MIN_SCALE, contentCenter().x, contentCenter().y);
+        } else if (pointers.size === 1) {
+          const rest = [...pointers.values()][0];
+          beginPan({ clientX: rest.x, clientY: rest.y });
+        }
+        return;
+      }
+      if (gesture.mode === "pan") {
+        const pan = gesture;
+        gesture = null;
+        stage.classList.remove("pv-x-media-dragging");
+        syncFrame();
+        const moved = Math.abs(tx - pan.baseTx) > 6 || Math.abs(ty - pan.baseTy) > 6;
+        if (moved) suppressClick = true;
+        if (scale < 1.02) animateZoom(MIN_SCALE, contentCenter().x, contentCenter().y);
+        return;
+      }
+      const samples = gesture.samples;
       const last = samples[samples.length - 1];
       const first = samples[0];
       const dt = last[0] - first[0];
       const v0 = dt > 0 ? (last[1] - first[1]) / dt * 1e3 : 0;
       const projected = x + project(v0);
       const targetIndex = Math.max(0, Math.min(Math.round(-projected / width()), photos.length - 1));
-      suppressClick = Math.abs(x - drag.base) > 6;
-      drag = null;
+      suppressClick = Math.abs(x - gesture.base) > 6;
+      gesture = null;
+      stage.classList.remove("pv-x-media-dragging");
       settle(targetIndex, v0);
+      syncFrame();
+    };
+    const onDoubleClick = (event) => {
+      if (event.target.closest("button, a")) return;
+      event.preventDefault();
+      const center = contentCenter();
+      if (isZoomed()) animateZoom(MIN_SCALE, center.x, center.y);
+      else animateZoom(2, event.clientX, event.clientY);
     };
     const destroy = () => {
       stopAnim();
+      cancelZoomAnim();
+      cancelWheelSnap();
+      if (resizeFrame !== null) cancelAnimationFrame(resizeFrame);
+      resizeFrame = null;
       resizeObserver == null ? void 0 : resizeObserver.disconnect();
       resizeObserver = null;
-      stage.removeEventListener("keydown", onKey);
-      stage.removeEventListener("pointerdown", onPointerDown);
-      stage.removeEventListener("pointermove", onPointerMove);
-      stage.removeEventListener("pointerup", onPointerUp);
-      stage.removeEventListener("pointercancel", onPointerUp);
+      pointers.clear();
+      gesture = null;
+      for (const [target, type, handler, options] of boundListeners) target.removeEventListener(type, handler, options);
+      boundListeners.length = 0;
     };
     const close = () => {
       destroy();
       onClose == null ? void 0 : onClose();
     };
     function onKey(event) {
-      if (event.key === "Escape" && variant === "overlay") {
+      if (event.key === "Escape" && overlay) {
         event.stopPropagation();
         event.preventDefault();
         close();
@@ -10969,35 +11607,63 @@ article.pv-x-post[data-reply-target='true'] {\r
         event.stopPropagation();
         event.preventDefault();
         show(current - 1);
-      } else if ((event.key === "Enter" || event.key === " ") && variant === "inline" && onZoom && event.target === stage) {
+      } else if (overlay && (event.key === "+" || event.key === "=")) {
+        event.preventDefault();
+        animateZoom(scale + 0.25, contentCenter().x, contentCenter().y);
+      } else if (overlay && (event.key === "-" || event.key === "_")) {
+        event.preventDefault();
+        animateZoom(scale - 0.25, contentCenter().x, contentCenter().y);
+      } else if (overlay && event.key === "0") {
+        event.preventDefault();
+        animateZoom(MIN_SCALE, contentCenter().x, contentCenter().y);
+      } else if ((event.key === "Enter" || event.key === " ") && !overlay && onZoom && event.target === stage) {
         event.preventDefault();
         onZoom(current, stage);
       }
     }
-    closeButton.addEventListener("click", close);
-    stage.addEventListener("keydown", onKey);
-    stage.addEventListener("pointerdown", onPointerDown);
-    stage.addEventListener("pointermove", onPointerMove);
-    stage.addEventListener("pointerup", onPointerUp);
-    stage.addEventListener("pointercancel", onPointerUp);
-    if (variant === "inline" && onZoom) {
-      stage.addEventListener("click", (event) => {
-        if (suppressClick) {
-          suppressClick = false;
-          return;
-        }
-        if (event.target.closest("button, a")) return;
-        onZoom(current, stage);
-      });
+    const onInlineClick = (event) => {
+      if (suppressClick) {
+        suppressClick = false;
+        return;
+      }
+      if (event.target.closest("button, a")) return;
+      onZoom(current, stage);
+    };
+    listen(closeButton, "click", close);
+    listen(keyHost, "keydown", onKey);
+    listen(stage, "pointerdown", onPointerDown);
+    listen(stage, "pointermove", onPointerMove);
+    listen(stage, "pointerup", onPointerUp);
+    listen(stage, "pointercancel", onPointerUp);
+    if (overlay) {
+      listen(stage, "dblclick", onDoubleClick);
+      listen(stage, "wheel", onStageWheel, { passive: false });
+      for (const img of imgs) listen(img, "load", onImgLoad);
+    } else if (onZoom) {
+      listen(stage, "click", onInlineClick);
     }
-    stage.append(track, bar);
-    if (prevButton) stage.appendChild(prevButton);
-    if (nextButton) stage.appendChild(nextButton);
+    stage.appendChild(track);
+    if (overlay) {
+      viewport.appendChild(stage);
+      if (prevButton) main.appendChild(prevButton);
+      main.appendChild(viewport);
+      if (nextButton) main.appendChild(nextButton);
+      shell.append(main, bar, zoomBar);
+    } else {
+      stage.appendChild(bar);
+      if (prevButton) stage.appendChild(prevButton);
+      if (nextButton) stage.appendChild(nextButton);
+    }
     x = targetOf(current);
     render();
     paintButtons();
+    if (overlay) {
+      paintZoom();
+      shell.__syncFrame = syncFrame;
+    }
     return {
-      node: stage,
+      mount: overlay ? shell : stage,
+      stage,
       destroy,
       // 容器是在创建之后才 append 的，调用方挂载后需要立刻调一次
       syncFrame,
@@ -11015,6 +11681,7 @@ article.pv-x-post[data-reply-target='true'] {\r
       "aria-modal": "true",
       "aria-label": "图片查看"
     });
+    const openedAt = performance.now();
     let carousel = null;
     const close = () => {
       carousel == null ? void 0 : carousel.destroy();
@@ -11028,16 +11695,19 @@ article.pv-x-post[data-reply-target='true'] {\r
       }
     };
     carousel = createMediaCarousel(photos, { openUrl, variant: "overlay", startIndex: index, onClose: close });
-    layer.appendChild(carousel.node);
+    layer.appendChild(carousel.mount);
     layer.addEventListener("click", (event) => {
-      if (event.target === layer) close();
+      if (performance.now() - openedAt < 300) return;
+      const target = event.target;
+      if (target === layer || target === carousel.mount) return close();
+      if (target.classList && (target.classList.contains("pv-x-media-main") || target.classList.contains("pv-x-media-viewport"))) close();
     });
     root.appendChild(layer);
     carousel.syncFrame();
     try {
-      carousel.node.focus({ preventScroll: true });
+      carousel.stage.focus({ preventScroll: true });
     } catch (err) {
-      carousel.node.focus();
+      carousel.stage.focus();
     }
   }
   function mediaGrid(model, { openUrl }) {
@@ -11052,7 +11722,7 @@ article.pv-x-post[data-reply-target='true'] {\r
         onZoom: (index, stageNode) => openMediaLightbox(grid, photos, index, openUrl, stageNode)
       });
       grid.classList.add("pv-x-media-carousel");
-      grid.appendChild(carousel.node);
+      grid.appendChild(carousel.mount);
       carousel.syncFrame();
       return grid;
     }

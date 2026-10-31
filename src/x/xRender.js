@@ -4,9 +4,20 @@
 // 图标来自 xIcons（克隆 X 实时 DOM），颜色字体来自 xTheme（读取 X 实时样式）。
 
 import { el, svgIcon } from '../utils/dom.js';
+import {
+  MIN_SCALE,
+  MAX_SCALE,
+  clampScale,
+  clampTranslate,
+  maxScaleFor,
+  ratioToScale,
+  scaleToRatio,
+  zoomTowards
+} from './xZoomMath.js';
 import { xIcon } from './xIcons.js';
 import { sourceLanguageLabel, threadContinues } from './xModel.js';
 import { formatCount, fullTime } from './xFormat.js';
+import { debugEnabled } from '../utils/debugFlag.js';
 
 const SORTS = [
   { key: 'relevant', label: '相关' },
@@ -484,23 +495,27 @@ function createMediaCarousel(photos, { openUrl, variant = 'inline', startIndex =
 
   // 固定窗体：宽高比取自第一张图（切换时不改变窗体大小）
   const framePhoto = photos[0];
-  // 栏内轮播可用 Tab 进入（Enter 放大、←/→ 切图）；浮层由脚本聚焦
+  // 浮层才外置箭头、才挂缩放条；栏内保持原样（按钮仍在窗体内）
+  const overlay = variant === 'overlay';
+  // 栏内轮播与浮层窗体都可 Tab 进入（栏内 Enter 放大、←/→ 切图；浮层可缩放/平移）
   const stage = el('div', {
     class: `pv-x-media-stage pv-x-media-stage-${variant}`,
-    tabindex: variant === 'inline' ? '0' : '-1',
-    'aria-roledescription': variant === 'inline' ? '图片轮播' : null,
-    'aria-label': variant === 'inline' ? `${photos.length} 张图片，按 Enter 放大` : null
+    tabindex: '0',
+    'aria-roledescription': variant === 'inline' ? '图片轮播' : '图片查看',
+    'aria-label':
+      variant === 'inline'
+        ? `${photos.length} 张图片，按 Enter 放大`
+        : `${photos.length} 张图片，可缩放、可拖动；方向键切图，+/- 缩放，0 适应`
   });
   if (framePhoto.width && framePhoto.height) stage.style.aspectRatio = `${framePhoto.width} / ${framePhoto.height}`;
 
-  // 图片轨道：所有图并排，靠 translateX 滑动
+  // 图片轨道：所有图并排，靠 translateX 滑动；imgs 留引用给缩放态改 transform
   const track = el('div', { class: 'pv-x-media-track' });
-  const slides = photos.map((photo) => {
-    const slide = el(
-      'div',
-      { class: 'pv-x-media-slide' },
-      el('img', { class: 'pv-x-media-big', src: photo.url, alt: photo.altText || '', loading: 'lazy', draggable: 'false' })
-    );
+  const imgs = photos.map((photo) =>
+    el('img', { class: 'pv-x-media-big', src: photo.url, alt: photo.altText || '', loading: 'lazy', draggable: 'false' })
+  );
+  const slides = imgs.map((img) => {
+    const slide = el('div', { class: 'pv-x-media-slide' }, img);
     track.appendChild(slide);
     return slide;
   });
@@ -512,15 +527,18 @@ function createMediaCarousel(photos, { openUrl, variant = 'inline', startIndex =
     'aria-label': variant === 'overlay' ? '关闭大图' : '收起图片',
     text: '✕'
   });
-  const barChildren = [
-    counter,
-    el('a', { class: 'pv-x-media-open', href: openUrl, target: '_blank', rel: 'noreferrer', text: '在 X 打开' })
-  ];
+  const openLink = el('a', { class: 'pv-x-media-open', href: openUrl, target: '_blank', rel: 'noreferrer', text: '在 X 打开' });
+  // 浮层：页码、在 X 打开、✕ 全部收在右上角一组，读起来是「一串操作」而不是被拉开的两头
   // 栏内默认态没有「收起」目标（网格已经不在了），只有浮层需要关闭按钮
-  if (variant === 'overlay') barChildren.push(closeButton);
-  const bar = el('div', { class: 'pv-x-media-bar' }, ...barChildren);
+  const bar = overlay
+    ? el(
+        'div',
+        { class: 'pv-x-media-bar pv-x-media-bar-grouped' },
+        el('div', { class: 'pv-x-media-bar-group' }, counter, openLink, closeButton)
+      )
+    : el('div', { class: 'pv-x-media-bar' }, counter, openLink);
 
-  // 左右切换：箭头垂直居中贴在窗体两侧，窗体不动、只有轨道滑动（仅多图时出现）
+  // 左右切换：浮层里是图片外的左右两栏（垂直居中、固定不动）；栏内沿用贴边叠放（仅多图时出现）
   const prevButton =
     photos.length > 1
       ? el(
@@ -537,6 +555,49 @@ function createMediaCarousel(photos, { openUrl, variant = 'inline', startIndex =
           svgIcon('chevronRight', { size: 24 })
         )
       : null;
+
+  // ---------- 浮层骨架：左箭头 | 图片视口 | 右箭头 + 底部缩放条 ----------
+  // 箭头在三栏的两侧留白里，不压图片；视口宽度由 flex 让出来，syncFrame 直接量视口。
+  const viewport = overlay ? el('div', { class: 'pv-x-media-viewport' }) : null;
+  const main = overlay ? el('div', { class: 'pv-x-media-main' }) : null;
+  const shell = overlay ? el('div', { class: 'pv-x-media-shell' }) : null;
+  const zoomRange = overlay
+    ? el('div', {
+        class: 'pv-x-zoom-range',
+        role: 'slider',
+        tabindex: '0',
+        'aria-label': '缩放比例',
+        'aria-valuemin': String(MIN_SCALE * 100),
+        'aria-valuemax': String(MAX_SCALE * 100),
+        'aria-valuenow': '100',
+        'aria-valuetext': '100%',
+        title: '拖动 / 滚轮缩放'
+      })
+    : null;
+  const zoomValue = overlay ? el('span', { class: 'pv-x-zoom-value', text: '100%' }) : null;
+  const zoomOutButton = overlay
+    ? el(
+        'button',
+        { class: 'pv-x-zoom-btn', type: 'button', 'aria-label': '缩小', title: '缩小（-）' },
+        svgIcon('minus', { size: 16 })
+      )
+    : null;
+  const zoomInButton = overlay
+    ? el(
+        'button',
+        { class: 'pv-x-zoom-btn', type: 'button', 'aria-label': '放大', title: '放大（+）' },
+        svgIcon('plus', { size: 16 })
+      )
+    : null;
+  const zoomFitButton = overlay
+    ? el('button', { class: 'pv-x-zoom-fit', type: 'button', 'aria-label': '适应窗口，恢复 100%', text: '适应' })
+    : null;
+  if (overlay) zoomRange.append(el('div', { class: 'pv-x-zoom-fill' }), el('div', { class: 'pv-x-zoom-thumb' }));
+  const zoomBar = overlay
+    ? el('div', { class: 'pv-x-media-zoom' }, zoomOutButton, zoomRange, zoomValue, zoomInButton, zoomFitButton)
+    : null;
+  // 键盘事件挂在整个浮层壳上（Esc 在缩放条上也要能关灯箱）；栏内仍挂窗体
+  const keyHost = shell || stage;
 
   // ---------- 滑动切换（固定窗体，只有中间轨道在动）----------
   // 用 rAF 弹簧而不是 CSS transition：手势驱动的位移必须能中途抓住并反向，
@@ -565,6 +626,258 @@ function createMediaCarousel(photos, { openUrl, variant = 'inline', startIndex =
     frame = null;
     lastFrameAt = 0;
   };
+
+  // ---------- 缩放 / 平移（仅浮层）----------
+  // 缩放只作用在当前图片的 transform 上，轨道位移继续负责切图，两者互不干扰。
+  let scale = 1;
+  let tx = 0;
+  let ty = 0;
+  let zoomRaf = null;
+  let wheelSnapTimer = null;
+  const activeImg = () => imgs[current] || null;
+  const isZoomed = () => scale > 1.005;
+  // 本实例注册的监听统一记账，destroy() 里一次注销（灯箱/栏内的全部监听都走这里）
+  const boundListeners = [];
+  const listen = (target, type, handler, options) => {
+    target.addEventListener(type, handler, options);
+    boundListeners.push([target, type, handler, options]);
+  };
+  const frameSize = () => ({ w: stage.clientWidth, h: stage.clientHeight });
+  // 视口中心（缩放锚点的原点）
+  const contentCenter = () => {
+    const rect = stage.getBoundingClientRect();
+    return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+  };
+  // 100% 时图片的布局尺寸：offsetWidth/Height 不吃 transform，动画中途读也是对的。
+  // 还没解码完（complete=false）就先用视口兜底，免得 cap 退回 4x 把图放大到远超原图。
+  const baseSize = () => {
+    const img = activeImg();
+    if (!img || !img.complete || !img.naturalWidth) return frameSize();
+    return { w: img.offsetWidth, h: img.offsetHeight };
+  };
+  // 放大上限：小图按原图像素的两倍封顶，别放大成一团马赛克
+  const zoomCap = () => maxScaleFor(activeImg()?.naturalWidth || 0, baseSize().w);
+
+  const clampZoom = () => {
+    const f = frameSize();
+    const b = baseSize();
+    const next = clampTranslate(tx, ty, { contentW: b.w, contentH: b.h, frameW: f.w, frameH: f.h, scale });
+    tx = next.x;
+    ty = next.y;
+  };
+  const paintZoom = () => {
+    if (!overlay) return;
+    const cap = Math.max(MIN_SCALE, zoomCap());
+    const percent = Math.round(scale * 100);
+    stage.classList.toggle('pv-x-media-zoomed', isZoomed());
+    zoomRange.setAttribute('aria-valuenow', String(percent));
+    zoomRange.setAttribute('aria-valuemax', String(Math.round(cap * 100)));
+    zoomRange.setAttribute('aria-valuetext', `${percent}%`);
+    zoomRange.style.setProperty('--pv-zoom-ratio', String(scaleToRatio(scale, cap)));
+    zoomValue.textContent = `${percent}%`;
+    zoomOutButton.disabled = scale <= MIN_SCALE + 0.001;
+    zoomInButton.disabled = scale >= cap - 0.001;
+    zoomFitButton.disabled = scale <= MIN_SCALE + 0.001;
+  };
+  const applyZoom = () => {
+    const img = activeImg();
+    if (!img) return;
+    img.style.transform = `translate3d(${tx}px, ${ty}px, 0) scale(${scale})`;
+    paintZoom();
+  };
+  const cancelZoomAnim = () => {
+    if (zoomRaf !== null) cancelAnimationFrame(zoomRaf);
+    zoomRaf = null;
+  };
+  // 滚轮停手吸附：被别的缩放入口打断时取消，免得它在补间中途把目标改掉
+  const cancelWheelSnap = () => {
+    if (wheelSnapTimer !== null) clearTimeout(wheelSnapTimer);
+    wheelSnapTimer = null;
+  };
+  const resetZoom = () => {
+    cancelZoomAnim();
+    cancelWheelSnap();
+    scale = 1;
+    tx = 0;
+    ty = 0;
+    for (const img of imgs) img.style.transform = '';
+    if (!overlay) return;
+    stage.classList.remove('pv-x-media-zoomed');
+    paintZoom();
+  };
+  /** 以锚点为中心补间缩放（滚轮/滑杆/双击/按钮共用）；reduced-motion 直接落位 */
+  const animateZoom = (targetScale, anchorX, anchorY) => {
+    if (!overlay) return;
+    const next = clampScale(targetScale, zoomCap());
+    if (debugEnabled()) {      const b = baseSize();
+      const f = frameSize();
+      stage.dataset.zoomDebug = JSON.stringify({
+        targetScale,
+        next,
+        scale,
+        tx,
+        ty,
+        cap: zoomCap(),
+        baseW: b.w,
+        frameW: f.w,
+        natural: activeImg()?.naturalWidth || 0
+      });
+    }
+    cancelZoomAnim();
+    cancelWheelSnap();
+    const center = contentCenter();
+    const dx = anchorX - center.x;
+    const dy = anchorY - center.y;
+    if (reduceMotion() || Math.abs(next - scale) < 0.001) {
+      const z = zoomTowards({ scale, tx, ty, nextScale: next, dx, dy });
+      scale = z.scale;
+      tx = z.tx;
+      ty = z.ty;
+      clampZoom();
+      applyZoom();
+      return;
+    }
+    const from = scale;
+    const px = (dx - tx) / scale;
+    const py = (dy - ty) / scale;
+    const started = performance.now();
+    const duration = 90;
+    const step = (now) => {
+      const k = Math.min(1, (now - started) / duration);
+      scale = from + (next - from) * k;
+      tx = dx - px * scale;
+      ty = dy - py * scale;
+      clampZoom();
+      applyZoom();
+      zoomRaf = k < 1 ? requestAnimationFrame(step) : null;
+    };
+    zoomRaf = requestAnimationFrame(step);
+  };
+  /** 拖拽/捏合/滑杆走直接落位，不补间（跟手） */
+  const setZoomAt = (targetScale, anchorX, anchorY) => {
+    if (!overlay) return;
+    cancelZoomAnim();
+    cancelWheelSnap();
+    const center = contentCenter();
+    const next = clampScale(targetScale, zoomCap());
+    const z = zoomTowards({ scale, tx, ty, nextScale: next, dx: anchorX - center.x, dy: anchorY - center.y });
+    scale = z.scale;
+    tx = z.tx;
+    ty = z.ty;
+    clampZoom();
+    applyZoom();
+  };
+  /** 滚轮缩放：在图片上以光标为中心，在缩放条上以画面中心为中心；每格 ±8%（Shift 20%），停手后吸附 5% */
+  const scheduleWheelSnap = () => {
+    if (wheelSnapTimer !== null) clearTimeout(wheelSnapTimer);
+    wheelSnapTimer = setTimeout(() => {
+      wheelSnapTimer = null;
+      if (gesture) return; // 手势进行中让手势自己维护 scale
+      const snapped = clampScale(Math.round(scale * 20) / 20, zoomCap());
+      if (Math.abs(snapped - scale) < 0.001) return;
+      const center = contentCenter();
+      animateZoom(snapped, center.x, center.y);
+    }, 160);
+  };
+  const wheelZoom = (event, anchorX, anchorY) => {
+    if (!overlay) return;
+    event.preventDefault();
+    if (gesture && gesture.mode === 'pan') return; // 平移手势中滚轮先不抢，避免基准位移对不上
+    cancelZoomAnim();
+    const unit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? stage.clientHeight || 1 : 1;
+    // 横向滚轮 / 触控板横扫 / Firefox 的 Shift+wheel 只给 deltaX
+    const raw = event.deltaY !== 0 ? event.deltaY : event.deltaX;
+    if (!raw) return;
+    const notches = (-raw * unit) / 100;
+    const factor = Math.pow(event.shiftKey ? 1.2 : 1.08, notches);
+    setZoomAt(clampScale(scale * factor, zoomCap()), anchorX, anchorY);
+    scheduleWheelSnap();
+  };
+  const onStageWheel = (event) => wheelZoom(event, event.clientX, event.clientY);
+
+  // 缩放条交互：拖动 / 点轨道 / 滚轮 / 键盘 / ± / 适应
+  if (overlay) {
+    let sliding = false;
+    const scaleFromSlider = (event) => {
+      const rect = zoomRange.getBoundingClientRect();
+      if (!rect.width) return;
+      const ratio = Math.min(1, Math.max(0, (event.clientX - rect.left) / rect.width));
+      const center = contentCenter();
+      // 轨道按本张图的像素上限映射：最右端正好等于上限，不出现死区
+      const cap = Math.max(MIN_SCALE, zoomCap());
+      setZoomAt(ratioToScale(ratio, cap), center.x, center.y);
+    };
+    const onSliderDown = (event) => {
+      if (event.button !== 0) return;
+      event.preventDefault();
+      event.stopPropagation();
+      sliding = true;
+      zoomRange.focus({ preventScroll: true });
+      try {
+        zoomRange.setPointerCapture(event.pointerId);
+      } catch (err) {
+        // 不支持指针捕获时仍可按点位缩放
+      }
+      scaleFromSlider(event);
+    };
+    const onSliderMove = (event) => {
+      if (sliding) scaleFromSlider(event);
+    };
+    const onSliderEnd = () => {
+      sliding = false;
+    };
+    const onSliderWheel = (event) => {
+      const center = contentCenter();
+      wheelZoom(event, center.x, center.y);
+    };
+    const onSliderKey = (event) => {
+      const center = contentCenter();
+      const steps = { ArrowRight: 0.05, ArrowUp: 0.05, ArrowLeft: -0.05, ArrowDown: -0.05, PageUp: 0.25, PageDown: -0.25 };
+      if (event.key in steps) {
+        event.preventDefault();
+        event.stopPropagation();
+        animateZoom(scale + steps[event.key], center.x, center.y);
+      } else if (event.key === 'Home') {
+        event.preventDefault();
+        event.stopPropagation();
+        animateZoom(MIN_SCALE, center.x, center.y);
+      } else if (event.key === 'End') {
+        event.preventDefault();
+        event.stopPropagation();
+        animateZoom(MAX_SCALE, center.x, center.y);
+      }
+    };
+    const onZoomOut = () => {
+      const center = contentCenter();
+      animateZoom(scale - 0.25, center.x, center.y);
+    };
+    const onZoomIn = () => {
+      const center = contentCenter();
+      animateZoom(scale + 0.25, center.x, center.y);
+    };
+    const onZoomFit = () => {
+      const center = contentCenter();
+      animateZoom(MIN_SCALE, center.x, center.y);
+    };
+    listen(zoomRange, 'pointerdown', onSliderDown);
+    listen(zoomRange, 'pointermove', onSliderMove);
+    listen(zoomRange, 'pointerup', onSliderEnd);
+    listen(zoomRange, 'pointercancel', onSliderEnd);
+    listen(zoomRange, 'wheel', onSliderWheel, { passive: false });
+    listen(zoomRange, 'keydown', onSliderKey);
+    listen(zoomOutButton, 'click', onZoomOut);
+    listen(zoomInButton, 'click', onZoomIn);
+    listen(zoomFitButton, 'click', onZoomFit);
+  }
+
+  // 图片解码完成后按真实像素重算上限：加载前被放大过的值要收回来
+  const onImgLoad = (event) => {
+    if (event.currentTarget !== activeImg()) return;
+    scale = clampScale(scale, zoomCap());
+    clampZoom();
+    applyZoom();
+  };
+
   const paintButtons = () => {
     if (prevButton) prevButton.disabled = current <= 0;
     if (nextButton) nextButton.disabled = current >= photos.length - 1;
@@ -574,8 +887,13 @@ function createMediaCarousel(photos, { openUrl, variant = 'inline', startIndex =
 
   /** 弹簧收敛到某张：临界阻尼（无过冲）；带速度释放时略欠阻尼（一点点回弹，因为手势本身有动量） */
   const settle = (targetIndex, v0 = 0) => {
-    current = Math.max(0, Math.min(targetIndex, photos.length - 1));
+    const next = Math.max(0, Math.min(targetIndex, photos.length - 1));
+    // 切图重置缩放：避免下一张带着上一张的位移，也让「拖动=切图」的语义干净
+    if (next !== current) resetZoom();
+    current = next;
     paintButtons();
+    // resetZoom 里的 paintZoom 拿的是上一张的像素上限，切完再按新图刷一次
+    if (overlay) paintZoom();
     const to = targetOf(current);
     if (reduceMotion() || photos.length < 2) {
       stopAnim();
@@ -611,8 +929,8 @@ function createMediaCarousel(photos, { openUrl, variant = 'inline', startIndex =
   };
 
   const show = (next) => settle(next);
-  if (prevButton) prevButton.addEventListener('click', () => show(current - 1));
-  if (nextButton) nextButton.addEventListener('click', () => show(current + 1));
+  if (prevButton) listen(prevButton, 'click', () => show(current - 1));
+  if (nextButton) listen(nextButton, 'click', () => show(current + 1));
 
   // 帧高必须相对**所在栏的可见高**，不能用视口单位（单栏时栏只有约 32vh）。
   // 而且这里直接把高度算成**像素**而不是靠百分比：帧一旦被 max-height 截断，
@@ -621,25 +939,29 @@ function createMediaCarousel(photos, { openUrl, variant = 'inline', startIndex =
   // 灯箱（固定窗体）的尺寸分两种：
   //   inline —— 走**单图逻辑**：宽度铺满、高度 = 宽度 × 首图比例（inline aspect-ratio 直接给），
   //            不做任何封顶，所以竖图就是整幅大图、和单图一样大（需要时栏自己滚动）
-  //   overlay —— 在浮层可用区域内按首图比例做 contain 适配，宽高都算成像素
+  //   overlay —— 量的是三栏中间的**视口**（箭头在视口外），在视口可用区域内按首图比例上 contain
   // 浮层必须算像素：帧一旦被间接约束截断，轨道/幻灯片的 height:100% 解析就不可靠，
   // 图片会按原始尺寸渲染并被 overflow:hidden 裁掉。
   const frameRatio = framePhoto.width && framePhoto.height ? framePhoto.height / framePhoto.width : 0;
-  const wrapper = () => stage.parentElement; // 浮层：.pv-x-media-lightbox
+  const wrapper = () => stage.parentElement; // 浮层：.pv-x-media-viewport（不包含两侧箭头）
   let resizeObserver = null;
   let observedBox = null;
   const syncFrame = () => {
-    if (variant !== 'overlay') return; // 栏内按单图逻辑，不需要测量
+    if (!overlay) return; // 栏内按单图逻辑，不需要测量
     const box = wrapper();
-    if (!box) return;
+    if (!box || !box.clientWidth || !box.clientHeight) return; // 尚未挂载/尺寸为 0
     // 容器是延迟出现的（layer 在轮播创建之后才 append），首次拿到后补观察
     if (resizeObserver && observedBox !== box) {
       if (observedBox) resizeObserver.unobserve(observedBox);
       resizeObserver.observe(box);
       observedBox = box;
     }
-    const availableWidth = box.clientWidth - 24; // 浮层左右各 12px 内边距
-    const availableHeight = box.clientHeight - 24;
+    // 窄屏：两侧留白放不下箭头，退化为贴边叠放，这里扣出给按钮的 12px
+    const lightbox = shell?.parentElement;
+    const narrow = (lightbox?.clientWidth || box.clientWidth) < 520 || box.clientWidth < 360;
+    shell.classList.toggle('is-narrow', narrow);
+    const availableWidth = box.clientWidth - (narrow ? 24 : 0);
+    const availableHeight = box.clientHeight;
     if (availableWidth <= 0 || availableHeight <= 0) return;
     // 按首图比例 contain 适配：先按宽度铺满，太高就改为按高度收窄
     let width = availableWidth;
@@ -650,17 +972,35 @@ function createMediaCarousel(photos, { openUrl, variant = 'inline', startIndex =
     }
     stage.style.width = `${Math.round(width)}px`;
     stage.style.height = `${Math.round(height)}px`;
+    // 顶部条贴着图片顶边（主区里图片是垂直居中的，条在壳顶需要向下让出居中偏移）
+    shell.style.setProperty('--pv-bar-top', `${Math.max(0, Math.round((availableHeight - height) / 2))}px`);
+    // 尺寸变了：缩放态的平移量按新帧重新钳制
+    if (isZoomed()) {
+      clampZoom();
+      applyZoom();
+    }
   };
 
-  if (typeof ResizeObserver === 'function') {
-    resizeObserver = new ResizeObserver(() => {
-      if (drag) return;
+  // 侧栏宽度变化后延一帧再量：syncFrame 会切 is-narrow，让被观察的视口在回调投递中自己变宽变窄，
+  // 不延迟的话 Chrome 会报 ResizeObserver loop 警告。
+  let resizeFrame = null;
+  const onResize = () => {
+    if (resizeFrame !== null) cancelAnimationFrame(resizeFrame);
+    resizeFrame = requestAnimationFrame(() => {
+      resizeFrame = null;
+      if (gesture) return;
       syncFrame();
       // 窗体宽度变了，轨道的像素位移要按新宽度重算
       x = targetOf(current);
       render();
     });
-    resizeObserver.observe(stage);
+  };
+  if (typeof ResizeObserver === 'function') {
+    resizeObserver = new ResizeObserver(onResize);
+    if (wrapper()) {
+      resizeObserver.observe(wrapper());
+      observedBox = wrapper();
+    }
   }
   syncFrame();
 
@@ -670,38 +1010,135 @@ function createMediaCarousel(photos, { openUrl, variant = 'inline', startIndex =
   const rubberband = (overshoot, dimension, constant = 0.55) =>
     (overshoot * dimension * constant) / (dimension + constant * Math.abs(overshoot));
 
-  let drag = null; // { startX, base, samples: [[t, x]] }
+  // 手势路由：未放大时单指=切图；放大后单指=平移；两指=捏合（浮层）
+  let gesture = null; // { mode: 'swipe' | 'pan' | 'pinch', ... }
   let suppressClick = false;
-  const onPointerDown = (event) => {
-    if (photos.length < 2 || event.target.closest('button, a')) return;
+  const pointers = new Map();
+
+  const beginSwipe = (event) => {
     stopAnim(); // 抓住正在滑动的轨道：从当前屏幕值继续
     const now = performance.now();
-    drag = { startX: event.clientX, base: x, samples: [[now, x]] };
+    gesture = { mode: 'swipe', startX: event.clientX, base: x, samples: [[now, x]] };
     stage.classList.add('pv-x-media-dragging');
+  };
+  const beginPan = (event) => {
+    cancelZoomAnim();
+    gesture = { mode: 'pan', startX: event.clientX, startY: event.clientY, baseTx: tx, baseTy: ty };
+    stage.classList.add('pv-x-media-dragging');
+  };
+  const beginPinch = () => {
+    cancelZoomAnim();
+    cancelWheelSnap();
+    const [a, b] = [...pointers.values()];
+    const midX = (a.x + b.x) / 2;
+    const midY = (a.y + b.y) / 2;
+    const center = contentCenter();
+    gesture = {
+      mode: 'pinch',
+      dist0: Math.hypot(a.x - b.x, a.y - b.y) || 1,
+      baseScale: scale,
+      px: (midX - center.x - tx) / scale,
+      py: (midY - center.y - ty) / scale
+    };
+    stage.classList.add('pv-x-media-dragging');
+  };
+  const onPointerDown = (event) => {
+    if (event.target.closest('button, a')) return;
+    if (event.pointerType === 'mouse' && event.button !== 0) return;
+    pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
     try {
       stage.setPointerCapture(event.pointerId);
     } catch (err) {
       // 不支持指针捕获：仍可拖动，只是移出元素后不再跟随
     }
+    if (overlay) {
+      if (pointers.size >= 2) {
+        // 第二/第三指落下都重取「当前两指」为基准，避免沿用已经抬起的手指
+        beginPinch();
+        return;
+      }
+    } else if (pointers.size > 1) {
+      return; // 栏内保持单指切图，第二指先忽略
+    }
+    if (!overlay && photos.length < 2) return;
+    if (isZoomed()) beginPan(event);
+    else if (photos.length > 1) beginSwipe(event);
   };
   const onPointerMove = (event) => {
-    if (!drag) return;
+    if (!pointers.has(event.pointerId)) return;
+    pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+    if (!gesture) return;
+    if (gesture.mode === 'pinch') {
+      if (pointers.size < 2) return;
+      const [a, b] = [...pointers.values()];
+      const midX = (a.x + b.x) / 2;
+      const midY = (a.y + b.y) / 2;
+      const dist = Math.hypot(a.x - b.x, a.y - b.y) || 1;
+      const target = clampScale(gesture.baseScale * (dist / gesture.dist0), zoomCap());
+      const center = contentCenter();
+      scale = target;
+      tx = midX - center.x - gesture.px * target;
+      ty = midY - center.y - gesture.py * target;
+      clampZoom();
+      applyZoom();
+      return;
+    }
+    if (gesture.mode === 'pan') {
+      tx = gesture.baseTx + (event.clientX - gesture.startX);
+      ty = gesture.baseTy + (event.clientY - gesture.startY);
+      clampZoom();
+      applyZoom();
+      return;
+    }
     const min = targetOf(photos.length - 1);
     const max = 0;
     // 1:1 跟手；越界部分用橡皮筋衰减（软边界，不是硬停）
-    let next = drag.base + (event.clientX - drag.startX);
+    let next = gesture.base + (event.clientX - gesture.startX);
     if (next > max) next = max + rubberband(next - max, width());
     else if (next < min) next = min - rubberband(min - next, width());
     x = next;
     render();
     const now = performance.now();
-    drag.samples.push([now, x]);
-    while (drag.samples.length > 2 && now - drag.samples[0][0] > 90) drag.samples.shift();
+    gesture.samples.push([now, x]);
+    while (gesture.samples.length > 2 && now - gesture.samples[0][0] > 90) gesture.samples.shift();
   };
-  const onPointerUp = () => {
-    if (!drag) return;
-    stage.classList.remove('pv-x-media-dragging');
-    const samples = drag.samples;
+  const onPointerUp = (event) => {
+    pointers.delete(event.pointerId);
+    if (!overlay && pointers.size > 0) return;
+    if (!gesture) return;
+    if (gesture.mode === 'pinch') {
+      if (pointers.size >= 2) {
+        // 三指里抬起一根：剩下仍≥2 指，按当前两指重建捏合基准
+        beginPinch();
+        return;
+      }
+      gesture = null;
+      stage.classList.remove('pv-x-media-dragging');
+      // 手势期间被丢弃的 resize 在这里补算一次
+      syncFrame();
+      // 捏合可能打断过正在进行的切图：先把轨道吸附回当前张
+      if (Math.abs(x - targetOf(current)) > 1) settle(current);
+      if (!isZoomed()) {
+        // 缩回适应区就自动回到 100%，手势语义随之恢复成切图
+        animateZoom(MIN_SCALE, contentCenter().x, contentCenter().y);
+      } else if (pointers.size === 1) {
+        // 还留着一根指头：直接接成平移，不用重新按下
+        const rest = [...pointers.values()][0];
+        beginPan({ clientX: rest.x, clientY: rest.y });
+      }
+      return;
+    }
+    if (gesture.mode === 'pan') {
+      const pan = gesture;
+      gesture = null;
+      stage.classList.remove('pv-x-media-dragging');
+      syncFrame();
+      const moved = Math.abs(tx - pan.baseTx) > 6 || Math.abs(ty - pan.baseTy) > 6;
+      if (moved) suppressClick = true;
+      if (scale < 1.02) animateZoom(MIN_SCALE, contentCenter().x, contentCenter().y);
+      return;
+    }
+    const samples = gesture.samples;
     const last = samples[samples.length - 1];
     const first = samples[0];
     const dt = last[0] - first[0];
@@ -710,26 +1147,40 @@ function createMediaCarousel(photos, { openUrl, variant = 'inline', startIndex =
     const projected = x + project(v0);
     const targetIndex = Math.max(0, Math.min(Math.round(-projected / width()), photos.length - 1));
     // 拖过一段距离就不算点击（否则松手时会误开大图）
-    suppressClick = Math.abs(x - drag.base) > 6;
-    drag = null;
+    suppressClick = Math.abs(x - gesture.base) > 6;
+    gesture = null;
+    stage.classList.remove('pv-x-media-dragging');
     settle(targetIndex, v0);
+    syncFrame();
+  };
+  const onDoubleClick = (event) => {
+    if (event.target.closest('button, a')) return;
+    event.preventDefault();
+    const center = contentCenter();
+    // 双击在 100% 与 200% 之间切换，以点击点为中心
+    if (isZoomed()) animateZoom(MIN_SCALE, center.x, center.y);
+    else animateZoom(2, event.clientX, event.clientY);
   };
   const destroy = () => {
     stopAnim();
+    cancelZoomAnim();
+    cancelWheelSnap();
+    if (resizeFrame !== null) cancelAnimationFrame(resizeFrame);
+    resizeFrame = null;
     resizeObserver?.disconnect();
     resizeObserver = null;
-    stage.removeEventListener('keydown', onKey);
-    stage.removeEventListener('pointerdown', onPointerDown);
-    stage.removeEventListener('pointermove', onPointerMove);
-    stage.removeEventListener('pointerup', onPointerUp);
-    stage.removeEventListener('pointercancel', onPointerUp);
+    pointers.clear();
+    gesture = null;
+    // 本轮播注册过的监听全部注销（keydown/pointer/wheel/dblclick/click/load）
+    for (const [target, type, handler, options] of boundListeners) target.removeEventListener(type, handler, options);
+    boundListeners.length = 0;
   };
   const close = () => {
     destroy();
     onClose?.();
   };
   function onKey(event) {
-    if (event.key === 'Escape' && variant === 'overlay') {
+    if (event.key === 'Escape' && overlay) {
       // Esc 先关大图，不关弹窗
       event.stopPropagation();
       event.preventDefault();
@@ -742,39 +1193,69 @@ function createMediaCarousel(photos, { openUrl, variant = 'inline', startIndex =
       event.stopPropagation();
       event.preventDefault();
       show(current - 1);
-    } else if ((event.key === 'Enter' || event.key === ' ') && variant === 'inline' && onZoom && event.target === stage) {
+    } else if (overlay && (event.key === '+' || event.key === '=')) {
+      event.preventDefault();
+      animateZoom(scale + 0.25, contentCenter().x, contentCenter().y);
+    } else if (overlay && (event.key === '-' || event.key === '_')) {
+      event.preventDefault();
+      animateZoom(scale - 0.25, contentCenter().x, contentCenter().y);
+    } else if (overlay && event.key === '0') {
+      event.preventDefault();
+      animateZoom(MIN_SCALE, contentCenter().x, contentCenter().y);
+    } else if ((event.key === 'Enter' || event.key === ' ') && !overlay && onZoom && event.target === stage) {
       event.preventDefault();
       onZoom(current, stage);
     }
   }
-  closeButton.addEventListener('click', close);
-  stage.addEventListener('keydown', onKey);
-  stage.addEventListener('pointerdown', onPointerDown);
-  stage.addEventListener('pointermove', onPointerMove);
-  stage.addEventListener('pointerup', onPointerUp);
-  stage.addEventListener('pointercancel', onPointerUp);
   // 栏内默认态：点图弹出覆盖式大图（不是替换图片）
-  if (variant === 'inline' && onZoom) {
-    stage.addEventListener('click', (event) => {
-      if (suppressClick) {
-        suppressClick = false;
-        return;
-      }
-      if (event.target.closest('button, a')) return;
-      onZoom(current, stage);
-    });
+  const onInlineClick = (event) => {
+    if (suppressClick) {
+      suppressClick = false;
+      return;
+    }
+    if (event.target.closest('button, a')) return;
+    onZoom(current, stage);
+  };
+  listen(closeButton, 'click', close);
+  listen(keyHost, 'keydown', onKey);
+  listen(stage, 'pointerdown', onPointerDown);
+  listen(stage, 'pointermove', onPointerMove);
+  listen(stage, 'pointerup', onPointerUp);
+  listen(stage, 'pointercancel', onPointerUp);
+  if (overlay) {
+    listen(stage, 'dblclick', onDoubleClick);
+    listen(stage, 'wheel', onStageWheel, { passive: false });
+    for (const img of imgs) listen(img, 'load', onImgLoad);
+  } else if (onZoom) {
+    listen(stage, 'click', onInlineClick);
   }
 
-  stage.append(track, bar);
-  if (prevButton) stage.appendChild(prevButton);
-  if (nextButton) stage.appendChild(nextButton);
+  stage.appendChild(track);
+  if (overlay) {
+    // 三栏：箭头在视口外，图片永远不压按钮；bar 在 main 之后（Tab 顺序：箭头 → 图 → 箭头 → 打开/关闭 → 缩放条）
+    viewport.appendChild(stage);
+    if (prevButton) main.appendChild(prevButton);
+    main.appendChild(viewport);
+    if (nextButton) main.appendChild(nextButton);
+    shell.append(main, bar, zoomBar);
+  } else {
+    stage.appendChild(bar);
+    if (prevButton) stage.appendChild(prevButton);
+    if (nextButton) stage.appendChild(nextButton);
+  }
 
-  // 初始位置直接落位（不播动画），按钮可用态与序号一并刷新
+  // 初始位置直接落位（不播动画），按钮可用态、序号与缩放条一并刷新
   x = targetOf(current);
   render();
   paintButtons();
+  if (overlay) {
+    paintZoom();
+    // harness 等场景拿不到 ResizeObserver 回调时可以手动重算
+    shell.__syncFrame = syncFrame;
+  }
   return {
-    node: stage,
+    mount: overlay ? shell : stage,
+    stage,
     destroy,
     // 容器是在创建之后才 append 的，调用方挂载后需要立刻调一次
     syncFrame,
@@ -794,6 +1275,8 @@ function openMediaLightbox(anchor, photos, index, openUrl, returnFocus = null) {
     'aria-modal': 'true',
     'aria-label': '图片查看'
   });
+  // 拦截「打开的那一次点击 / 双击的第二下」直接命中背景而瞬间关掉
+  const openedAt = performance.now();
   let carousel = null;
   const close = () => {
     carousel?.destroy();
@@ -808,18 +1291,21 @@ function openMediaLightbox(anchor, photos, index, openUrl, returnFocus = null) {
     }
   };
   carousel = createMediaCarousel(photos, { openUrl, variant: 'overlay', startIndex: index, onClose: close });
-  layer.appendChild(carousel.node);
-  // 点背景关闭（点图片本身不关）
+  layer.appendChild(carousel.mount);
+  // 点背景关闭（点图片本身、点顶部条不关）；视口肩部的留白也算背景
   layer.addEventListener('click', (event) => {
-    if (event.target === layer) close();
+    if (performance.now() - openedAt < 300) return;
+    const target = event.target;
+    if (target === layer || target === carousel.mount) return close();
+    if (target.classList && (target.classList.contains('pv-x-media-main') || target.classList.contains('pv-x-media-viewport'))) close();
   });
   root.appendChild(layer);
   carousel.syncFrame();
-  // 聚焦窗体让 Esc/方向键可用；preventScroll 避免弹层出现时页面跳动
+  // 聚焦窗体让 Esc/方向键/缩放键可用；preventScroll 避免弹层出现时页面跳动
   try {
-    carousel.node.focus({ preventScroll: true });
+    carousel.stage.focus({ preventScroll: true });
   } catch (err) {
-    carousel.node.focus();
+    carousel.stage.focus();
   }
 }
 
@@ -836,7 +1322,7 @@ function mediaGrid(model, { openUrl }) {
       onZoom: (index, stageNode) => openMediaLightbox(grid, photos, index, openUrl, stageNode)
     });
     grid.classList.add('pv-x-media-carousel');
-    grid.appendChild(carousel.node);
+    grid.appendChild(carousel.mount);
     carousel.syncFrame();
     return grid;
   }

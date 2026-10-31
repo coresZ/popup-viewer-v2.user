@@ -1,2 +1,22 @@
+# 文本文件统一使用 LF，避免 Windows 检出造成 diff 噪声
+*.js text eol=lf
+*.mjs text eol=lf
+*.css text eol=lf
+*.md text eol=lf
+*.json text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.html text eol=lf
+
+# 构建产物同样固定 LF（esbuild 输出）
 dist/*.js text eol=lf
 build.mjs text eol=lf
+
+# 二进制资源
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.woff binary
+*.woff2 binary

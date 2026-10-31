@@ -1,8 +1,30 @@
 {
   "name": "popup-viewer-v2",
-  "version": "2.3.5",
+  "version": "2.3.6",
   "private": true,
   "description": "页内弹窗打开新帖 (Popup Viewer V2) - 插件化油猴脚本",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/coresZ/popup-viewer-v2.user.git"
+  },
+  "bugs": {
+    "url": "https://github.com/coresZ/popup-viewer-v2.user/issues"
+  },
+  "homepage": "https://github.com/coresZ/popup-viewer-v2.user#readme",
+  "keywords": [
+    "tampermonkey",
+    "userscript",
+    "popup",
+    "forum",
+    "discuz",
+    "x-twitter",
+    "javascript",
+    "esbuild"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
   "type": "module",
   "scripts": {
     "build": "node build.mjs",
@@ -13,7 +35,7 @@
     "g:commit": "node tools/git-tools.mjs commit",
     "g:push": "node tools/git-tools.mjs push",
     "g:publish": "node tools/git-tools.mjs publish",
-    "test": "node tests/xModel.test.mjs && node tests/selector.test.mjs"
+    "test": "node tests/xModel.test.mjs && node tests/selector.test.mjs && node tests/xZoomMath.test.mjs"
   },
   "devDependencies": {
     "esbuild": "^0.28.0"

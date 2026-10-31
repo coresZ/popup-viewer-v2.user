@@ -1,0 +1,88 @@
+<!doctype html>
+<!--
+  设置面板验证页：切 tab 宽度不抖（scrollbar-gutter）+ 「最近」重开刷新。
+  运行：
+  "C:\Program Files\Google\Chrome\Application\chrome.exe" --headless=new --disable-gpu --no-sandbox ^
+    --allow-file-access-from-files --force-prefers-reduced-motion --window-size=1200,900 ^
+    --virtual-time-budget=20000 --dump-dom ^
+    "file:///D:/source/favjs/popup-viewer-v2/tests/settings-harness.html"
+  结果在页面最后的 <pre id="out"> 里（JSON 断言列表）。
+-->
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <title>settings harness</title>
+    <link rel="stylesheet" href="../src/ui/style.css" />
+    <style>
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+      }
+    </style>
+  </head>
+  <body>
+    <pre id="out">RUNNING</pre>
+    <script type="module">
+      import { createSettingsPanel } from '../src/ui/SettingsPanel.js';
+      import { storageManager } from '../src/core/StorageManager.js';
+
+      const results = [];
+      const check = (name, ok, extra = '') => results.push({ name, ok: Boolean(ok), extra });
+      const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+      storageManager.clearHistory();
+      storageManager.addHistory({ title: '旧文章', url: 'file:///old' });
+
+      const root = createSettingsPanel({ onChange: () => {}, onManageRules: () => {}, onClose: () => {} });
+      document.body.appendChild(root);
+      root.style.visibility = 'visible';
+      root.classList.add('visible');
+      await sleep(30);
+
+      const recentTab = root.querySelector('#pv-settings-tab-recent');
+      const commonTab = root.querySelector('#pv-settings-tab-common');
+      check('面板已渲染', Boolean(recentTab && commonTab));
+      check('滚动条槽固定', getComputedStyle(root).scrollbarGutter === 'stable', getComputedStyle(root).scrollbarGutter);
+
+      // 「最近」显示历史
+      recentTab.click();
+      await sleep(30);
+      const itemsAfterOpen = root.querySelectorAll('.pv-recent-item').length;
+      check('最近页显示历史', itemsAfterOpen === 1, `items=${itemsAfterOpen}`);
+      const widthRecent = root.offsetWidth;
+
+      // 切到内容更高的「通用」：滚动条出现，宽度不应变化
+      commonTab.click();
+      await sleep(30);
+      const widthCommon = root.offsetWidth;
+      check('切换 tab 面板宽度不抖', widthRecent === widthCommon, `${widthRecent} -> ${widthCommon}`);
+
+      // 关掉再打开：停留「最近」时应刷新出新历史（模拟 PopupPanel：隐藏 → 新增 → 打开时 refresh）
+      recentTab.click();
+      await sleep(20);
+      root.classList.remove('visible');
+      storageManager.addHistory({ title: '新文章', url: 'file:///new' });
+      root.classList.add('visible');
+      root.refresh();
+      await sleep(30);
+      const items = [...root.querySelectorAll('.pv-recent-item')];
+      check('再次打开刷新出最新历史', items.length === 2, `items=${items.length}`);
+      check('最新一条排在最前', Boolean(items[0] && items[0].textContent.includes('新文章')), items[0] ? items[0].textContent : 'none');
+
+      // 非「最近」页时 refresh 不动列表
+      commonTab.click();
+      const beforeRefresh = root.querySelectorAll('.pv-recent-item').length;
+      storageManager.addHistory({ title: '第三条', url: 'file:///third' });
+      root.refresh();
+      const afterRefresh = root.querySelectorAll('.pv-recent-item').length;
+      check('停在别页时 refresh 不重绘最近', afterRefresh === beforeRefresh, `${beforeRefresh} -> ${afterRefresh}`);
+      recentTab.click();
+      await sleep(20);
+      check('切回最近时补上最新一条', root.querySelectorAll('.pv-recent-item').length === 3, `items=${root.querySelectorAll('.pv-recent-item').length}`);
+
+      document.getElementById('out').textContent = JSON.stringify(results, null, 2);
+      document.title = 'DONE';
+    </script>
+  </body>
+</html>

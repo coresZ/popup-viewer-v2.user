@@ -497,6 +497,8 @@ export class PopupPanel {
     this.ensureSettingsPanel();
     const margin = 8;
     const pop = this.settingsPopover;
+    // 面板实例复用：打开时若停在「最近」先刷一次历史，避免显示上次打开前的旧列表
+    pop.refresh?.();
     this._settingsAnchor = rect;
     // 清掉上次的内联尺寸与 sheet 状态，重新测量
     pop.style.maxHeight = '';

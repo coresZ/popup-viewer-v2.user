@@ -1,0 +1,116 @@
+name: Bug 报告
+description: 报告 Popup Viewer V2 的功能异常、兼容性问题或界面问题
+title: "[Bug] "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢反馈！提交前请先搜索[现有 Issues](https://github.com/coresZ/popup-viewer-v2.user/issues)，确认问题没有被报告过。
+
+        **安全漏洞请勿在此提交**，请按 [SECURITY.md](https://github.com/coresZ/popup-viewer-v2.user/blob/main/SECURITY.md) 的流程私下报告。
+
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: 提交前检查
+      options:
+        - label: 我已搜索过现有 Issue，确认没有重复
+          required: true
+        - label: 我已阅读 README 与用户手册，确认不是使用问题
+          required: true
+        - label: 这不是安全漏洞（安全漏洞请按 SECURITY.md 私下报告）
+          required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: 问题描述
+      description: 用一两句话说明遇到的问题
+      placeholder: 例如：在 linux.do 点击帖子链接后，弹窗一直显示加载中，最后提示加载超时。
+    validations:
+      required: true
+
+  - type: input
+    id: script-version
+    attributes:
+      label: 脚本版本
+      description: 在 Tampermonkey 管理面板或脚本头部 @version 查看
+      placeholder: "2.3.6"
+    validations:
+      required: true
+
+  - type: input
+    id: browser
+    attributes:
+      label: 浏览器与版本
+      placeholder: "Chrome 141 / Edge 141 / Firefox 143 / Safari 18.2"
+    validations:
+      required: true
+
+  - type: input
+    id: userscript-manager
+    attributes:
+      label: 用户脚本管理器及版本
+      placeholder: "Tampermonkey 5.3.3 / Violentmonkey 2.3.0 / Userscripts"
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: 操作系统
+      placeholder: "Windows 11 / macOS 15 / Android 15 / iOS 18"
+    validations:
+      required: true
+
+  - type: input
+    id: site
+    attributes:
+      label: 出现问题的网站
+      description: 请提供可访问的页面 URL（涉及隐私可隐去敏感部分）
+      placeholder: "https://linux.do/t/topic/123456"
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      description: 请提供最小、可稳定复现的步骤
+      placeholder: |
+        1. 打开 ...
+        2. 点击 ...
+        3. 看到 ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: 期望行为
+      placeholder: 描述你期望脚本如何表现
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: 实际行为
+      placeholder: 描述实际发生了什么
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: 控制台日志与截图
+      description: 请粘贴控制台报错，或将截图/录屏拖入本框。可先在「设置 → 高级 → 调试标记」打开调试标记。
+      render: shell
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: 其他补充
+      description: 例如：是否开启了特殊设置、是否与其他脚本同时运行、问题出现频率等。

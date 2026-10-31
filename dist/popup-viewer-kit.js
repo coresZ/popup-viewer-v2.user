@@ -209,7 +209,7 @@
     // 站点加载策略:
     //   iframe: true  → 使用 iframe 直接加载（页面自带脚本与登录态）
     //   scripts: true → 请求模式下保留目标页 <script> 以正常渲染（仅限信任站点）
-    //   xThread: true → 走 X 专用 GraphQL 原生渲染（见 docs/plan-x-graphql.md）
+    //   xThread: true → 走 X 专用 GraphQL 原生渲染（仅 X 页面注册加载器）
     sitePolicy: {
       "linux.do": { iframe: true, scripts: true },
       // X：内容由客户端 React 渲染，抓取净化拿不到帖子（评论为空）；iframe 又被 X 的框架策略
@@ -325,6 +325,7 @@
     },
     close: { path: '<line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line>' },
     plus: { path: '<line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line>' },
+    minus: { path: '<line x1="5" y1="12" x2="19" y2="12"></line>' },
     info: {
       path: '<circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="12"></line><line x1="12" y1="8" x2="12.01" y2="8"></line>'
     },
@@ -1550,6 +1551,7 @@
         if (!panel || !panel.classList.contains("visible")) return;
         const target = eventTarget(e);
         if (!target || !panel.contains(target)) return;
+        if (target.closest && target.closest(".pv-x-media-lightbox")) return;
         if (!e.deltaY) return;
         if (canScrollFrom(target, panel, e.deltaY)) return;
         if (!isFullScreen()) {

@@ -304,6 +304,9 @@ export function setupWheelScrollChain({ panel, contentArea, isFullScreen = () =>
       if (!panel || !panel.classList.contains('visible')) return;
       const target = eventTarget(e);
       if (!target || !panel.contains(target)) return;
+      // 灯箱里滚轮是「缩放」语义，且灯箱之上没有可滚动容器：直接放给自己的监听，
+      // 否则兜底会在捕获阶段 preventDefault+stopPropagation，灯箱永远收不到。
+      if (target.closest && target.closest('.pv-x-media-lightbox')) return;
       if (!e.deltaY) return;
       if (canScrollFrom(target, panel, e.deltaY)) return;
       if (!isFullScreen()) {
