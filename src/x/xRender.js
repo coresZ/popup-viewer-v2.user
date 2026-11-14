@@ -507,7 +507,9 @@ function createMediaCarousel(photos, { openUrl, variant = 'inline', startIndex =
         ? `${photos.length} 张图片，按 Enter 放大`
         : `${photos.length} 张图片，可缩放、可拖动；方向键切图，+/- 缩放，0 适应`
   });
-  if (framePhoto.width && framePhoto.height) stage.style.aspectRatio = `${framePhoto.width} / ${framePhoto.height}`;
+  // inline 用首图比例撑高（单图逻辑，需要时栏自己滚动）；
+  // overlay 的窗体由 syncFrame 按可用视口铺满，不按图片比例收缩
+  if (!overlay && framePhoto.width && framePhoto.height) stage.style.aspectRatio = `${framePhoto.width} / ${framePhoto.height}`;
 
   // 图片轨道：所有图并排，靠 translateX 滑动；imgs 留引用给缩放态改 transform
   const track = el('div', { class: 'pv-x-media-track' });
@@ -986,13 +988,12 @@ function createMediaCarousel(photos, { openUrl, variant = 'inline', startIndex =
   // 而且这里直接把高度算成**像素**而不是靠百分比：帧一旦被 max-height 截断，
   // 轨道/幻灯片的 height:100% 解析就不再确定，图片会按原始尺寸渲染并被 overflow:hidden 裁掉
   // （表现就是「窗体越大图反而被裁得越多」）。
-  // 灯箱（固定窗体）的尺寸分两种：
+  // 灯箱窗体的尺寸分两种：
   //   inline —— 走**单图逻辑**：宽度铺满、高度 = 宽度 × 首图比例（inline aspect-ratio 直接给），
   //            不做任何封顶，所以竖图就是整幅大图、和单图一样大（需要时栏自己滚动）
-  //   overlay —— 量的是三栏中间的**视口**（箭头在视口外），在视口可用区域内按首图比例上 contain
-  // 浮层必须算像素：帧一旦被间接约束截断，轨道/幻灯片的 height:100% 解析就不可靠，
-  // 图片会按原始尺寸渲染并被 overflow:hidden 裁掉。
-  const frameRatio = framePhoto.width && framePhoto.height ? framePhoto.height / framePhoto.width : 0;
+  //   overlay —— 窗体直接**铺满**视口可用区域（两侧箭头在视口外）：每张图在 slide 里各自
+  //            contain 适配、留白留在图外。以前窗体按首图比例 contain 收缩，切到比例不同的
+  //            图会被框死在首图的形状里（横图在竖窗条里只占弹窗一小块，放大也只能在那块里看）。
   const wrapper = () => stage.parentElement; // 浮层：.pv-x-media-viewport（不包含两侧箭头）
   let resizeObserver = null;
   let observedBox = null;
@@ -1013,17 +1014,10 @@ function createMediaCarousel(photos, { openUrl, variant = 'inline', startIndex =
     const availableWidth = box.clientWidth - (narrow ? 24 : 0);
     const availableHeight = box.clientHeight;
     if (availableWidth <= 0 || availableHeight <= 0) return;
-    // 按首图比例 contain 适配：先按宽度铺满，太高就改为按高度收窄
-    let width = availableWidth;
-    let height = frameRatio ? width * frameRatio : availableHeight;
-    if (height > availableHeight) {
-      height = availableHeight;
-      width = frameRatio ? height / frameRatio : availableWidth;
-    }
-    stage.style.width = `${Math.round(width)}px`;
-    stage.style.height = `${Math.round(height)}px`;
-    // 顶部条贴着图片顶边（主区里图片是垂直居中的，条在壳顶需要向下让出居中偏移）
-    shell.style.setProperty('--pv-bar-top', `${Math.max(0, Math.round((availableHeight - height) / 2))}px`);
+    // 窗体铺满可用视口：图片自身比例的适配交给 slide 里的 object-fit，窗体只负责
+    // 「看图的可视区域最大化」——放大后的视野就是整个窗体，不再被首图比例框死
+    stage.style.width = `${Math.round(availableWidth)}px`;
+    stage.style.height = `${Math.round(availableHeight)}px`;
     // 尺寸变了：缩放态的平移量按新帧重新钳制
     if (isZoomed()) {
       clampZoom();
@@ -1281,6 +1275,16 @@ function createMediaCarousel(photos, { openUrl, variant = 'inline', startIndex =
     listen(stage, 'dblclick', onDoubleClick);
     listen(stage, 'wheel', onStageWheel, { passive: false });
     for (const img of imgs) listen(img, 'load', onImgLoad);
+    // 窗体铺满后留白是弹窗里最大的「空白区」：点留白（非图片本体）关灯箱；
+    // 拖拽/捏合松手产生的 click 用 suppressClick 吃掉，否则切图会误关
+    listen(stage, 'click', (event) => {
+      if (suppressClick) {
+        suppressClick = false;
+        return;
+      }
+      if (event.target.closest('button, a')) return;
+      if (event.target.tagName !== 'IMG') close();
+    });
   } else if (onZoom) {
     listen(stage, 'click', onInlineClick);
   }

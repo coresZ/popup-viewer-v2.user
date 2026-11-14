@@ -1,6 +1,6 @@
 {
   "name": "popup-viewer-v2",
-  "version": "2.3.7",
+  "version": "2.3.8",
   "private": true,
   "description": "页内弹窗打开新帖 (Popup Viewer V2) - 插件化油猴脚本",
   "license": "MIT",
@@ -35,6 +35,7 @@
     "g:commit": "node tools/git-tools.mjs commit",
     "g:push": "node tools/git-tools.mjs push",
     "g:publish": "node tools/git-tools.mjs publish",
+    "ver": "node tools/version.mjs",
     "test": "node tests/xModel.test.mjs && node tests/selector.test.mjs && node tests/xZoomMath.test.mjs"
   },
   "devDependencies": {

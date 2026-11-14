@@ -10,6 +10,7 @@ id_ed25519_coresz
 id_ed25519_coresz.pub
 # 工具生成物（不入库）
 .cursor/
+.omc/
 .trellis/
 .slim/
 docs/superpowers/plans/
