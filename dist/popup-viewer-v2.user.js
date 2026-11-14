@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name          页内弹窗打开新帖
 // @namespace     http://tampermonkey.net/
-// @version       2.3.7
+// @version       2.3.8
 // @description   点击论坛帖子链接，在弹窗中加载内容 (插件化架构 V2)
 // @author        cores
 // @include       *://*/*
@@ -49,7 +49,7 @@
     if (!DEBUG) return;
     try {
       var d = document.createElement("div");
-      d.textContent = "[PV2] boot v" + (true ? "2.3.7" : "?");
+      d.textContent = "[PV2] boot v" + (true ? "2.3.8" : "?");
       d.style.cssText = "position:fixed;top:12px;left:12px;z-index:2147483647;background:#7c3aed;color:#fff;padding:6px 12px;font-size:12px;border-radius:6px;font-family:sans-serif";
       (document.body || document.documentElement).appendChild(d);
     } catch (e) {
@@ -6478,7 +6478,7 @@ article.pv-x-post[data-reply-target='true'] {\r
   flex: 0 0 auto;\r
   align-self: center;\r
 }\r
-/* 浮层顶部条挂在壳上、绝对定位并对齐到图片顶边（--pv-bar-top 由 syncFrame 按居中偏移给），\r
+/* 浮层顶部条挂在壳上、绝对定位贴着壳顶（窗体铺满视口，图片垂直居中，条压在最上方），\r
    两侧给箭头让位（Tab 顺序也因此排在箭头之后） */\r
 .pv-x-media-shell > .pv-x-media-bar {\r
   top: var(--pv-bar-top, 0px);\r
@@ -11025,7 +11025,7 @@ article.pv-x-post[data-reply-target='true'] {\r
       "aria-roledescription": variant === "inline" ? "图片轮播" : "图片查看",
       "aria-label": variant === "inline" ? `${photos.length} 张图片，按 Enter 放大` : `${photos.length} 张图片，可缩放、可拖动；方向键切图，+/- 缩放，0 适应`
     });
-    if (framePhoto.width && framePhoto.height) stage.style.aspectRatio = `${framePhoto.width} / ${framePhoto.height}`;
+    if (!overlay && framePhoto.width && framePhoto.height) stage.style.aspectRatio = `${framePhoto.width} / ${framePhoto.height}`;
     const track = el("div", { class: "pv-x-media-track" });
     const imgs = photos.map(
       (photo) => el("img", {
@@ -11430,7 +11430,6 @@ article.pv-x-post[data-reply-target='true'] {\r
     const show = (next) => settle(next);
     if (prevButton) listen(prevButton, "click", () => show(current - 1));
     if (nextButton) listen(nextButton, "click", () => show(current + 1));
-    const frameRatio = framePhoto.width && framePhoto.height ? framePhoto.height / framePhoto.width : 0;
     const wrapper = () => stage.parentElement;
     let resizeObserver = null;
     let observedBox = null;
@@ -11449,15 +11448,8 @@ article.pv-x-post[data-reply-target='true'] {\r
       const availableWidth = box.clientWidth - (narrow ? 24 : 0);
       const availableHeight = box.clientHeight;
       if (availableWidth <= 0 || availableHeight <= 0) return;
-      let width2 = availableWidth;
-      let height = frameRatio ? width2 * frameRatio : availableHeight;
-      if (height > availableHeight) {
-        height = availableHeight;
-        width2 = frameRatio ? height / frameRatio : availableWidth;
-      }
-      stage.style.width = `${Math.round(width2)}px`;
-      stage.style.height = `${Math.round(height)}px`;
-      shell.style.setProperty("--pv-bar-top", `${Math.max(0, Math.round((availableHeight - height) / 2))}px`);
+      stage.style.width = `${Math.round(availableWidth)}px`;
+      stage.style.height = `${Math.round(availableHeight)}px`;
       if (isZoomed()) {
         clampZoom();
         applyZoom();
@@ -11688,6 +11680,14 @@ article.pv-x-post[data-reply-target='true'] {\r
       listen(stage, "dblclick", onDoubleClick);
       listen(stage, "wheel", onStageWheel, { passive: false });
       for (const img of imgs) listen(img, "load", onImgLoad);
+      listen(stage, "click", (event) => {
+        if (suppressClick) {
+          suppressClick = false;
+          return;
+        }
+        if (event.target.closest("button, a")) return;
+        if (event.target.tagName !== "IMG") close();
+      });
     } else if (onZoom) {
       listen(stage, "click", onInlineClick);
     }

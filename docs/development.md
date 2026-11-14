@@ -226,11 +226,23 @@ npm run build:min
 | 位置 | 作用 |
 |---|---|
 | `package.json` → `version` | 构建宏 `__PV2_VER__` 的值，调试 boot 标记显示 |
+| `package-lock.json` → 顶层与 `packages[""]` 的 `version` | 与 `package.json` 保持一致，否则 `npm ci` 会报不同步 |
 | `banner.txt` → `@version` | 用户脚本管理器识别的版本，写在 `dist/popup-viewer-v2.user.js` 头部 |
 | `CHANGELOG.md` 顶部条目 | 发布记录 |
 | README 徽章（可选） | 项目门面展示的版本 |
 
 `build.mjs` 读取 `package.json` 的 `version` 注入 `__PV2_VER__`，但 `banner.txt` 的 `@version` 是独立文本，必须手动同步。两者不一致时，Tampermonkey 显示的版本与调试标记会不一致。
+
+三处文件用工具一次同步，避免漏改：
+
+```bash
+node tools/version.mjs            # 打印当前版本
+node tools/version.mjs bump       # 2.3.7.1 → 2.3.7.2（三段版本则补成 2.3.7 → 2.3.7.1）
+node tools/version.mjs set 2.3.8  # 指定版本（发版用）
+# 追加 --build 可在改完后自动 npm run build
+```
+
+`@version` 支持四段（如 `2.3.7.1`），用户脚本管理器按段比较，`2.3.7.1 > 2.3.7`，可用于同一补丁线上的多次小更新；`npm` 也接受四段版本号，不会影响 `npm ci`。
 
 ---
 
@@ -1121,6 +1133,7 @@ __PV2_X__.styleDiag()           // 样式是否生效、CSP 是否拦截、adopt
   - `docs/<简短描述>`：文档
   - `refactor/<简短描述>`、`chore/<简短描述>`：重构与工程配置
 - 分支名使用小写英文、数字与连字符，如 `fix/linux-do-timeout`。
+- 例外：**版本线维护分支**用「待发布版本号」命名，如 `2.3.7`。它承载一整轮迭代（可多个功能/修复），内部版本号用四段累计 `2.3.7.1`、`2.3.7.2`…，最后一并发布为 `2.3.8`（详见 [13.1](#131-版本策略)）。
 
 ### 12.5 提交信息
 
@@ -1146,9 +1159,11 @@ docs: 补充链接规则的常见问题
 
 ### 13.1 版本策略
 
-- 版本号遵循 `MAJOR.MINOR.PATCH`，当前为 **2.3.7**。
+- 对外发布版本号遵循 `MAJOR.MINOR.PATCH`，线上最新为 **2.3.7**。
+- **维护分支内**（如 `2.3.7`）的每次版本更新使用四段 `2.3.7.N`，N 从 1 开始累计：`2.3.7.1` → `2.3.7.2` → `2.3.7.3`…。这些版本只在分支内迭代，不单独对外发版。
+- 一轮迭代结束后**统一发版为下一个补丁号**（`2.3.7` 分支 → **`2.3.8`**）：版本号回到三段，合并进 `main` 并推送后对外生效。
 - 代码类改动（`src/**`、`build.mjs`、样式、构建配置）必须递增版本号；纯文档/配置改动（README、CHANGELOG、`.gitignore` 等）不需要。
-- 版本号至少同步 `package.json` 与 `banner.txt`；发布记录同步 `CHANGELOG.md`。
+- 版本号至少同步 `package.json`、`banner.txt`、`package-lock.json`（见 [4.6](#46-版本号如何进入产物)）；发布记录同步 `CHANGELOG.md`。
 
 ### 13.2 发布步骤
 
@@ -1165,6 +1180,16 @@ docs: 补充链接规则的常见问题
 9. **推送**：`npm run g -- push`；或一步完成 `npm run g -- publish "v2.3.7 ..."`。
 10. **验证 CI**：GitHub Actions 在 push/PR 到 `main` 时执行 Node 20/22 测试、构建与 `dist` 同步校验；全部通过后发布完成。
 11. **可选 GitHub Release**：当前仓库未使用 tag 流程；如需发布 Release，可在 GitHub 上手动创建 tag（如 `v2.3.7`）并附 `dist` 产物。启用前请先与维护者约定，避免与 CI/版本流程冲突。
+
+**从维护分支发版（`2.3.7` → `2.3.8`）**
+
+分支内迭代时按普通流程走（`node tools/version.mjs bump` 得到 `2.3.7.2`、`2.3.7.3`…），发版时：
+
+1. `node tools/version.mjs set 2.3.8` —— 三段版本，同时写入 `package.json`、`banner.txt`、`package-lock.json`。
+2. `CHANGELOG.md` 顶部新增 `## [2.3.8] - YYYY-MM-DD`，把分支内 `2.3.7.N` 的改动合并归类。
+3. `npm test && npm run build`，确认 `dist` 头部 `@version` 为 `2.3.8`。
+4. 提交并在分支上推送（`npm run g -- publish "v2.3.8 ..."`），随后合并回 `main` 并推送；CI 仅在 `main` 的 push/PR 上运行，合并后必须确认通过。
+5. 合并完成后删除维护分支（本地与远端）。
 
 ### 13.3 git-tools.mjs 用法
 

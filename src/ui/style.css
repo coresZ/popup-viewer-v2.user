@@ -2867,7 +2867,7 @@ article.pv-x-post[data-reply-target='true'] {
   flex: 0 0 auto;
   align-self: center;
 }
-/* 浮层顶部条挂在壳上、绝对定位并对齐到图片顶边（--pv-bar-top 由 syncFrame 按居中偏移给），
+/* 浮层顶部条挂在壳上、绝对定位贴着壳顶（窗体铺满视口，图片垂直居中，条压在最上方），
    两侧给箭头让位（Tab 顺序也因此排在箭头之后） */
 .pv-x-media-shell > .pv-x-media-bar {
   top: var(--pv-bar-top, 0px);
