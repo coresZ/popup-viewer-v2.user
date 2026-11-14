@@ -1179,7 +1179,7 @@ docs: 补充链接规则的常见问题
 8. **提交**：`npm run g -- commit "v2.3.7 ..."`（默认会先构建），或先 `git add` 后手动提交。
 9. **推送**：`npm run g -- push`；或一步完成 `npm run g -- publish "v2.3.7 ..."`。
 10. **验证 CI**：GitHub Actions 在 push/PR 到 `main` 时执行 Node 20/22 测试、构建与 `dist` 同步校验；全部通过后发布完成。
-11. **可选 GitHub Release**：当前仓库未使用 tag 流程；如需发布 Release，可在 GitHub 上手动创建 tag（如 `v2.3.7`）并附 `dist` 产物。启用前请先与维护者约定，避免与 CI/版本流程冲突。
+11. **GitHub Release（自动）**：给发版提交打 tag 并推送——`git tag -a vX.Y.Z -m "vX.Y.Z 主题" && git push origin vX.Y.Z`。`.github/workflows/release.yml` 会自动跑测试、构建、校验 tag 与版本一致，并创建附 `dist` 产物的 Release（notes 取自 `CHANGELOG.md` 对应条目）。
 
 **从维护分支发版（`2.3.7` → `2.3.8`）**
 
@@ -1189,7 +1189,8 @@ docs: 补充链接规则的常见问题
 2. `CHANGELOG.md` 顶部新增 `## [2.3.8] - YYYY-MM-DD`，把分支内 `2.3.7.N` 的改动合并归类。
 3. `npm test && npm run build`，确认 `dist` 头部 `@version` 为 `2.3.8`。
 4. 提交并在分支上推送（`npm run g -- publish "v2.3.8 ..."`），随后合并回 `main` 并推送；CI 仅在 `main` 的 push/PR 上运行，合并后必须确认通过。
-5. 合并完成后删除维护分支（本地与远端）。
+5. 在合并后的 `main` 上打 tag 并推送（`git tag -a v2.3.8 -m "..." && git push origin v2.3.8`），触发 `release.yml` 自动创建 GitHub Release；tag 必须打在**包含 release.yml 的提交**上才会触发。
+6. 合并完成后删除维护分支（本地与远端）。
 
 ### 13.3 git-tools.mjs 用法
 
@@ -1313,8 +1314,8 @@ jobs:
 ### 14.6 发布与标签
 
 - 日常发版走「版本号 + CHANGELOG + CI」流程即可。
-- 如需 GitHub Release，建议使用与 `package.json` 一致的 tag（`v2.3.7`），在 Release notes 中链接 `CHANGELOG.md` 对应条目，并附上 `dist/popup-viewer-v2.user.js`。
-- 当前仓库没有 tag 历史；首次启用 tag 前先与维护者约定发布节奏，避免 tag 与 `main` 提交不一致。
+- GitHub Release 已自动化：推送与 `package.json` 一致的 `vX.Y.Z` tag 后，`release.yml` 自动跑测试、构建、校验版本一致，并创建 Release（notes 取 `CHANGELOG.md` 对应条目，附 `dist/popup-viewer-v2.user.js` 与 `dist/popup-viewer-kit.js`）。
+- 首个自动发布的 tag 是 `v2.3.8`（2026-11-14）；tag 一律打在合并后的 `main` 提交上。
 
 ---
 
