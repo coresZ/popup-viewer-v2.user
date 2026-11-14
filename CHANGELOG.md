@@ -14,6 +14,7 @@
 - **新增 `tools/version.mjs`**：一次同步 `package.json`、`banner.txt`、`package-lock.json` 三处版本号，避免 `@version` 与构建宏漂移
 - 开发手册补充版本工具用法与维护分支发版流程（§13）
 - **修复 CI「Verify dist is up to date」自 v2.3.6 引入起持续失败**：早期提交的 `dist` 内嵌 CSS 带有 CRLF 转义（每行字面量 `\r`），且 `banner.txt` 未纳入 `.gitattributes` 行尾规则、Windows 工作区检出为 CRLF——本地重建与 CI 构建结果不一致。现补 `*.txt text eol=lf`、归一化工作区行尾并重建产物，构建结果跨平台字节一致
+- **启用 GitHub Releases**：新增 `.github/workflows/release.yml`，推送 `v*` tag 自动跑测试、构建、校验 tag 与版本一致，并创建附 `dist` 产物的 Release（notes 取自 CHANGELOG 对应条目）；`v2.3.8` 为首个附产物的 Release
 
 ## [2.3.7] - 2026-10-31
 
